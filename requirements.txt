@@ -1,0 +1,14 @@
+torch
+torchvision
+numpy
+scipy
+scikit-learn
+tqdm
+matplotlib
+annoy
+jupyter
+ipykernel
+transformers
+datasets
+seqeval
+pyyaml

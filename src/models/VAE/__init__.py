@@ -4,7 +4,7 @@ VAE package — public API.
 
 from .model import ConvVAE, vae_loss
 from .trainer import train_vae, save_checkpoint, load_checkpoint
-from .data import build_dataset, build_transform, denormalize, tensor_to_hwc
+from .data import DEFAULT_MEAN, DEFAULT_STD, build_dataset, build_transform, denormalize, tensor_to_hwc
 from .latent import (
     encode_dataset_mu,
     build_or_load_ann,
@@ -25,6 +25,8 @@ __all__ = [
     "load_checkpoint",
     "build_dataset",
     "build_transform",
+    "DEFAULT_MEAN",
+    "DEFAULT_STD",
     "denormalize",
     "tensor_to_hwc",
     "encode_dataset_mu",

@@ -1,0 +1,56 @@
+experiment_name: ner_conll2003_distilbert_manifold
+output_dir: outputs/ner_conll2003_distilbert
+
+task:
+  name: ner
+  module: src.tasks.ner.eval_plugin
+
+dataset:
+  name: conll2003
+  split_train: train
+  split_val: validation
+  split_test: test
+  text_field: tokens
+  label_field: ner_tags
+  max_length: 192
+  num_workers: 2
+
+dataloader:
+  batch_size: 16
+  shuffle_train: true
+
+model:
+  encoder_name: distilbert-base-uncased
+  dropout: 0.1
+
+smoothing:
+  enabled: true
+  mode: manifold
+  target: hidden_states
+  space: input_embeddings
+  sigma: 0.10
+  layer_index: null
+  knn_k: 64
+  eps_eig: 1.0e-06
+  index_backend: torch
+  index_metric: euclidean
+  index_path: null
+  index_n_trees: 20
+
+certification:
+  enabled: true
+  alpha: 0.001
+  n0: 64
+  n: 512
+  abstain_label: -1
+
+train:
+  seed: 73
+  lr: 3.0e-05
+  weight_decay: 0.01
+  epochs: 2
+  device: cuda
+  grad_clip_norm: 1.0
+
+eval:
+  max_batches: null

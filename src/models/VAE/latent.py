@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from .data import denormalize, tensor_to_hwc, DEFAULT_MEAN, DEFAULT_STD
 from .model import ConvVAE
+from src.smoothing.workflow import fit_local_pca, sample_manifold_point
 
 
 # ---------------------------------------------------------------------------
@@ -111,18 +112,8 @@ def local_latent_pca(
     Returns (mu_local, eigvals, eigvecs) sorted in descending eigenvalue order.
     Eigenvalues are clipped to eps to avoid numerical issues.
     """
-    z_local = z_bank[nn_indices]
-    mu = z_local.mean(axis=0)
-    centered = z_local - mu
-
-    cov = (centered.T @ centered) / max(1, centered.shape[0] - 1)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-
-    desc = np.argsort(eigvals)[::-1]
-    eigvals = np.maximum(eigvals[desc], eps)
-    eigvecs = eigvecs[:, desc]
-
-    return mu, eigvals, eigvecs
+    pca = fit_local_pca(z_bank[nn_indices], eps_eig=eps)
+    return pca.mean, pca.evals, pca.evecs
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +131,8 @@ def manifold_noise_sample(
 
     This produces noise aligned with the local semantic manifold directions.
     """
-    eta = np.random.normal(scale=alpha, size=z0.shape[0]).astype(np.float32)
-    delta = eigvecs @ (np.sqrt(eigvals) * eta)
-    return z0 + delta
+    white_noise = np.random.normal(scale=alpha, size=z0.shape[0]).astype(np.float32)
+    return z0 + eigvecs @ (np.sqrt(eigvals) * white_noise)
 
 
 def isotropic_noise_sample(z0: np.ndarray, alpha: float) -> np.ndarray:
