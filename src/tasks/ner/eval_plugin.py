@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from src.certify import certify_prediction_set
 from src.dataloaders import build_conll_dataloaders
-from src.models.specific.ner.model import TransformerNER
+from src.models.transformer.ner.model import TransformerNER
 from src.smoothing import (
     smooth_tensor,
     smooth_input_embeddings,

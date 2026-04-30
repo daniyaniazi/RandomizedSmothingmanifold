@@ -1,0 +1,269 @@
+"""Dataloaders for smile classification on CelebA/CelebA-HQ style datasets."""
+
+from __future__ import annotations
+
+import csv
+import random
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import torch
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+
+from src.configs.train_smile_schema import (
+    SmileDataloaderConfig,
+    SmileDatasetConfig,
+    SmileModelConfig,
+)
+
+
+Sample = Tuple[str, int]
+
+
+class SmileImageDataset(Dataset):
+    def __init__(self, samples: Sequence[Sample], transform=None):
+        self.samples = list(samples)
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int):
+        image_path, label = self.samples[index]
+        image = Image.open(image_path).convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, torch.tensor(float(label), dtype=torch.float32)
+
+
+@dataclass
+class SmileDataBundle:
+    train_loader: DataLoader
+    val_loader: DataLoader
+    test_loader: DataLoader
+    class_counts: Dict[str, int]
+    pos_weight: float
+
+
+def _to_label(value: str) -> int:
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "smile", "smiling"}:
+        return 1
+    if text in {"0", "-1", "false", "no", "n", "non-smile", "not_smiling"}:
+        return 0
+    try:
+        num = float(text)
+        return 1 if num > 0 else 0
+    except ValueError as exc:
+        raise ValueError(f"Cannot parse smile label from value: {value}") from exc
+
+
+def _resolve_image_path(image_dir: Path, file_name: str, extension: str) -> Path:
+    candidate = image_dir / file_name
+    if candidate.exists():
+        return candidate
+
+    if extension and not candidate.suffix:
+        candidate_ext = image_dir / f"{file_name}{extension}"
+        if candidate_ext.exists():
+            return candidate_ext
+
+    raise FileNotFoundError(f"Image not found for sample: {file_name} in {image_dir}")
+
+
+def _read_celeba_annotations(annotation_path: Path) -> Dict[str, int]:
+    lines = [line.strip() for line in annotation_path.read_text().splitlines() if line.strip()]
+    if len(lines) < 3:
+        raise ValueError(f"Invalid CelebA attribute file: {annotation_path}")
+
+    attr_names = lines[1].split()
+    if "Smiling" not in attr_names:
+        raise ValueError(f"Smiling attribute not found in {annotation_path}")
+    smile_idx = attr_names.index("Smiling")
+
+    labels: Dict[str, int] = {}
+    for row in lines[2:]:
+        parts = row.split()
+        if len(parts) < 2 + smile_idx:
+            continue
+        file_name = parts[0]
+        labels[file_name] = _to_label(parts[1 + smile_idx])
+    return labels
+
+
+def _read_csv_annotations(annotation_path: Path, image_column: str, label_column: str) -> Dict[str, int]:
+    labels: Dict[str, int] = {}
+    with annotation_path.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            file_name = row.get(image_column)
+            label = row.get(label_column)
+            if not file_name or label is None:
+                continue
+            labels[file_name] = _to_label(label)
+    return labels
+
+
+def _read_partition_file(partition_path: Path) -> Dict[str, int]:
+    partitions: Dict[str, int] = {}
+    for line in partition_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, split_id = line.split()
+        partitions[name] = int(split_id)
+    return partitions
+
+
+def _split_by_ratio(samples: List[Sample], train_ratio: float, val_ratio: float, seed: int):
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError("train_ratio must be in (0, 1)")
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must be in [0, 1)")
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio + val_ratio must be less than 1")
+
+    rng = random.Random(seed)
+    shuffled = list(samples)
+    rng.shuffle(shuffled)
+
+    n_total = len(shuffled)
+    n_train = int(n_total * train_ratio)
+    n_val = int(n_total * val_ratio)
+    train = shuffled[:n_train]
+    val = shuffled[n_train : n_train + n_val]
+    test = shuffled[n_train + n_val :]
+    return train, val, test
+
+
+def _build_transforms(image_size: int):
+    train_transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+    eval_transform = transforms.Compose(
+        [
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    return train_transform, eval_transform
+
+
+def build_smile_dataloaders(
+    dataset_cfg: SmileDatasetConfig,
+    loader_cfg: SmileDataloaderConfig,
+    model_cfg: SmileModelConfig,
+) -> SmileDataBundle:
+    root_dir = Path(dataset_cfg.root_dir)
+    image_dir = root_dir / dataset_cfg.image_dir
+    annotation_path = root_dir / dataset_cfg.annotation_file
+
+    if dataset_cfg.annotation_format == "celeba":
+        labels = _read_celeba_annotations(annotation_path)
+    elif dataset_cfg.annotation_format == "csv":
+        labels = _read_csv_annotations(annotation_path, dataset_cfg.image_column, dataset_cfg.label_column)
+    else:
+        raise ValueError(f"Unsupported annotation format: {dataset_cfg.annotation_format}")
+
+    all_samples: List[Sample] = []
+    for file_name, label in labels.items():
+        try:
+            image_path = _resolve_image_path(image_dir, file_name, dataset_cfg.file_extension)
+        except FileNotFoundError:
+            continue
+        all_samples.append((str(image_path), label))
+
+    if not all_samples:
+        raise RuntimeError("No valid samples found. Check paths and annotation settings.")
+
+    partition_map: Optional[Dict[str, int]] = None
+    if dataset_cfg.partition_file:
+        partition_path = root_dir / dataset_cfg.partition_file
+        if partition_path.exists():
+            partition_map = _read_partition_file(partition_path)
+
+    if partition_map is not None:
+        train_samples: List[Sample] = []
+        val_samples: List[Sample] = []
+        test_samples: List[Sample] = []
+        for image_path, label in all_samples:
+            file_name = Path(image_path).name
+            split_id = partition_map.get(file_name)
+            if split_id == 0:
+                train_samples.append((image_path, label))
+            elif split_id == 1:
+                val_samples.append((image_path, label))
+            elif split_id == 2:
+                test_samples.append((image_path, label))
+        if not train_samples or not val_samples or not test_samples:
+            train_samples, val_samples, test_samples = _split_by_ratio(
+                all_samples,
+                train_ratio=dataset_cfg.train_ratio,
+                val_ratio=dataset_cfg.val_ratio,
+                seed=dataset_cfg.split_seed,
+            )
+    else:
+        train_samples, val_samples, test_samples = _split_by_ratio(
+            all_samples,
+            train_ratio=dataset_cfg.train_ratio,
+            val_ratio=dataset_cfg.val_ratio,
+            seed=dataset_cfg.split_seed,
+        )
+
+    train_transform, eval_transform = _build_transforms(model_cfg.input_size)
+    train_dataset = SmileImageDataset(train_samples, transform=train_transform)
+    val_dataset = SmileImageDataset(val_samples, transform=eval_transform)
+    test_dataset = SmileImageDataset(test_samples, transform=eval_transform)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=loader_cfg.batch_size,
+        shuffle=loader_cfg.shuffle_train,
+        num_workers=dataset_cfg.num_workers,
+        pin_memory=loader_cfg.pin_memory,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=loader_cfg.batch_size,
+        shuffle=False,
+        num_workers=dataset_cfg.num_workers,
+        pin_memory=loader_cfg.pin_memory,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=loader_cfg.batch_size,
+        shuffle=False,
+        num_workers=dataset_cfg.num_workers,
+        pin_memory=loader_cfg.pin_memory,
+    )
+
+    positives = sum(label for _, label in train_samples)
+    negatives = len(train_samples) - positives
+    pos_weight = (negatives / max(1, positives)) if positives > 0 else 1.0
+
+    class_counts = {
+        "train_positive": int(positives),
+        "train_negative": int(negatives),
+        "train_total": len(train_samples),
+        "val_total": len(val_samples),
+        "test_total": len(test_samples),
+    }
+
+    return SmileDataBundle(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        class_counts=class_counts,
+        pos_weight=float(pos_weight),
+    )
