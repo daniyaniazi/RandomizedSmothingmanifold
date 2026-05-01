@@ -3,7 +3,7 @@ output_dir: outputs/ner_conll2003_distilbert
 
 task:
   name: ner
-  module: src.tasks.ner.eval_plugin
+  module: src.models.transformer.ner.train
 
 dataset:
   name: conll2003

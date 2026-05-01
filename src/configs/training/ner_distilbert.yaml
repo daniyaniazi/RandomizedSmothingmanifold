@@ -3,11 +3,11 @@
 # For smoothing experiments use src/configs/experiments/ner_conll2003_distilbert.yaml.
 
 experiment_name: ner_distilbert_conll2003_finetune
-output_dir: outputs/ner_conll2003_distilbert
+output_dir: output/ner_conll2003_distilbert
 
 task:
   name: ner
-  module: src.tasks.ner.eval_plugin
+  module: src.models.transformer.ner.train
 
 dataset:
   name: conll2003

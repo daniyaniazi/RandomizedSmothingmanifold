@@ -79,7 +79,7 @@ class WandbConfig:
 @dataclass
 class TaskConfig:
     name: str = "ner"
-    module: str = "src.tasks.ner.eval_plugin"
+    module: str = "src.models.transformer.ner.train"
     eval_plugin: Optional[str] = None
 
 
