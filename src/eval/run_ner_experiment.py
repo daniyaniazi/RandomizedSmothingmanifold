@@ -27,6 +27,107 @@ from src.models.transformer.ner.train import device_from_cfg, move_batch, set_se
 from src.smoothing.ner_token_manifold import sample_smoothed_token_predictions
 
 
+def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
+    k = max(1, min(k, int(len(counts))))
+    idx = np.argsort(counts)[::-1][:k]
+    total = int(np.sum(counts))
+    rows = []
+    for i in idx:
+        c = int(counts[int(i)])
+        rows.append(
+            {
+                "label_id": int(i),
+                "label": id2label[int(i)],
+                "count": c,
+                "fraction": float(c / total) if total else 0.0,
+            }
+        )
+    return rows
+
+
+def _build_debug_examples(batch, out, tokenizer, id2label: dict[int, str], max_sentences: int = 3, max_tokens: int = 8):
+    input_ids = batch["input_ids"].detach().cpu().numpy()
+    labels = batch["labels"].detach().cpu().numpy()
+    pred_ids = out.pred_ids.detach().cpu().numpy()
+    vote_counts = out.vote_counts
+
+    examples = []
+    for row_idx in range(min(input_ids.shape[0], max_sentences)):
+        valid_positions = [i for i, l in enumerate(labels[row_idx]) if int(l) != -100]
+        if not valid_positions:
+            continue
+
+        sentence_tokens = tokenizer.convert_ids_to_tokens([int(input_ids[row_idx, i]) for i in valid_positions])
+        sentence_true_labels = [id2label[int(labels[row_idx, i])] for i in valid_positions]
+        sentence_pred_labels = [id2label[int(pred_ids[row_idx, i])] for i in valid_positions]
+
+        token_debug = []
+        for token_idx in valid_positions[:max_tokens]:
+            cert = out.certificates[row_idx][token_idx]
+            dbg = None
+            if out.debug is not None and row_idx < len(out.debug):
+                dbg = out.debug[row_idx][token_idx]
+
+            token_debug.append(
+                {
+                    "token_position": int(token_idx),
+                    "token": tokenizer.convert_ids_to_tokens([int(input_ids[row_idx, token_idx])])[0],
+                    "true_label": id2label[int(labels[row_idx, token_idx])],
+                    "pred_label_majority_vote": id2label[int(pred_ids[row_idx, token_idx])],
+                    "certified": bool(cert is not None and not cert.abstained),
+                    "certified_radius": float(cert.radius) if cert is not None else 0.0,
+                    "vote_top5": _top_vote_labels(vote_counts[row_idx, token_idx], id2label, k=5),
+                    "top10_nearest_neighbor_tokens": [] if dbg is None else dbg.neighbor_tokens,
+                    "top10_nearest_neighbor_labels": [] if dbg is None else [id2label[int(x)] for x in dbg.neighbor_labels],
+                    "reconstruction_l2": None if dbg is None else float(dbg.reconstruction_l2),
+                    "noisy_l2": None if dbg is None else float(dbg.noisy_l2),
+                }
+            )
+
+        examples.append(
+            {
+                "sentence_index_in_batch": int(row_idx),
+                "sentence_tokens": sentence_tokens,
+                "sentence_true_labels": sentence_true_labels,
+                "sentence_pred_labels_majority_vote": sentence_pred_labels,
+                "token_debug": token_debug,
+            }
+        )
+
+    return examples
+
+
+def _save_debug_vote_plot(debug_examples: list[dict], out_dir: Path) -> str | None:
+    if not debug_examples:
+        return None
+    first = debug_examples[0]
+    if not first.get("token_debug"):
+        return None
+    token_row = first["token_debug"][0]
+    vote_rows = token_row.get("vote_top5", [])
+    if not vote_rows:
+        return None
+
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+
+    labels = [r["label"] for r in vote_rows]
+    counts = [int(r["count"]) for r in vote_rows]
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(labels, counts)
+    ax.set_title(f"Vote Distribution | token={token_row['token']}")
+    ax.set_ylabel("votes")
+    fig.tight_layout()
+
+    fig_path = out_dir / "debug_vote_distribution.png"
+    fig.savefig(fig_path, dpi=140)
+    plt.close(fig)
+    return str(fig_path)
+
+
 @torch.no_grad()
 def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches: int | None = None):
     model.eval()
@@ -74,6 +175,9 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
     radii = []
     abstentions = 0
     total_tokens = 0
+    certified_correct = 0
+    sentence_count = 0
+    sentence_token_counts = []
     debug_payload = None
 
     for batch_idx, batch in enumerate(loader):
@@ -111,11 +215,18 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
                     radii.append(float(cert.radius))
                     abstentions += int(cert.abstained)
                     total_tokens += 1
-                p_seq.append(id2label[int(p)])
+                    if (not cert.abstained) and int(p) == int(l):
+                        certified_correct += 1
+                if cert is not None and cert.abstained:
+                    p_seq.append("ABSTAIN")
+                else:
+                    p_seq.append(id2label[int(p)])
                 l_seq.append(id2label[int(l)])
             if l_seq:
                 y_pred_all.append(p_seq)
                 y_true_all.append(l_seq)
+                sentence_count += 1
+                sentence_token_counts.append(len(l_seq))
 
         if batch_idx == 0 and out.debug is not None:
             debug_rows = []
@@ -137,16 +248,26 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
                             }
                         )
                 debug_rows.append(debug_row)
-            debug_payload = debug_rows
+            debug_payload = {
+                "neighbors": debug_rows,
+                "examples": _build_debug_examples(batch=batch, out=out, tokenizer=tokenizer, id2label=id2label),
+            }
 
     metrics = {
         "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "f1": float(f1_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "token_acc": float(accuracy_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "certified_token_acc": float(certified_correct / total_tokens) if total_tokens else 0.0,
+        "certified_correct_tokens": int(certified_correct),
         "mean_certified_radius": float(np.mean(radii)) if radii else 0.0,
         "abstention_rate": float(abstentions / total_tokens) if total_tokens else 0.0,
         "total_certified_tokens": int(total_tokens),
+        "sentences_evaluated": int(sentence_count),
+        "avg_tokens_per_sentence": float(np.mean(sentence_token_counts)) if sentence_token_counts else 0.0,
+        "max_tokens_in_sentence": int(np.max(sentence_token_counts)) if sentence_token_counts else 0,
+        "noisy_samples_per_token": int(cfg.certification.n),
+        "total_noisy_samples": int(total_tokens * cfg.certification.n),
     }
     return metrics, debug_payload
 
@@ -205,6 +326,11 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
         "split": split,
         "clean": clean_metrics,
         "smoothed": smooth_metrics,
+        "comparison": {
+            "clean_token_acc": clean_metrics["token_acc"],
+            "smoothed_token_acc": smooth_metrics["token_acc"],
+            "certified_token_acc": smooth_metrics["certified_token_acc"],
+        },
         "smoothing": {
             "sigma": cfg.smoothing.sigma,
             "knn_k": cfg.smoothing.knn_k,
@@ -216,6 +342,10 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
     if debug_payload is not None:
         (out_dir / "debug_neighbors.json").write_text(json.dumps(debug_payload, indent=2))
+        fig_path = _save_debug_vote_plot(debug_payload.get("examples", []), out_dir)
+        if fig_path is not None:
+            summary["artifacts"] = {"debug_vote_distribution": fig_path}
+            (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
 
     print(json.dumps(summary, indent=2))
 
