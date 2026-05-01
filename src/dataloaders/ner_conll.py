@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from datasets import DatasetDict, load_dataset
+from datasets.utils.logging import disable_progress_bar
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, DataCollatorForTokenClassification
 
@@ -53,7 +54,13 @@ def build_conll_dataloaders(
     loader_cfg: DataloaderConfig,
     encoder_name: str,
 ) -> NERDataBundle:
-    dataset: DatasetDict = load_dataset(dataset_cfg.name)
+    disable_progress_bar()
+
+    load_kwargs = {}
+    if dataset_cfg.name == "conll2003":
+        load_kwargs["trust_remote_code"] = True
+
+    dataset: DatasetDict = load_dataset(dataset_cfg.name, **load_kwargs)
 
     label_feature = dataset[dataset_cfg.split_train].features[dataset_cfg.label_field]
     label_names: List[str] = label_feature.feature.names

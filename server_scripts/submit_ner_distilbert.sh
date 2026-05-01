@@ -36,4 +36,4 @@ echo "Running on: $(hostname)"
 echo "GPU: $CUDA_VISIBLE_DEVICES"
 
 python -m src.models.transformer.ner.train \
-    --config src/configs/experiments/ner_conll2003_distilbert.yaml
+    --config src/configs/training/ner_distilbert.yaml

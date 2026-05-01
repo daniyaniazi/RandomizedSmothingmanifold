@@ -1,9 +1,14 @@
-experiment_name: ner_conll2003_bert_manifold
+# Fine-tuning config for BERT-base on CoNLL-2003 NER
+# Use this for the training job only (no smoothing / certification).
+# For smoothing experiments use src/configs/experiments/ner_conll2003_bert.yaml.
+
+experiment_name: ner_bert_conll2003_finetune
 output_dir: outputs/ner_conll2003_bert
+
 task:
   name: ner
   module: src.tasks.ner.eval_plugin
-  eval_plugin: null
+
 dataset:
   name: conll2003
   split_train: train
@@ -13,40 +18,45 @@ dataset:
   label_field: ner_tags
   max_length: 192
   num_workers: 2
+
 dataloader:
   batch_size: 16
   shuffle_train: true
+
 model:
   encoder_name: bert-base-uncased
   dropout: 0.1
+
 smoothing:
-  enabled: true
-  mode: manifold
-  target: input_embeddings
-  space: input_embeddings
-  sigma: 0.1
-  layer_index: null
-  knn_k: 64
+  enabled: false
+  mode: isotropic
+  target: hidden_states
+  sigma: 0.0
+  knn_k: 0
   eps_eig: 1.0e-06
   index_backend: torch
   index_metric: euclidean
   index_path: null
   index_n_trees: 20
+
 certification:
-  enabled: true
+  enabled: false
   alpha: 0.001
   n0: 64
   n: 512
   abstain_label: -1
+
 train:
   seed: 73
-  lr: 3.0e-05
+  lr: 2.0e-05
   weight_decay: 0.01
   epochs: 5
   device: cuda
   grad_clip_norm: 1.0
+
 eval:
   max_batches: null
+
 wandb:
   enabled: true
   project: randomized-smoothing-ner

@@ -1,6 +1,7 @@
 # Python environments
 .venv/
 venv/
+.env/
 
 # Python cache and build artifacts
 __pycache__/

@@ -1,0 +1,16 @@
+# Isotropic Gaussian smoothing preset
+# Adds i.i.d. Gaussian noise with fixed sigma in the target space.
+# Works for both image pixels and NER hidden states.
+
+smoothing:
+  enabled: true
+  mode: isotropic
+  target: hidden_states      # hidden_states | input_embeddings | image_tensor
+  sigma: 0.10                # noise std dev
+  layer_index: null          # null = last hidden layer
+  knn_k: 0                   # unused for isotropic
+  eps_eig: 1.0e-06
+  index_backend: torch
+  index_metric: euclidean
+  index_path: null
+  index_n_trees: 20

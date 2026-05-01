@@ -1,0 +1,16 @@
+# Manifold-aware KNN-PCA smoothing preset
+# Fits a local PCA basis from k nearest neighbours in the index, then adds
+# noise in the whitened principal-component space (supervisor-defined logic).
+
+smoothing:
+  enabled: true
+  mode: manifold
+  target: hidden_states      # hidden_states | input_embeddings | image_tensor | latent
+  sigma: 0.10                # scale of noise in whitened PCA space
+  layer_index: null          # null = last hidden layer; set int for intermediate layer
+  knn_k: 64                  # number of neighbours for local PCA
+  eps_eig: 1.0e-06           # floor for eigenvalues (numerical stability)
+  index_backend: annoy       # torch | annoy | faiss
+  index_metric: euclidean
+  index_path: null           # path to pre-built .ann index; null = build online
+  index_n_trees: 20          # annoy tree count (only used when building index)
