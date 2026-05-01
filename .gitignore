@@ -34,3 +34,6 @@ wandb/
 # Generated ANN index artifacts
 notebooks/*.ann
 notebooks/*_indexmap.json
+
+*.ann
+*.faiss

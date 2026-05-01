@@ -1,4 +1,6 @@
-"""Dataloaders for smile classification on CelebA/CelebA-HQ style datasets."""
+"""Dataloaders for smile classification on CelebA/CelebA-HQ style datasets.
+   Link : https://www.kaggle.com/datasets/j53t3r/celebahq for HQ Annotation
+"""
 
 from __future__ import annotations
 

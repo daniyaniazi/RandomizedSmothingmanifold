@@ -1,0 +1,41 @@
+experiment_name: vae_celebahq_64
+output_dir: output/vae_celebahq
+
+dataset:
+  name: CelebA-HQ
+  root_dir: /BS/databases08/CelebA-HQ/data512x512
+  image_dir: train
+  file_extension: .jpg
+  num_workers: 8
+
+dataloader:
+  batch_size: 64
+  shuffle_train: true
+  pin_memory: true
+
+model:
+  in_channels: 3
+  image_size: 64
+  latent_dim: 128
+
+train:
+  seed: 73
+  device: cuda
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0
+  beta: 0.0001
+
+logging:
+  log_every_n_steps: 50
+
+wandb:
+  enabled: false
+  project: randomized-smoothing-vae
+  entity: null
+  run_name: vae_celebahq_64_20ep
+
+checkpoint:
+  save_every_n_epochs: 1
+  keep_last_k: 2
+  base_dir: output/pretrained_model/vae_celebahq_64
