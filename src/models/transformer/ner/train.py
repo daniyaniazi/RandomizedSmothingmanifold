@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
-from seqeval.metrics import accuracy_score, f1_score
+from seqeval.metrics import accuracy_score, f1_score, precision_score, recall_score
 from torch.optim import AdamW
 from tqdm import tqdm
 
@@ -119,6 +117,8 @@ def evaluate_plain(model, loader, device, id2label: dict[int, str], max_batches:
 
     return {
         "loss": float(np.mean(losses)) if losses else 0.0,
+        "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "f1": float(f1_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "token_acc": float(accuracy_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
     }
@@ -149,11 +149,8 @@ def run(cfg_path: str):
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    # Create job-specific output directory
-    slurm_job_id = os.getenv("SLURM_JOB_ID")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_name = f"{cfg.experiment_name}_{slurm_job_id or timestamp}"
-    out_dir = Path(cfg.output_dir) / "jobs" / job_name
+    # Stable output directory for easy reuse at inference time.
+    out_dir = Path(cfg.output_dir) / cfg.experiment_name
     out_dir.mkdir(parents=True, exist_ok=True)
     save_resolved_config(cfg, out_dir / "resolved_config.yaml")
 
@@ -178,6 +175,8 @@ def run(cfg_path: str):
             "epoch": epoch + 1,
             "train_loss": train_loss,
             "val_loss": val_metrics["loss"],
+            "val_precision": val_metrics["precision"],
+            "val_recall": val_metrics["recall"],
             "val_f1": val_metrics["f1"],
             "val_token_acc": val_metrics["token_acc"],
         }

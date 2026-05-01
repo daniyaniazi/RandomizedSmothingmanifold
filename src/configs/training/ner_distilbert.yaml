@@ -50,7 +50,7 @@ train:
   seed: 73
   lr: 3.0e-05
   weight_decay: 0.01
-  epochs: 5
+  epochs: 20
   device: cuda
   grad_clip_norm: 1.0
 
