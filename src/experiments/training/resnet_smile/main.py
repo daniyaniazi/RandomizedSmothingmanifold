@@ -97,6 +97,7 @@ def train(cfg: SmileTrainingConfig) -> None:
     data = build_smile_dataloaders(
         dataset_cfg=cfg.dataset,
         loader_cfg=cfg.dataloader,
+        model_cfg=cfg.model,
     )
     print(f"Train: {len(data.train_loader)} batches | Val: {len(data.val_loader)} batches")
     print(f"Positive-weight: {data.pos_weight:.4f}")
