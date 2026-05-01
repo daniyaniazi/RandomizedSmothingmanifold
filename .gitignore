@@ -29,6 +29,7 @@ local_datasets/
 data/input/
 data/output/
 output/
+output/slurm/
 wandb/
 
 # Generated ANN index artifacts
