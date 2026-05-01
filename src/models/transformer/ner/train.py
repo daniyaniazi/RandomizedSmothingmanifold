@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -122,14 +124,40 @@ def evaluate_plain(model, loader, device, id2label: dict[int, str], max_batches:
     }
 
 
+def _init_wandb(cfg):
+    """Initialise a W&B run if enabled.  Returns the run object or None."""
+    if not cfg.wandb.enabled:
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("W&B enabled in config but package not installed. Continuing without W&B.")
+        return None
+    from dataclasses import asdict
+
+    run = wandb.init(
+        project=cfg.wandb.project,
+        entity=cfg.wandb.entity,
+        name=cfg.wandb.run_name or cfg.experiment_name,
+        config=asdict(cfg),
+    )
+    return run
+
+
 def run(cfg_path: str):
     cfg = load_experiment_config(cfg_path)
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    out_dir = Path(cfg.output_dir)
+    # Create job-specific output directory
+    slurm_job_id = os.getenv("SLURM_JOB_ID")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    job_name = f"{cfg.experiment_name}_{slurm_job_id or timestamp}"
+    out_dir = Path(cfg.output_dir) / "jobs" / job_name
     out_dir.mkdir(parents=True, exist_ok=True)
     save_resolved_config(cfg, out_dir / "resolved_config.yaml")
+
+    wandb_run = _init_wandb(cfg)
 
     data = build_conll_dataloaders(cfg.dataset, cfg.dataloader, cfg.model.encoder_name)
     model = TransformerNER(
@@ -155,9 +183,24 @@ def run(cfg_path: str):
         }
         history.append(row)
         print(json.dumps(row))
+        if wandb_run is not None:
+            wandb_run.log(row)
 
     torch.save(model.state_dict(), out_dir / "model.pt")
-    (out_dir / "history.json").write_text(json.dumps(history, indent=2))
+    
+    # Save history as CSV
+    import csv
+    history_csv_path = out_dir / "training_history.csv"
+    if history:
+        with history_csv_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=history[0].keys())
+            writer.writeheader()
+            writer.writerows(history)
+    
+    (out_dir / "training_summary.json").write_text(json.dumps(history, indent=2))
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 def parse_args():

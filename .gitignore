@@ -27,6 +27,8 @@ Thumbs.db
 local_datasets/
 data/input/
 data/output/
+output/
+wandb/
 
 # Generated ANN index artifacts
 notebooks/*.ann

@@ -9,6 +9,6 @@ annoy
 jupyter
 ipykernel
 transformers
-datasets
+datasets<3
 seqeval
 pyyaml

@@ -69,6 +69,14 @@ class EvalConfig:
 
 
 @dataclass
+class WandbConfig:
+    enabled: bool = False
+    project: str = "randomized-smoothing-ner"
+    entity: Optional[str] = None
+    run_name: Optional[str] = None
+
+
+@dataclass
 class TaskConfig:
     name: str = "ner"
     module: str = "src.tasks.ner.eval_plugin"
@@ -87,3 +95,4 @@ class ExperimentConfig:
     certification: CertificationConfig = field(default_factory=CertificationConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import random
 import signal
 import time
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -64,10 +66,16 @@ class SmileTrainer:
         self.checkpoint_dir = Path(cfg.checkpoint.base_dir) / cfg.dataset.name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        self.history_path = Path(cfg.output_dir) / "training_history.csv"
-        self.summary_path = Path(cfg.output_dir) / "training_summary.json"
-        self.resolved_config_path = Path(cfg.output_dir) / "resolved_smile_config.yaml"
-        Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+        # Create job-specific output directory
+        slurm_job_id = os.getenv("SLURM_JOB_ID")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        job_name = f"{cfg.experiment_name}_{slurm_job_id or timestamp}"
+        self.job_output_dir = Path(cfg.output_dir) / "jobs" / job_name
+        self.job_output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.history_path = self.job_output_dir / "training_history.csv"
+        self.summary_path = self.job_output_dir / "training_summary.json"
+        self.resolved_config_path = self.job_output_dir / "resolved_smile_config.yaml"
         save_smile_resolved_config(cfg, self.resolved_config_path)
 
         self._configure_signal_handlers()

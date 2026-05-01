@@ -48,9 +48,15 @@ train:
   seed: 73
   lr: 3.0e-05
   weight_decay: 0.01
-  epochs: 2
+  epochs: 5
   device: cuda
   grad_clip_norm: 1.0
 
 eval:
   max_batches: null
+
+wandb:
+  enabled: true
+  project: randomized-smoothing-ner
+  entity: null
+  run_name: ner_distilbert_conll2003_5ep

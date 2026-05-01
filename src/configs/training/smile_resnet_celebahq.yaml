@@ -3,11 +3,11 @@ output_dir: output
 
 dataset:
   name: CelebA-HQ
-  root_dir: /BS/databases08/CelebA-HQ
-  image_dir: .
-  annotation_file: list_attr_celeba_hq.csv
+  root_dir: /BS/databases08/CelebA-HQ/data512x512
+  image_dir: train
+  annotation_file: /BS/dniazi_thesis/work/RandomizedSmothingmanifold/input/datasets/celebAHQ/Anno/list_attr_celeba_hq.txt
   partition_file: null
-  annotation_format: csv
+  annotation_format: celeba
   image_column: image
   label_column: smile
   file_extension: .jpg
@@ -31,7 +31,7 @@ model:
 train:
   seed: 73
   device: cuda
-  epochs: 10
+  epochs: 20
   lr: 0.0001
   weight_decay: 0.0001
   grad_clip_norm: 1.0
@@ -42,10 +42,10 @@ logging:
   log_every_n_steps: 50
 
 wandb:
-  enabled: false
+  enabled: true
   project: randomized-smoothing-smile
   entity: null
-  run_name: null
+  run_name: smile_resnet18_celebahq_20ep
 
 checkpoint:
   keep_last_k: 2

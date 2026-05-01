@@ -18,6 +18,7 @@ from .schema import (
     SmoothingConfig,
     TaskConfig,
     TrainConfig,
+    WandbConfig,
 )
 
 
@@ -64,6 +65,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         certification=CertificationConfig(**merged["certification"]),
         train=TrainConfig(**merged["train"]),
         eval=EvalConfig(**merged["eval"]),
+        wandb=WandbConfig(**merged["wandb"]),
     )
 
 
