@@ -43,7 +43,7 @@ def device_from_cfg(name: str) -> torch.device:
 
 
 def compute_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
-    preds = (torch.sigmoid(logits.squeeze(1)) >= 0.5).float()
+    preds = (torch.sigmoid(logits.squeeze(-1)) >= 0.5).float()
     return (preds == targets).float().mean().item()
 
 
@@ -60,7 +60,7 @@ def run_epoch(model, loader, optimizer, criterion, device, train: bool, log_ever
             images = images.to(device)
             labels = labels.to(device)
 
-            logits = model(images).squeeze(1)
+            logits = model(images).squeeze(-1)
             loss = criterion(logits, labels)
 
             if train:
