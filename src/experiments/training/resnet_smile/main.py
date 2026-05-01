@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import random
 from pathlib import Path
 
@@ -131,6 +132,7 @@ def train(cfg: SmileTrainingConfig) -> None:
 
     best_val_acc = 0.0
     saved_ckpts: list[Path] = []
+    history: list[dict] = []
 
     for epoch in range(1, cfg.train.epochs + 1):
         print(f"\n── Epoch {epoch}/{cfg.train.epochs} ──────────────")
@@ -146,6 +148,15 @@ def train(cfg: SmileTrainingConfig) -> None:
 
         print(f"  Train loss={train_loss:.4f}  acc={train_acc:.4f}")
         print(f"  Val   loss={val_loss:.4f}  acc={val_acc:.4f}")
+
+        row = {"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc,
+               "val_loss": val_loss, "val_acc": val_acc}
+        history.append(row)
+
+        # Save training history JSON after every epoch
+        history_path = output_dir / "training_history.json"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(json.dumps(history, indent=2))
 
         if wandb_run is not None:
             wandb_run.log({"epoch": epoch, "train/loss": train_loss, "train/acc": train_acc,
@@ -167,7 +178,20 @@ def train(cfg: SmileTrainingConfig) -> None:
                 if old.exists():
                     old.unlink()
 
-    print(f"\nTraining complete. Best val acc: {best_val_acc:.4f}")
+    # Final evaluation on the test set
+    print("\n── Test set evaluation ──────────────")
+    test_loss, test_acc = run_epoch(
+        model, data.test_loader, optimizer, criterion, device,
+        train=False, log_every=999,
+    )
+    print(f"  Test  loss={test_loss:.4f}  acc={test_acc:.4f}")
+    history.append({"epoch": "test", "test_loss": test_loss, "test_acc": test_acc})
+    history_path.write_text(json.dumps(history, indent=2))
+
+    if wandb_run is not None:
+        wandb_run.log({"test/loss": test_loss, "test/acc": test_acc})
+
+    print(f"\nTraining complete. Best val acc: {best_val_acc:.4f}  |  Test acc: {test_acc:.4f}")
     if wandb_run is not None:
         wandb_run.finish()
 

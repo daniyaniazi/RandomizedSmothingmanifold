@@ -1,5 +1,5 @@
 experiment_name: smile_resnet18_celebahq
-output_dir: output
+output_dir: output/smile_resnet_celebahq
 
 dataset:
   name: CelebA-HQ
@@ -49,4 +49,4 @@ wandb:
 
 checkpoint:
   keep_last_k: 2
-  base_dir: output/pretrained_model
+  base_dir: output/pretrained_model/smile_resnet_celebahq
