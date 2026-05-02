@@ -14,6 +14,7 @@ from .schema import (
     DatasetConfig,
     EvalConfig,
     ExperimentConfig,
+    MaskingConfig,
     ModelConfig,
     SmoothingConfig,
     TaskConfig,
@@ -65,6 +66,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
         certification=CertificationConfig(**merged["certification"]),
         train=TrainConfig(**merged["train"]),
         eval=EvalConfig(**merged["eval"]),
+        masking=MaskingConfig(**merged["masking"]),
         wandb=WandbConfig(**merged["wandb"]),
     )
 

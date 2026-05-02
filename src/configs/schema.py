@@ -69,6 +69,17 @@ class EvalConfig:
 
 
 @dataclass
+class MaskingConfig:
+    enabled: bool = False
+    mode: str = "none"  # none | context | entity | hybrid
+    entity_label_ids: list[int] = field(default_factory=lambda: [1])
+    mask_ratio: float = 0.15
+    max_masks_per_sentence: Optional[int] = None
+    cap_by_batch_avg_tokens: bool = True
+    seed: int = 73
+
+
+@dataclass
 class WandbConfig:
     enabled: bool = False
     project: str = "randomized-smoothing-ner"
@@ -95,4 +106,5 @@ class ExperimentConfig:
     certification: CertificationConfig = field(default_factory=CertificationConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+    masking: MaskingConfig = field(default_factory=MaskingConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)

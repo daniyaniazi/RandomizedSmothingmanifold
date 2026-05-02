@@ -103,6 +103,75 @@ def _write_running_artifacts(out_dir: Path, batch_idx: int, metrics: dict, debug
             )
 
 
+def _masked_batch_and_stats(batch, tokenizer, masking_cfg, rng: np.random.Generator):
+    if masking_cfg is None or not bool(getattr(masking_cfg, "enabled", False)):
+        return batch, {"masked_tokens": 0, "masked_sentences": 0}
+    if getattr(masking_cfg, "mode", "none") == "none":
+        return batch, {"masked_tokens": 0, "masked_sentences": 0}
+
+    mask_token_id = tokenizer.mask_token_id
+    if mask_token_id is None:
+        mask_token_id = tokenizer.unk_token_id
+    if mask_token_id is None:
+        return batch, {"masked_tokens": 0, "masked_sentences": 0}
+
+    input_ids = batch["input_ids"].clone()
+    labels = batch["labels"]
+    attn = batch["attention_mask"]
+
+    valid = (labels != -100) & attn.bool()
+    lengths = valid.sum(dim=1).detach().cpu().numpy().astype(np.int64)
+    batch_avg_tokens = int(np.round(float(np.mean(lengths)))) if len(lengths) else 1
+
+    entity_set = {int(x) for x in getattr(masking_cfg, "entity_label_ids", [1])}
+    mode = getattr(masking_cfg, "mode", "none")
+    ratio = float(getattr(masking_cfg, "mask_ratio", 0.15))
+    max_masks_cfg = getattr(masking_cfg, "max_masks_per_sentence", None)
+    cap_by_avg = bool(getattr(masking_cfg, "cap_by_batch_avg_tokens", True))
+
+    masked_tokens = 0
+    masked_sentences = 0
+
+    for row_idx in range(input_ids.shape[0]):
+        valid_positions = [int(i) for i in torch.where(valid[row_idx])[0].detach().cpu().numpy().tolist()]
+        if not valid_positions:
+            continue
+
+        labels_row = labels[row_idx].detach().cpu().numpy()
+        entity_positions = [i for i in valid_positions if int(labels_row[i]) in entity_set]
+        context_positions = [i for i in valid_positions if int(labels_row[i]) not in entity_set]
+
+        if mode == "context":
+            candidates = context_positions
+        elif mode == "entity":
+            candidates = entity_positions
+        elif mode == "hybrid":
+            candidates = list(dict.fromkeys(context_positions + entity_positions))
+        else:
+            candidates = []
+
+        if not candidates:
+            continue
+
+        requested = max(1, int(round(ratio * len(valid_positions))))
+        if max_masks_cfg is not None:
+            requested = min(requested, int(max_masks_cfg))
+        if cap_by_avg:
+            requested = min(requested, max(1, int(batch_avg_tokens)))
+        requested = min(requested, len(candidates))
+        if requested <= 0:
+            continue
+
+        selected = rng.choice(np.asarray(candidates, dtype=np.int64), size=requested, replace=False)
+        input_ids[row_idx, torch.as_tensor(selected, dtype=torch.long)] = int(mask_token_id)
+        masked_tokens += int(requested)
+        masked_sentences += 1
+
+    masked_batch = dict(batch)
+    masked_batch["input_ids"] = input_ids
+    return masked_batch, {"masked_tokens": int(masked_tokens), "masked_sentences": int(masked_sentences)}
+
+
 def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
     k = max(1, min(k, int(len(counts))))
     idx = np.argsort(counts)[::-1][:k]
@@ -205,15 +274,21 @@ def _save_debug_vote_plot(debug_examples: list[dict], out_dir: Path) -> str | No
 
 
 @torch.no_grad()
-def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches: int | None = None):
+def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches: int | None = None, tokenizer=None, masking_cfg=None):
     _log(f"Starting clean evaluation (max_batches={max_batches})")
     model.eval()
     y_true_all = []
     y_pred_all = []
     losses = []
+    rng = np.random.default_rng(int(getattr(masking_cfg, "seed", 73)))
+    total_masked_tokens = 0
+    total_masked_sentences = 0
     for batch_idx, batch in enumerate(loader):
         if max_batches is not None and batch_idx >= max_batches:
             break
+        batch, mask_stats = _masked_batch_and_stats(batch, tokenizer=tokenizer, masking_cfg=masking_cfg, rng=rng)
+        total_masked_tokens += int(mask_stats["masked_tokens"])
+        total_masked_sentences += int(mask_stats["masked_sentences"])
         batch = move_batch(batch, device)
         out = model(
             input_ids=batch["input_ids"],
@@ -244,6 +319,8 @@ def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches:
         "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "f1": float(f1_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "token_acc": float(accuracy_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "masked_tokens": int(total_masked_tokens),
+        "masked_sentences": int(total_masked_sentences),
     }
 
 
@@ -252,7 +329,7 @@ def evaluate_smoothed(
     model,
     loader,
     device,
-    tokenizer_name: str,
+    tokenizer,
     id2label: dict[int, str],
     token_index_artifacts,
     cfg,
@@ -267,7 +344,6 @@ def evaluate_smoothed(
         f"(max_batches={max_batches}, n={cfg.certification.n}, knn_k={cfg.smoothing.knn_k}, "
         f"sigma={cfg.smoothing.sigma}, resume={resume})"
     )
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     y_true_all = []
     y_pred_all = []
     radii = []
@@ -277,6 +353,9 @@ def evaluate_smoothed(
     sentence_count = 0
     sentence_token_counts = []
     debug_payload = None
+    rng = np.random.default_rng(int(getattr(cfg.masking, "seed", 73)))
+    total_masked_tokens = 0
+    total_masked_sentences = 0
     start_batch = 0
     partial_path = (out_dir / "smoothed.partial.json") if out_dir is not None else None
 
@@ -305,6 +384,9 @@ def evaluate_smoothed(
             continue
         if max_batches is not None and batch_idx >= max_batches:
             break
+        batch, mask_stats = _masked_batch_and_stats(batch, tokenizer=tokenizer, masking_cfg=cfg.masking, rng=rng)
+        total_masked_tokens += int(mask_stats["masked_tokens"])
+        total_masked_sentences += int(mask_stats["masked_sentences"])
         batch = move_batch(batch, device)
         out = sample_smoothed_token_predictions(
             model=model,
@@ -447,6 +529,8 @@ def evaluate_smoothed(
         sentence_token_counts=sentence_token_counts,
         num_samples=cfg.certification.n,
     )
+    metrics["masked_tokens"] = int(total_masked_tokens)
+    metrics["masked_sentences"] = int(total_masked_sentences)
 
     if partial_path is not None and partial_path.exists():
         partial_path.unlink()
@@ -485,6 +569,7 @@ def run(
     save_resolved_config(cfg, out_dir / "resolved_config.yaml")
 
     data = build_conll_dataloaders(cfg.dataset, cfg.dataloader, cfg.model.encoder_name)
+    tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
     model = TransformerNER(
         encoder_name=cfg.model.encoder_name,
         num_labels=len(data.id2label),
@@ -516,14 +601,27 @@ def run(
         f"(backend={cfg.smoothing.index_backend}, metric={cfg.smoothing.index_metric}, "
         f"vectors={len(token_index_artifacts.token_texts)})"
     )
+    _log(
+        "Masking config "
+        f"(enabled={cfg.masking.enabled}, mode={cfg.masking.mode}, ratio={cfg.masking.mask_ratio}, "
+        f"entity_label_ids={cfg.masking.entity_label_ids})"
+    )
 
     target_loader = data.val_loader if split == "val" else data.test_loader
-    clean_metrics = evaluate_clean(model, target_loader, device, data.id2label, cfg.eval.max_batches)
+    clean_metrics = evaluate_clean(
+        model,
+        target_loader,
+        device,
+        data.id2label,
+        cfg.eval.max_batches,
+        tokenizer=tokenizer,
+        masking_cfg=cfg.masking,
+    )
     smooth_metrics, debug_payload = evaluate_smoothed(
         model=model,
         loader=target_loader,
         device=device,
-        tokenizer_name=data.tokenizer_name,
+        tokenizer=tokenizer,
         id2label=data.id2label,
         token_index_artifacts=token_index_artifacts,
         cfg=cfg,
@@ -549,6 +647,13 @@ def run(
             "knn_k": cfg.smoothing.knn_k,
             "layer_index": cfg.smoothing.layer_index,
             "num_samples": cfg.certification.n,
+        },
+        "masking": {
+            "enabled": cfg.masking.enabled,
+            "mode": cfg.masking.mode,
+            "mask_ratio": cfg.masking.mask_ratio,
+            "entity_label_ids": cfg.masking.entity_label_ids,
+            "cap_by_batch_avg_tokens": cfg.masking.cap_by_batch_avg_tokens,
         },
     }
 
