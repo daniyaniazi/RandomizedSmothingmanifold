@@ -46,6 +46,63 @@ def _save_partial_state(partial_path: Path, state: dict) -> None:
     partial_path.write_text(json.dumps(state, indent=2))
 
 
+def _compute_running_metrics(
+    y_true_all,
+    y_pred_all,
+    radii,
+    abstentions: int,
+    total_tokens: int,
+    certified_correct: int,
+    sentence_count: int,
+    sentence_token_counts,
+    num_samples: int,
+) -> dict:
+    return {
+        "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "f1": float(f1_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "token_acc": float(accuracy_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
+        "certified_token_acc": float(certified_correct / total_tokens) if total_tokens else 0.0,
+        "certified_correct_tokens": int(certified_correct),
+        "mean_certified_radius": float(np.mean(radii)) if radii else 0.0,
+        "abstention_rate": float(abstentions / total_tokens) if total_tokens else 0.0,
+        "total_certified_tokens": int(total_tokens),
+        "sentences_evaluated": int(sentence_count),
+        "avg_tokens_per_sentence": float(np.mean(sentence_token_counts)) if sentence_token_counts else 0.0,
+        "max_tokens_in_sentence": int(np.max(sentence_token_counts)) if sentence_token_counts else 0,
+        "noisy_samples_per_token": int(num_samples),
+        "total_noisy_samples": int(total_tokens * num_samples),
+    }
+
+
+def _write_running_artifacts(out_dir: Path, batch_idx: int, metrics: dict, debug_payload: dict | None) -> None:
+    running_metrics_path = out_dir / "running_metrics.json"
+    running_metrics_path.write_text(
+        json.dumps(
+            {
+                "last_completed_batch": int(batch_idx + 1),
+                "running": metrics,
+            },
+            indent=2,
+        )
+    )
+
+    if debug_payload is not None:
+        running_examples_path = out_dir / "running_examples.json"
+        running_examples_path.write_text(json.dumps(debug_payload, indent=2))
+        fig_path = _save_debug_vote_plot(debug_payload.get("examples", []), out_dir)
+        if fig_path is not None:
+            (out_dir / "running_artifacts.json").write_text(
+                json.dumps(
+                    {
+                        "running_examples": str(running_examples_path),
+                        "running_vote_distribution": str(fig_path),
+                    },
+                    indent=2,
+                )
+            )
+
+
 def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
     k = max(1, min(k, int(len(counts))))
     idx = np.argsort(counts)[::-1][:k]
@@ -263,7 +320,7 @@ def evaluate_smoothed(
             layer_index=cfg.smoothing.layer_index,
             alpha_conf=cfg.certification.alpha,
             abstain_label=cfg.certification.abstain_label,
-            collect_debug=batch_idx == 0,
+            collect_debug=batch_idx == start_batch,
         )
 
         pred_ids = out.pred_ids.detach().cpu().numpy()
@@ -293,7 +350,7 @@ def evaluate_smoothed(
                 sentence_count += 1
                 sentence_token_counts.append(len(l_seq))
 
-        if batch_idx == 0 and out.debug is not None:
+        if batch_idx == start_batch and out.debug is not None:
             debug_rows = []
             for row in out.debug:
                 debug_row = []
@@ -319,6 +376,18 @@ def evaluate_smoothed(
             }
 
         if partial_path is not None and ((batch_idx + 1) % max(1, save_every_batches) == 0):
+            running_metrics = _compute_running_metrics(
+                y_true_all=y_true_all,
+                y_pred_all=y_pred_all,
+                radii=radii,
+                abstentions=abstentions,
+                total_tokens=total_tokens,
+                certified_correct=certified_correct,
+                sentence_count=sentence_count,
+                sentence_token_counts=sentence_token_counts,
+                num_samples=cfg.certification.n,
+            )
+
             _save_partial_state(
                 partial_path,
                 {
@@ -332,16 +401,33 @@ def evaluate_smoothed(
                     "sentence_count": int(sentence_count),
                     "sentence_token_counts": sentence_token_counts,
                     "debug_payload": debug_payload,
+                    "running_metrics": running_metrics,
                 },
             )
+            if out_dir is not None:
+                _write_running_artifacts(out_dir=out_dir, batch_idx=batch_idx, metrics=running_metrics, debug_payload=debug_payload)
             _log(
                 "Saved partial state "
                 f"at batch {batch_idx + 1}: tokens={total_tokens}, cert_acc="
                 f"{(certified_correct / total_tokens) if total_tokens else 0.0:.4f}, "
-                f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}"
+                f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}; "
+                f"running_metrics={out_dir / 'running_metrics.json' if out_dir is not None else 'n/a'}"
             )
 
         if (batch_idx + 1) % max(1, log_every_batches) == 0:
+            running_metrics = _compute_running_metrics(
+                y_true_all=y_true_all,
+                y_pred_all=y_pred_all,
+                radii=radii,
+                abstentions=abstentions,
+                total_tokens=total_tokens,
+                certified_correct=certified_correct,
+                sentence_count=sentence_count,
+                sentence_token_counts=sentence_token_counts,
+                num_samples=cfg.certification.n,
+            )
+            if out_dir is not None:
+                _write_running_artifacts(out_dir=out_dir, batch_idx=batch_idx, metrics=running_metrics, debug_payload=debug_payload)
             _log(
                 "Smoothed eval progress: "
                 f"batch={batch_idx + 1}, tokens={total_tokens}, cert_acc="
@@ -350,22 +436,17 @@ def evaluate_smoothed(
                 f"mean_radius={float(np.mean(radii)) if radii else 0.0:.4f}"
             )
 
-    metrics = {
-        "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
-        "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
-        "f1": float(f1_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
-        "token_acc": float(accuracy_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
-        "certified_token_acc": float(certified_correct / total_tokens) if total_tokens else 0.0,
-        "certified_correct_tokens": int(certified_correct),
-        "mean_certified_radius": float(np.mean(radii)) if radii else 0.0,
-        "abstention_rate": float(abstentions / total_tokens) if total_tokens else 0.0,
-        "total_certified_tokens": int(total_tokens),
-        "sentences_evaluated": int(sentence_count),
-        "avg_tokens_per_sentence": float(np.mean(sentence_token_counts)) if sentence_token_counts else 0.0,
-        "max_tokens_in_sentence": int(np.max(sentence_token_counts)) if sentence_token_counts else 0,
-        "noisy_samples_per_token": int(cfg.certification.n),
-        "total_noisy_samples": int(total_tokens * cfg.certification.n),
-    }
+    metrics = _compute_running_metrics(
+        y_true_all=y_true_all,
+        y_pred_all=y_pred_all,
+        radii=radii,
+        abstentions=abstentions,
+        total_tokens=total_tokens,
+        certified_correct=certified_correct,
+        sentence_count=sentence_count,
+        sentence_token_counts=sentence_token_counts,
+        num_samples=cfg.certification.n,
+    )
 
     if partial_path is not None and partial_path.exists():
         partial_path.unlink()
