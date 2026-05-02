@@ -564,9 +564,16 @@ def run(
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    out_dir = Path(cfg.output_dir) / f"{cfg.experiment_name}_smoothing_eval"
+    mask_mode = "no_mask"
+    if hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False)):
+        mode_value = str(getattr(cfg.masking, "mode", "none")).strip().lower()
+        if mode_value and mode_value != "none":
+            mask_mode = mode_value
+
+    out_dir = Path(cfg.output_dir) / mask_mode / f"{cfg.experiment_name}_smoothing_eval"
     out_dir.mkdir(parents=True, exist_ok=True)
     save_resolved_config(cfg, out_dir / "resolved_config.yaml")
+    _log(f"Output directory resolved to {out_dir}")
 
     data = build_conll_dataloaders(cfg.dataset, cfg.dataloader, cfg.model.encoder_name)
     tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
