@@ -1,5 +1,5 @@
 experiment_name: ner_conll2003_bert_certify
-output_dir: outputs/ner_conll2003_bert_certify
+output_dir: output/ner_conll2003_bert_certify
 
 task:
   name: ner
@@ -29,11 +29,11 @@ smoothing:
   target: hidden_states
   sigma: 0.20
   layer_index: null        # use last hidden layer
-  knn_k: 64
+  knn_k: 32
   eps_eig: 1.0e-06
   index_backend: annoy
   index_metric: euclidean
-  index_path: /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/ner_conll2003_bert/ner_bert_conll2003_finetune/token_index_train/annoy_index.ann
+  index_path: /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/ner_conll2003_bert/ner_bert_conll2003_finetune/token_index_train/euclidean/annoy_index.ann
   index_n_trees: 50
 
 certification:
@@ -52,7 +52,7 @@ train:
   grad_clip_norm: 1.0
 
 eval:
-  max_batches: null        # run on full test split
+  max_batches: 50        # subset run for faster turnaround
 
 wandb:
   enabled: false

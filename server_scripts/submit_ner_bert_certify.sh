@@ -36,6 +36,8 @@ CONFIG="${PROJECT_ROOT}/src/configs/experiments/ner_conll2003_bert_certify.yaml"
 python -m src.eval.run_ner_experiment \
     --config   "$CONFIG"     \
     --checkpoint "$CHECKPOINT" \
-    --split    test
+    --split    test \
+    --resume \
+    --save-every-batches 2
 
 echo "Done: $(date)"

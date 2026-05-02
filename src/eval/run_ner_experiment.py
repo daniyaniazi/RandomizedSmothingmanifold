@@ -11,6 +11,7 @@ This script keeps the workflow simple and modular:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 
@@ -25,6 +26,24 @@ from src.indexing import build_or_load_token_index
 from src.models.transformer.ner.model import TransformerNER
 from src.models.transformer.ner.train import device_from_cfg, move_batch, set_seed
 from src.smoothing.ner_token_manifold import sample_smoothed_token_predictions
+
+
+def _log(msg: str) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+
+def _load_partial_state(partial_path: Path) -> dict | None:
+    if not partial_path.exists():
+        return None
+    try:
+        return json.loads(partial_path.read_text())
+    except Exception:
+        return None
+
+
+def _save_partial_state(partial_path: Path, state: dict) -> None:
+    partial_path.write_text(json.dumps(state, indent=2))
 
 
 def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
@@ -130,6 +149,7 @@ def _save_debug_vote_plot(debug_examples: list[dict], out_dir: Path) -> str | No
 
 @torch.no_grad()
 def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches: int | None = None):
+    _log(f"Starting clean evaluation (max_batches={max_batches})")
     model.eval()
     y_true_all = []
     y_pred_all = []
@@ -158,6 +178,9 @@ def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches:
                 y_pred_all.append(p_seq)
                 y_true_all.append(l_seq)
 
+        if (batch_idx + 1) % 10 == 0:
+            _log(f"Clean eval progress: processed {batch_idx + 1} batches")
+
     return {
         "loss": float(np.mean(losses)) if losses else 0.0,
         "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
@@ -168,7 +191,25 @@ def evaluate_clean(model, loader, device, id2label: dict[int, str], max_batches:
 
 
 @torch.no_grad()
-def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict[int, str], token_index_artifacts, cfg, max_batches: int | None = None):
+def evaluate_smoothed(
+    model,
+    loader,
+    device,
+    tokenizer_name: str,
+    id2label: dict[int, str],
+    token_index_artifacts,
+    cfg,
+    max_batches: int | None = None,
+    out_dir: Path | None = None,
+    resume: bool = False,
+    save_every_batches: int = 5,
+    log_every_batches: int = 1,
+):
+    _log(
+        "Starting smoothed evaluation "
+        f"(max_batches={max_batches}, n={cfg.certification.n}, knn_k={cfg.smoothing.knn_k}, "
+        f"sigma={cfg.smoothing.sigma}, resume={resume})"
+    )
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     y_true_all = []
     y_pred_all = []
@@ -179,8 +220,32 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
     sentence_count = 0
     sentence_token_counts = []
     debug_payload = None
+    start_batch = 0
+    partial_path = (out_dir / "smoothed.partial.json") if out_dir is not None else None
+
+    if resume and partial_path is not None:
+        state = _load_partial_state(partial_path)
+        if state is not None:
+            start_batch = int(state.get("next_batch_idx", 0))
+            y_true_all = state.get("y_true_all", [])
+            y_pred_all = state.get("y_pred_all", [])
+            radii = [float(x) for x in state.get("radii", [])]
+            abstentions = int(state.get("abstentions", 0))
+            total_tokens = int(state.get("total_tokens", 0))
+            certified_correct = int(state.get("certified_correct", 0))
+            sentence_count = int(state.get("sentence_count", 0))
+            sentence_token_counts = [int(x) for x in state.get("sentence_token_counts", [])]
+            debug_payload = state.get("debug_payload", None)
+            _log(
+                "Loaded partial state "
+                f"from batch {start_batch} (tokens={total_tokens}, certified_correct={certified_correct})"
+            )
+        else:
+            _log("Resume requested but no valid partial state found; starting from batch 0")
 
     for batch_idx, batch in enumerate(loader):
+        if batch_idx < start_batch:
+            continue
         if max_batches is not None and batch_idx >= max_batches:
             break
         batch = move_batch(batch, device)
@@ -253,6 +318,38 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
                 "examples": _build_debug_examples(batch=batch, out=out, tokenizer=tokenizer, id2label=id2label),
             }
 
+        if partial_path is not None and ((batch_idx + 1) % max(1, save_every_batches) == 0):
+            _save_partial_state(
+                partial_path,
+                {
+                    "next_batch_idx": int(batch_idx + 1),
+                    "y_true_all": y_true_all,
+                    "y_pred_all": y_pred_all,
+                    "radii": radii,
+                    "abstentions": int(abstentions),
+                    "total_tokens": int(total_tokens),
+                    "certified_correct": int(certified_correct),
+                    "sentence_count": int(sentence_count),
+                    "sentence_token_counts": sentence_token_counts,
+                    "debug_payload": debug_payload,
+                },
+            )
+            _log(
+                "Saved partial state "
+                f"at batch {batch_idx + 1}: tokens={total_tokens}, cert_acc="
+                f"{(certified_correct / total_tokens) if total_tokens else 0.0:.4f}, "
+                f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}"
+            )
+
+        if (batch_idx + 1) % max(1, log_every_batches) == 0:
+            _log(
+                "Smoothed eval progress: "
+                f"batch={batch_idx + 1}, tokens={total_tokens}, cert_acc="
+                f"{(certified_correct / total_tokens) if total_tokens else 0.0:.4f}, "
+                f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}, "
+                f"mean_radius={float(np.mean(radii)) if radii else 0.0:.4f}"
+            )
+
     metrics = {
         "precision": float(precision_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
         "recall": float(recall_score(y_true_all, y_pred_all)) if y_true_all else 0.0,
@@ -269,10 +366,35 @@ def evaluate_smoothed(model, loader, device, tokenizer_name: str, id2label: dict
         "noisy_samples_per_token": int(cfg.certification.n),
         "total_noisy_samples": int(total_tokens * cfg.certification.n),
     }
+
+    if partial_path is not None and partial_path.exists():
+        partial_path.unlink()
+        _log(f"Removed partial state after successful completion: {partial_path}")
+
+    _log(
+        "Completed smoothed evaluation: "
+        f"tokens={total_tokens}, certified_correct={certified_correct}, "
+        f"cert_acc={(certified_correct / total_tokens) if total_tokens else 0.0:.4f}, "
+        f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}"
+    )
+
     return metrics, debug_payload
 
 
-def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index: bool = False):
+def run(
+    cfg_path: str,
+    checkpoint_path: str,
+    split: str = "test",
+    rebuild_index: bool = False,
+    resume: bool = False,
+    save_every_batches: int = 5,
+    log_every_batches: int = 1,
+):
+    _log(
+        "Run started with "
+        f"cfg={cfg_path}, checkpoint={checkpoint_path}, split={split}, "
+        f"rebuild_index={rebuild_index}, resume={resume}"
+    )
     cfg = load_experiment_config(cfg_path)
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
@@ -292,6 +414,7 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
     state = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
+    _log(f"Loaded checkpoint and model on device={device}")
 
     token_index_dir = out_dir / "token_index"
     token_index_artifacts = build_or_load_token_index(
@@ -307,6 +430,11 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
         n_trees=cfg.smoothing.index_n_trees,
         rebuild=rebuild_index,
     )
+    _log(
+        "Token index ready "
+        f"(backend={cfg.smoothing.index_backend}, metric={cfg.smoothing.index_metric}, "
+        f"vectors={len(token_index_artifacts.token_texts)})"
+    )
 
     target_loader = data.val_loader if split == "val" else data.test_loader
     clean_metrics = evaluate_clean(model, target_loader, device, data.id2label, cfg.eval.max_batches)
@@ -319,6 +447,10 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
         token_index_artifacts=token_index_artifacts,
         cfg=cfg,
         max_batches=cfg.eval.max_batches,
+        out_dir=out_dir,
+        resume=resume,
+        save_every_batches=save_every_batches,
+        log_every_batches=log_every_batches,
     )
 
     summary = {
@@ -340,12 +472,15 @@ def run(cfg_path: str, checkpoint_path: str, split: str = "test", rebuild_index:
     }
 
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
+    _log(f"Wrote metrics to {(out_dir / 'metrics.json')}" )
     if debug_payload is not None:
         (out_dir / "debug_neighbors.json").write_text(json.dumps(debug_payload, indent=2))
+        _log(f"Wrote debug neighbors to {(out_dir / 'debug_neighbors.json')}")
         fig_path = _save_debug_vote_plot(debug_payload.get("examples", []), out_dir)
         if fig_path is not None:
             summary["artifacts"] = {"debug_vote_distribution": fig_path}
             (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
+            _log(f"Wrote debug figure to {fig_path}")
 
     print(json.dumps(summary, indent=2))
 
@@ -356,9 +491,20 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained NER model.pt")
     parser.add_argument("--split", type=str, default="test", choices=["val", "test"], help="Dataset split to evaluate")
     parser.add_argument("--rebuild-index", action="store_true", help="Recompute token index from train split")
+    parser.add_argument("--resume", action="store_true", help="Resume smoothed eval from out_dir/smoothed.partial.json if present")
+    parser.add_argument("--save-every-batches", type=int, default=5, help="Persist partial smoothed state every N batches")
+    parser.add_argument("--log-every-batches", type=int, default=1, help="Log smoothed progress every N batches")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    run(args.config, args.checkpoint, split=args.split, rebuild_index=args.rebuild_index)
+    run(
+        args.config,
+        args.checkpoint,
+        split=args.split,
+        rebuild_index=args.rebuild_index,
+        resume=args.resume,
+        save_every_batches=args.save_every_batches,
+        log_every_batches=args.log_every_batches,
+    )
