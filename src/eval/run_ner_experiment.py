@@ -583,13 +583,15 @@ def run(
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    mask_mode = "no_mask"
-    if hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False)):
+    mode_value = "none"
+    masking_enabled = hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False))
+    if masking_enabled:
         mode_value = str(getattr(cfg.masking, "mode", "none")).strip().lower()
-        if mode_value and mode_value != "none":
-            mask_mode = mode_value
 
-    out_dir = Path(cfg.output_dir) / mask_mode / f"{cfg.experiment_name}_smoothing_eval"
+    if masking_enabled and mode_value and mode_value != "none":
+        out_dir = Path(cfg.output_dir) / "certify" / "masking" / mode_value
+    else:
+        out_dir = Path(cfg.output_dir) / "certify"
     out_dir.mkdir(parents=True, exist_ok=True)
     save_resolved_config(cfg, out_dir / "resolved_config.yaml")
     _log(f"Output directory resolved to {out_dir}")

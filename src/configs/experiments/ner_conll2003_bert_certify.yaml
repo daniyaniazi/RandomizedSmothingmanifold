@@ -1,5 +1,5 @@
 experiment_name: ner_conll2003_bert_certify
-output_dir: output/ner_conll2003_bert_certify
+output_dir: output/ner_conll2003_bert
 
 task:
   name: ner
