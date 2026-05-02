@@ -172,6 +172,24 @@ def _masked_batch_and_stats(batch, tokenizer, masking_cfg, rng: np.random.Genera
     return masked_batch, {"masked_tokens": int(masked_tokens), "masked_sentences": int(masked_sentences)}
 
 
+def _resolve_token_index_artifacts_dir(cfg, default_dir: Path) -> Path:
+    configured = getattr(cfg.smoothing, "index_artifacts_dir", None)
+    if configured:
+        return Path(configured)
+
+    idx_path = getattr(cfg.smoothing, "index_path", None)
+    if idx_path:
+        probe = Path(idx_path).parent
+        for _ in range(4):
+            if (probe / "token_vectors.npz").exists() and (probe / "token_metadata.json").exists():
+                return probe
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+
+    return default_dir
+
+
 def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
     k = max(1, min(k, int(len(counts))))
     idx = np.argsort(counts)[::-1][:k]
@@ -555,12 +573,13 @@ def run(
     save_every_batches: int = 5,
     log_every_batches: int = 1,
 ):
+    cfg = load_experiment_config(cfg_path)
+    effective_rebuild_index = bool(rebuild_index or getattr(cfg.smoothing, "refresh_index", False))
     _log(
         "Run started with "
         f"cfg={cfg_path}, checkpoint={checkpoint_path}, split={split}, "
-        f"rebuild_index={rebuild_index}, resume={resume}"
+        f"rebuild_index={effective_rebuild_index}, resume={resume}"
     )
-    cfg = load_experiment_config(cfg_path)
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
@@ -589,7 +608,8 @@ def run(
     model.eval()
     _log(f"Loaded checkpoint and model on device={device}")
 
-    token_index_dir = out_dir / "token_index"
+    token_index_dir = _resolve_token_index_artifacts_dir(cfg, out_dir / "token_index")
+    token_index_dir.mkdir(parents=True, exist_ok=True)
     token_index_artifacts = build_or_load_token_index(
         out_dir=token_index_dir,
         model=model,
@@ -601,12 +621,12 @@ def run(
         metric=cfg.smoothing.index_metric,
         index_path=cfg.smoothing.index_path,
         n_trees=cfg.smoothing.index_n_trees,
-        rebuild=rebuild_index,
+        rebuild=effective_rebuild_index,
     )
     _log(
         "Token index ready "
         f"(backend={cfg.smoothing.index_backend}, metric={cfg.smoothing.index_metric}, "
-        f"vectors={len(token_index_artifacts.token_texts)})"
+        f"vectors={len(token_index_artifacts.token_texts)}, artifacts_dir={token_index_dir})"
     )
     _log(
         "Masking config "
@@ -654,6 +674,7 @@ def run(
             "knn_k": cfg.smoothing.knn_k,
             "layer_index": cfg.smoothing.layer_index,
             "num_samples": cfg.certification.n,
+            "refresh_index": effective_rebuild_index,
         },
         "masking": {
             "enabled": cfg.masking.enabled,

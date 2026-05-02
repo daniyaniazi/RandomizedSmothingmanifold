@@ -41,6 +41,8 @@ class SmoothingConfig:
     index_backend: str = "torch"  # torch | annoy | faiss
     index_metric: str = "euclidean"
     index_path: Optional[str] = None
+    index_artifacts_dir: Optional[str] = None
+    refresh_index: bool = False
     index_n_trees: int = 20
 
 

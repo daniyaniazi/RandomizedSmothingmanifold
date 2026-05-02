@@ -34,6 +34,7 @@ smoothing:
   index_backend: annoy
   index_metric: euclidean
   index_path: /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/ner_conll2003_bert/ner_bert_conll2003_finetune/token_index_train/euclidean/annoy_index.ann
+  refresh_index: false
   index_n_trees: 50
 
 certification:
