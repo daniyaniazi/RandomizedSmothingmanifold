@@ -224,32 +224,66 @@ def _build_debug_examples(batch, out, tokenizer, id2label: dict[int, str], max_s
         sentence_true_labels = [id2label[int(labels[row_idx, i])] for i in valid_positions]
         sentence_pred_labels = [id2label[int(pred_ids[row_idx, i])] for i in valid_positions]
 
+        # Per-token neighbour and reconstruction lists (aligned with valid_positions)
+        sampled_neighbour_tokens: list[list[str]] = []
+        sampled_neighbour_labels: list[list[str]] = []
+        # nearest_manifold_token: text of the closest genuine train-set neighbour
+        # (proxy for the manifold neighbourhood; actual classification uses a PCA-noisy sample, not this token)
+        nearest_manifold_tokens: list[str | None] = []
+        # majority_vote_labels: classifier output after voting over n noisy manifold samples
+        majority_vote_labels: list[str] = []
+
         token_debug = []
-        for token_idx in valid_positions[:max_tokens]:
+        for pos_rank, token_idx in enumerate(valid_positions):
             cert = out.certificates[row_idx][token_idx]
             dbg = None
             if out.debug is not None and row_idx < len(out.debug):
                 dbg = out.debug[row_idx][token_idx]
 
-            token_debug.append(
-                {
-                    "token_position": int(token_idx),
-                    "token": tokenizer.convert_ids_to_tokens([int(input_ids[row_idx, token_idx])])[0],
-                    "true_label": id2label[int(labels[row_idx, token_idx])],
-                    "pred_label_majority_vote": id2label[int(pred_ids[row_idx, token_idx])],
-                    "certified": bool(cert is not None and not cert.abstained),
-                    "certified_radius": float(cert.radius) if cert is not None else 0.0,
-                    "vote_top5": _top_vote_labels(vote_counts[row_idx, token_idx], id2label, k=5),
-                    "top10_nearest_neighbor_tokens": [] if dbg is None else dbg.neighbor_tokens,
-                    "top10_nearest_neighbor_labels": [] if dbg is None else [id2label[int(x)] for x in dbg.neighbor_labels],
-                    "reconstruction_l2": None if dbg is None else float(dbg.reconstruction_l2),
-                    "noisy_l2": None if dbg is None else float(dbg.noisy_l2),
-                }
-            )
+            # Skip index 0: it is the query token itself (distance=0 self-match in train index)
+            raw_nbr_tokens = [] if dbg is None else list(dbg.neighbor_tokens)
+            raw_nbr_labels = [] if dbg is None else [id2label[int(x)] for x in dbg.neighbor_labels]
+            nbr_tokens = raw_nbr_tokens[1:]
+            nbr_labels = raw_nbr_labels[1:]
+
+            sampled_neighbour_tokens.append(nbr_tokens)
+            sampled_neighbour_labels.append(nbr_labels)
+            # Top-1 genuine neighbour text — proxy for the manifold region (NOT the noisy vector used for classification)
+            nearest_manifold_tokens.append(nbr_tokens[0] if nbr_tokens else None)
+            # Majority vote over n noisy PCA-manifold samples fed through the classifier
+            majority_vote_labels.append(id2label[int(pred_ids[row_idx, token_idx])])
+
+            if token_idx in valid_positions[:max_tokens]:
+                token_debug.append(
+                    {
+                        "token_position": int(token_idx),
+                        "token": tokenizer.convert_ids_to_tokens([int(input_ids[row_idx, token_idx])])[0],
+                        "true_label": id2label[int(labels[row_idx, token_idx])],
+                        "pred_label_majority_vote": id2label[int(pred_ids[row_idx, token_idx])],
+                        "certified": bool(cert is not None and not cert.abstained),
+                        "certified_radius": float(cert.radius) if cert is not None else 0.0,
+                        "vote_top5": _top_vote_labels(vote_counts[row_idx, token_idx], id2label, k=5),
+                        "top10_nearest_neighbor_tokens": nbr_tokens,
+                        "top10_nearest_neighbor_labels": nbr_labels,
+                        "reconstruction_l2": None if dbg is None else float(dbg.reconstruction_l2),
+                        "noisy_l2": None if dbg is None else float(dbg.noisy_l2),
+                        # nearest train token to the actual noisy sample injected into the transformer
+                        "noisy_nearest_token": None if dbg is None else dbg.noisy_nearest_token,
+                        "noisy_nearest_label": None if dbg is None else (id2label.get(int(dbg.noisy_nearest_label)) if dbg.noisy_nearest_label >= 0 else None),
+                    }
+                )
 
         examples.append(
             {
                 "sentence_index_in_batch": int(row_idx),
+                # flat per-sentence aligned lists (the format requested)
+                "original_tokens": sentence_tokens,
+                "original_labels": sentence_true_labels,
+                "sampled_neighbour_tokens": sampled_neighbour_tokens,
+                "sampled_neighbour_labels": sampled_neighbour_labels,
+                "nearest_manifold_tokens": nearest_manifold_tokens,
+                "majority_vote_labels": majority_vote_labels,
+                # legacy fields kept for compatibility
                 "sentence_tokens": sentence_tokens,
                 "sentence_true_labels": sentence_true_labels,
                 "sentence_pred_labels_majority_vote": sentence_pred_labels,
@@ -467,6 +501,8 @@ def evaluate_smoothed(
                                 "reconstruction_l2": item.reconstruction_l2,
                                 "noisy_l2": item.noisy_l2,
                                 "explained_variance": item.explained_variance,
+                                "noisy_nearest_token": item.noisy_nearest_token,
+                                "noisy_nearest_label": item.noisy_nearest_label,
                             }
                         )
                 debug_rows.append(debug_row)

@@ -30,6 +30,9 @@ class TokenDebugRecord:
     reconstruction_l2: float
     noisy_l2: float
     explained_variance: list[float]
+    # Nearest train-token to the actual noisy sample (where the smoothed point landed)
+    noisy_nearest_token: str = ""
+    noisy_nearest_label: int = -1
 
 
 @dataclass
@@ -66,7 +69,9 @@ def smooth_token_tensor(
                 continue
 
             anchor = hidden[batch_idx, token_idx].detach().cpu().numpy().astype(np.float32)
-            neighbors = neighbor_vectors(neighbor_index, k=knn_k, vector=anchor)
+            # Request k+1 neighbours and drop index 0 (self-match at distance 0)
+            all_neighbors = neighbor_vectors(neighbor_index, k=knn_k + 1, vector=anchor)
+            neighbors = all_neighbors[1:]
             pca = fit_local_pca(neighbors, eps_eig=eps_eig)
             recon = reconstruct_from_local_pca(anchor, neighbors, eps_eig=eps_eig)
             noisy = sample_manifold_point(anchor, neighbors, sigma=sigma, eps_eig=eps_eig)
@@ -81,9 +86,25 @@ def smooth_token_tensor(
                 neighbor_ids = np.asarray([], dtype=np.int64)
                 try:
                     from .workflow import query_index
-                    neighbor_ids = query_index(neighbor_index, k=knn_k, vector=anchor)
+                    # k+1 to drop self-match at index 0
+                    all_ids = query_index(neighbor_index, k=knn_k + 1, vector=anchor)
+                    neighbor_ids = all_ids[1:]
                 except Exception:
                     neighbor_ids = np.arange(min(knn_k, len(token_texts)), dtype=np.int64)
+
+                # Query index with the noisy vector to find where the smoothed point landed
+                noisy_nbr_id = -1
+                noisy_nearest_tok = ""
+                noisy_nearest_lbl = -1
+                try:
+                    from .workflow import query_index
+                    noisy_ids = query_index(neighbor_index, k=1, vector=noisy)
+                    if len(noisy_ids) > 0:
+                        noisy_nbr_id = int(noisy_ids[0])
+                        noisy_nearest_tok = token_texts[noisy_nbr_id]
+                        noisy_nearest_lbl = int(label_ids[noisy_nbr_id])
+                except Exception:
+                    pass
 
                 tok = tokenizer.convert_ids_to_tokens([int(input_ids[batch_idx, token_idx].item())])[0]
                 debug_row[token_idx] = TokenDebugRecord(
@@ -94,6 +115,8 @@ def smooth_token_tensor(
                     reconstruction_l2=float(np.linalg.norm(recon - anchor)),
                     noisy_l2=float(np.linalg.norm(noisy - anchor)),
                     explained_variance=pca.evals[: min(10, len(pca.evals))].tolist(),
+                    noisy_nearest_token=noisy_nearest_tok,
+                    noisy_nearest_label=noisy_nearest_lbl,
                 )
         if collect_debug and debug_rows is not None and debug_row is not None:
             debug_rows.append(debug_row)
