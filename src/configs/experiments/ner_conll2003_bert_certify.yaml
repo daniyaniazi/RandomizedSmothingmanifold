@@ -41,7 +41,7 @@ certification:
   enabled: true
   alpha: 0.001             # Clopper-Pearson confidence level
   n0: 64                   # pilot samples for label selection
-  n: 50                   # samples for certification per token
+  n: 100                   # samples for certification per token
   abstain_label: -1
 
 train:
@@ -53,8 +53,8 @@ train:
   grad_clip_norm: 1.0
 
 eval:
-  max_batches: 20        # subset run for faster turnaround
-  test_subset: 0.4       # fraction of test set to use (0.1 = 10%), null for full test set
+  max_batches: 50        # subset run for faster turnaround
+  test_subset: 0.7       # fraction of test set to use (0.1 = 10%), null for full test set
 
 wandb:
   enabled: true
