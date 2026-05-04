@@ -73,13 +73,30 @@ def fit_local_pca(neighbors: torch.Tensor | np.ndarray, eps_eig: float = 1e-6) -
 
 
 def whiten(vector: torch.Tensor | np.ndarray | list[float], pca: LocalPCA) -> np.ndarray:
+    """Whiten a vector using local PCA.
+    
+    - Project the ORIGINAL vector (not centered) into whitened space
+    - X_whitened = X @ Vt.T / sqrt(ev)
+    
+    Note: The mean is NOT subtracted before whitening. The mean is only used
+    during unwhitening to shift the result back to the neighborhood center.
+    """
     x = to_numpy_array(vector).reshape(-1)
-    centered = x - pca.mean
-    return (centered @ pca.evecs) / np.sqrt(pca.evals)
+    # evecs has shape (D, K) where K = n_components, evals has shape (K,)
+    # Project and scale: X @ V / sqrt(ev)
+    return (x @ pca.evecs) / np.sqrt(pca.evals)
 
 
 def unwhiten(white_vector: torch.Tensor | np.ndarray | list[float], pca: LocalPCA) -> np.ndarray:
+    """Unwhiten a vector back to original space.
+
+    - Scale by sqrt(ev), project back, then ADD the neighborhood mean
+    - X_unwhitened = (X_white * sqrt(ev)) @ V.T + mean
+    
+    This shifts the result towards the neighborhood center.
+    """
     z = to_numpy_array(white_vector).reshape(-1)
+    # Scale, project back, and add mean
     return (z * np.sqrt(pca.evals)) @ pca.evecs.T + pca.mean
 
 
