@@ -449,6 +449,175 @@ def sample_latent_manifold(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Visualization
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _tensor_to_pil(tensor: torch.Tensor, mean: List[float] = None, std: List[float] = None) -> Image.Image:
+    """Convert normalized tensor (C,H,W) to PIL Image."""
+    if mean is None:
+        mean = CELEBA_MEAN
+    if std is None:
+        std = CELEBA_STD
+    
+    # Denormalize
+    img = tensor.clone()
+    for c in range(3):
+        img[c] = img[c] * std[c] + mean[c]
+    img = img.clamp(0, 1)
+    
+    # Convert to PIL
+    img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return Image.fromarray(img_np)
+
+
+def save_sample_visualization(
+    viz_dir: Path,
+    sample_idx: int,
+    img_tensor: torch.Tensor,
+    label: int,
+    pred: int,
+    radius: float,
+    abstained: bool,
+    index: NeighborIndex,
+    vae: ConvVAE | None,
+    cfg,
+    device: torch.device,
+    n_noisy_samples: int = 5,
+) -> None:
+    """Save visualization grid for a single sample.
+    
+    Grid layout:
+    Row 1: Original | Neighbor 1 | Neighbor 2 | Neighbor 3 | Neighbor 4
+    Row 2: Isotropic noisy 1-5
+    Row 3: Manifold noisy 1-5 (smoothed)
+    Row 4: Classifier input 1-5 (after classifier transform)
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
+    except ImportError:
+        _log("matplotlib not available, skipping visualization")
+        return
+    
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    fig = plt.figure(figsize=(15, 12))
+    gs = gridspec.GridSpec(4, 5, figure=fig, hspace=0.3, wspace=0.1)
+    
+    # Row labels
+    row_labels = ["Original + Neighbors", "Isotropic Noise", "Manifold Smooth", "Classifier Input"]
+    
+    # Get flat vector for neighbor lookup
+    if cfg.smoothing.mode == "latent" and vae is not None:
+        with torch.no_grad():
+            x = img_tensor.unsqueeze(0).to(device)
+            mu, _ = vae.encode(x)
+            query_vec = mu.squeeze(0).cpu().numpy().astype(np.float32)
+    else:
+        query_vec = img_tensor.numpy().flatten().astype(np.float32)
+    
+    # Row 1: Original + 4 neighbors
+    ax = fig.add_subplot(gs[0, 0])
+    ax.imshow(_tensor_to_pil(img_tensor))
+    ax.set_title(f"Original\nLabel: {'smile' if label else 'no smile'}", fontsize=9)
+    ax.axis("off")
+    
+    # Get neighbors
+    if index is not None and hasattr(index.index, "get_nns_by_vector"):
+        nn_ids = index.index.get_nns_by_vector(query_vec.tolist(), 5)
+        for i, nn_id in enumerate(nn_ids[1:5]):  # skip self
+            ax = fig.add_subplot(gs[0, i + 1])
+            nn_vec = np.array(index.index.get_item_vector(nn_id), dtype=np.float32)
+            
+            if cfg.smoothing.mode == "latent" and vae is not None:
+                # Decode latent neighbor
+                with torch.no_grad():
+                    z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
+                    nn_img = vae.decode(z_t).squeeze(0).cpu()
+                ax.imshow(_tensor_to_pil(nn_img))
+            else:
+                # Reshape pixel neighbor
+                nn_img = torch.from_numpy(nn_vec.reshape(img_tensor.shape))
+                ax.imshow(_tensor_to_pil(nn_img))
+            ax.set_title(f"Neighbor {i+1}", fontsize=9)
+            ax.axis("off")
+    
+    # Row 2: Isotropic noisy samples
+    for i in range(n_noisy_samples):
+        ax = fig.add_subplot(gs[1, i])
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            noisy = sample_latent_isotropic(img_tensor, vae, cfg.smoothing.sigma, device)
+        else:
+            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+        ax.imshow(_tensor_to_pil(noisy))
+        if i == 0:
+            ax.set_ylabel("Isotropic", fontsize=10)
+        ax.set_title(f"σ={cfg.smoothing.sigma}", fontsize=8)
+        ax.axis("off")
+    
+    # Row 3: Manifold smoothed samples
+    for i in range(n_noisy_samples):
+        ax = fig.add_subplot(gs[2, i])
+        if cfg.smoothing.mode == "latent" and vae is not None and index is not None:
+            noisy = sample_latent_manifold(img_tensor, vae, index, cfg.smoothing.sigma, 
+                                           cfg.smoothing.knn_k, device, cfg.smoothing.eps_eig)
+        elif index is not None:
+            noisy = sample_pixel_manifold(img_tensor, index, cfg.smoothing.sigma,
+                                          cfg.smoothing.knn_k, cfg.smoothing.eps_eig)
+        else:
+            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+        ax.imshow(_tensor_to_pil(noisy))
+        if i == 0:
+            ax.set_ylabel("Manifold", fontsize=10)
+        ax.set_title(f"k={cfg.smoothing.knn_k}", fontsize=8)
+        ax.axis("off")
+    
+    # Row 4: What classifier sees (after transform)
+    classifier_transform = transforms.Compose([
+        transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+    
+    for i in range(n_noisy_samples):
+        ax = fig.add_subplot(gs[3, i])
+        if cfg.smoothing.mode == "latent" and vae is not None and index is not None:
+            noisy = sample_latent_manifold(img_tensor, vae, index, cfg.smoothing.sigma,
+                                           cfg.smoothing.knn_k, device, cfg.smoothing.eps_eig)
+        elif index is not None:
+            noisy = sample_pixel_manifold(img_tensor, index, cfg.smoothing.sigma,
+                                          cfg.smoothing.knn_k, cfg.smoothing.eps_eig)
+        else:
+            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+        
+        # Convert to classifier input
+        noisy_clipped = noisy.clamp(-1, 1) * 0.5 + 0.5
+        noisy_pil = transforms.ToPILImage()(noisy_clipped)
+        # Show the resized version (what classifier sees)
+        resized = noisy_pil.resize((cfg.model.input_size, cfg.model.input_size))
+        ax.imshow(resized)
+        if i == 0:
+            ax.set_ylabel("Clf Input", fontsize=10)
+        ax.set_title(f"{cfg.model.input_size}x{cfg.model.input_size}", fontsize=8)
+        ax.axis("off")
+    
+    # Title with certification result
+    cert_status = "ABSTAIN" if abstained else ("✓ CORRECT" if pred == label else "✗ WRONG")
+    pred_label = "smile" if pred == 1 else "no smile"
+    fig.suptitle(
+        f"Sample {sample_idx} | True: {'smile' if label else 'no smile'} | "
+        f"Pred: {pred_label} | Radius: {radius:.4f} | {cert_status}",
+        fontsize=12, fontweight="bold"
+    )
+    
+    # Save
+    fig_path = viz_dir / f"sample_{sample_idx:04d}.png"
+    plt.savefig(fig_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Certification
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -684,6 +853,24 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             if cert.pred == label:
                 total_correct += 1
         
+        # Save visualization for selected samples
+        if cfg.output.save_visualizations and idx < cfg.output.num_viz_samples:
+            viz_dir = paths.experiment_dir / "visualizations"
+            current_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
+            save_sample_visualization(
+                viz_dir=viz_dir,
+                sample_idx=idx,
+                img_tensor=img_tensor,
+                label=label,
+                pred=cert.pred,
+                radius=cert.radius,
+                abstained=cert.abstained,
+                index=current_index,
+                vae=vae,
+                cfg=cfg,
+                device=device,
+            )
+        
         # Save checkpoint periodically
         if checkpoint_every > 0 and (idx + 1) % checkpoint_every == 0:
             _save_partial_state(
@@ -768,8 +955,97 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 for r in results:
                     writer.writerow({k: r[k] for k in fieldnames})
             _log(f"Results: {csv_path}")
+        
+        # Save summary visualization
+        if cfg.output.save_visualizations:
+            _save_summary_visualization(paths.experiment_dir, results, metrics, cfg)
     
     return {"metrics": metrics, "results": results, "paths": paths}
+
+
+def _save_summary_visualization(out_dir: Path, results: List[Dict], metrics: Dict, cfg) -> None:
+    """Save aggregate visualization plots."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _log("matplotlib not available, skipping summary visualization")
+        return
+    
+    viz_dir = out_dir / "visualizations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract data
+    radii = [r["radius"] for r in results if not r["abstained"]]
+    correct_radii = [r["radius"] for r in results if r["certified_correct"]]
+    wrong_radii = [r["radius"] for r in results if not r["abstained"] and not r["correct"]]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    
+    # 1. Radius distribution
+    ax = axes[0, 0]
+    ax.hist(radii, bins=30, alpha=0.7, label=f"All certified (n={len(radii)})", color="blue")
+    ax.axvline(np.mean(radii), color="blue", linestyle="--", label=f"Mean: {np.mean(radii):.4f}")
+    ax.set_xlabel("Certified Radius")
+    ax.set_ylabel("Count")
+    ax.set_title("Distribution of Certified Radii")
+    ax.legend()
+    
+    # 2. Correct vs Wrong radius comparison
+    ax = axes[0, 1]
+    if correct_radii and wrong_radii:
+        ax.hist(correct_radii, bins=20, alpha=0.6, label=f"Correct (n={len(correct_radii)})", color="green")
+        ax.hist(wrong_radii, bins=20, alpha=0.6, label=f"Wrong (n={len(wrong_radii)})", color="red")
+        ax.set_xlabel("Certified Radius")
+        ax.set_ylabel("Count")
+        ax.set_title("Radius: Correct vs Wrong Predictions")
+        ax.legend()
+    else:
+        ax.text(0.5, 0.5, "No wrong predictions", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Radius: Correct vs Wrong")
+    
+    # 3. Class-wise accuracy bar chart
+    ax = axes[1, 0]
+    classes = ["No Smile", "Smile"]
+    accuracies = [metrics["class_no_smile_accuracy"] * 100, metrics["class_smile_accuracy"] * 100]
+    counts = [metrics["class_no_smile_total"], metrics["class_smile_total"]]
+    bars = ax.bar(classes, accuracies, color=["coral", "lightgreen"])
+    ax.set_ylabel("Certified Accuracy (%)")
+    ax.set_title("Class-wise Certified Accuracy")
+    ax.set_ylim(0, 100)
+    for bar, acc, cnt in zip(bars, accuracies, counts):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                f"{acc:.1f}%\n(n={cnt})", ha="center", va="bottom", fontsize=9)
+    
+    # 4. Summary text
+    ax = axes[1, 1]
+    ax.axis("off")
+    summary_text = f"""
+    Experiment: {cfg.experiment_name}
+    Dataset: {cfg.dataset.name}
+    
+    Smoothing: {cfg.smoothing.mode} ({'manifold' if cfg.smoothing.use_manifold else 'isotropic'})
+    Sigma: {cfg.smoothing.sigma}
+    K-NN: {cfg.smoothing.knn_k}
+    MC Samples: {cfg.smoothing.n_samples}
+    
+    Total Test Samples: {metrics['total_test_samples']}
+    Certified: {metrics['certified_samples']}
+    Abstained: {metrics['abstained_samples']} ({metrics['abstain_rate']*100:.1f}%)
+    
+    Certified Accuracy: {metrics['certified_accuracy']*100:.2f}%
+    Mean Radius: {metrics['mean_radius']:.4f}
+    Median Radius: {metrics['median_radius']:.4f}
+    Max Radius: {metrics['max_radius']:.4f}
+    """
+    ax.text(0.1, 0.9, summary_text, transform=ax.transAxes, fontsize=10,
+            verticalalignment="top", fontfamily="monospace",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+    
+    plt.tight_layout()
+    fig_path = viz_dir / "summary.png"
+    plt.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    _log(f"Summary visualization: {fig_path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
