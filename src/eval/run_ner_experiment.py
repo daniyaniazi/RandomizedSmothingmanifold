@@ -14,9 +14,11 @@ import argparse
 from datetime import datetime
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, Subset
 from seqeval.metrics import accuracy_score, f1_score, precision_score, recall_score
 from transformers import AutoTokenizer
 
@@ -35,6 +37,49 @@ LABEL_ORDER = ["O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MIS
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+def _create_subset_loader(
+    loader: DataLoader,
+    subset_fraction: float | None,
+    seed: int = 73,
+) -> DataLoader:
+    """Create a DataLoader with a deterministic subset of the dataset.
+    
+    Uses the FIRST N% of samples (not random) to ensure reproducibility
+    and consistency across runs.
+    
+    Args:
+        loader: Original DataLoader
+        subset_fraction: Fraction of dataset to use (0.0-1.0), None for full dataset
+        seed: Random seed (unused, kept for API compatibility)
+    
+    Returns:
+        DataLoader with subset, or original loader if subset_fraction is None or >= 1.0
+    """
+    if subset_fraction is None or subset_fraction >= 1.0:
+        return loader
+    
+    dataset = loader.dataset
+    n_total = len(dataset)
+    n_subset = max(1, int(n_total * subset_fraction))
+    
+    # Use FIRST n_subset samples (deterministic, not random)
+    # This ensures same samples across runs and matches train/test expectations
+    indices = list(range(n_subset))
+    
+    subset_dataset = Subset(dataset, indices)
+    
+    _log(f"Created deterministic subset: first {n_subset}/{n_total} samples ({subset_fraction*100:.1f}%)")
+    
+    return DataLoader(
+        subset_dataset,
+        batch_size=loader.batch_size,
+        shuffle=False,  # Don't shuffle for eval
+        num_workers=loader.num_workers,
+        pin_memory=loader.pin_memory,
+        collate_fn=loader.collate_fn,
+    )
 
 
 def _load_partial_state(partial_path: Path) -> dict | None:
@@ -809,6 +854,27 @@ def run(
     )
 
     target_loader = data.val_loader if split == "val" else data.test_loader
+    original_dataset_size = len(target_loader.dataset)
+    original_num_batches = len(target_loader)
+    
+    # Apply test subset if configured
+    test_subset = getattr(cfg.eval, "test_subset", None)
+    if test_subset is not None and test_subset < 1.0:
+        target_loader = _create_subset_loader(target_loader, test_subset, seed=cfg.train.seed)
+    
+    subset_dataset_size = len(target_loader.dataset)
+    subset_num_batches = len(target_loader)
+    effective_batches = cfg.eval.max_batches if cfg.eval.max_batches else subset_num_batches
+    effective_batches = min(effective_batches, subset_num_batches)
+    
+    _log(
+        f"Evaluation dataset: {split} split | "
+        f"Original: {original_dataset_size} sentences ({original_num_batches} batches) | "
+        f"Using: {subset_dataset_size} sentences ({subset_num_batches} batches) | "
+        f"test_subset={test_subset}, max_batches={cfg.eval.max_batches} | "
+        f"Effective: ~{effective_batches * cfg.dataloader.batch_size} sentences ({effective_batches} batches)"
+    )
+    
     clean_metrics = evaluate_clean(
         model,
         target_loader,
