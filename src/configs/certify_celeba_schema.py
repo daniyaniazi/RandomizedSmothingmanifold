@@ -26,6 +26,7 @@ class CertifyModelConfig:
     checkpoint_path: str = ""
     input_size: int = 224
     num_classes: int = 1  # binary for smile
+    dropout: float = 0.5  # must match training config to load weights correctly
 
 
 @dataclass

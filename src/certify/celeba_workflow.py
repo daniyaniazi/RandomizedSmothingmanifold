@@ -528,6 +528,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     classifier = build_resnet_classifier(
         name=cfg.model.name,
         pretrained=False,
+        dropout=cfg.model.dropout,  # must match training config
         num_classes=cfg.model.num_classes,
     ).to(device)
     

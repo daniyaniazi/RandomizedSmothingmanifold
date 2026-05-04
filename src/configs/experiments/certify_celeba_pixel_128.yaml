@@ -21,6 +21,7 @@ model:
   checkpoint_path: output/pretrained_model/smile_resnet_celeba/best.pt
   input_size: 224
   num_classes: 1
+  dropout: 0.1  # must match training config
 
 vae:
   enabled: false  # not needed for pixel smoothing
