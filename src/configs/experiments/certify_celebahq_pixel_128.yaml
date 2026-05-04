@@ -47,3 +47,9 @@ output:
   save_per_sample: true
   save_visualizations: true
   num_viz_samples: 10
+
+# Checkpoint settings for long-running jobs
+checkpoint:
+  enabled: true
+  checkpoint_every: 100  # save progress every 100 samples
+  resume: false  # set to true to resume from last checkpoint

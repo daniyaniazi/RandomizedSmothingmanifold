@@ -40,7 +40,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -67,6 +67,78 @@ from src.smoothing.workflow import fit_local_pca, whiten, unwhiten
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint/Resume Support
+# ─────────────────────────────────────────────────────────────────────────────
+
+PARTIAL_STATE_FILE = "results.partial.json"
+
+
+def _get_partial_state_path(experiment_dir: Path) -> Path:
+    """Get path to partial state checkpoint file."""
+    return experiment_dir / PARTIAL_STATE_FILE
+
+
+def _save_partial_state(
+    experiment_dir: Path,
+    next_idx: int,
+    results: List[Dict],
+    total_correct: int,
+    total_certified: int,
+    total_abstained: int,
+    radii: List[float],
+    num_test_samples: int,
+) -> None:
+    """Save partial certification state to disk for resumption."""
+    state = {
+        "next_idx": next_idx,
+        "results": results,
+        "total_correct": total_correct,
+        "total_certified": total_certified,
+        "total_abstained": total_abstained,
+        "radii": radii,
+        "num_test_samples": num_test_samples,
+        "timestamp": datetime.now().isoformat(),
+    }
+    
+    path = _get_partial_state_path(experiment_dir)
+    path.write_text(json.dumps(state, indent=2))
+    _log(f"Checkpoint saved: {path} (processed {next_idx}/{num_test_samples} samples)")
+
+
+def _load_partial_state(experiment_dir: Path, num_test_samples: int) -> Dict | None:
+    """Load partial certification state from disk if available."""
+    path = _get_partial_state_path(experiment_dir)
+    
+    if not path.exists():
+        return None
+    
+    try:
+        state = json.loads(path.read_text())
+        
+        # Validate state consistency
+        if state.get("num_test_samples") != num_test_samples:
+            _log(f"Warning: Partial state has {state.get('num_test_samples')} samples, "
+                 f"but current run has {num_test_samples}. Ignoring checkpoint.")
+            return None
+        
+        _log(f"Found checkpoint: {path}")
+        _log(f"  - Processed: {state['next_idx']}/{num_test_samples} samples")
+        _log(f"  - Timestamp: {state.get('timestamp', 'unknown')}")
+        return state
+    except (json.JSONDecodeError, KeyError) as e:
+        _log(f"Warning: Failed to load partial state: {e}. Starting fresh.")
+        return None
+
+
+def _remove_partial_state(experiment_dir: Path) -> None:
+    """Remove partial state file after successful completion."""
+    path = _get_partial_state_path(experiment_dir)
+    if path.exists():
+        path.unlink()
+        _log(f"Removed checkpoint file: {path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -515,18 +587,39 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     ])
     
     # ─────────────────────────────────────────────────────────────────────────
-    # Run certification on TEST set
+    # Run certification on TEST set (with checkpoint support)
     # ─────────────────────────────────────────────────────────────────────────
     _log(f"Certifying {len(test_samples)} TEST samples")
     _log(f"Mode: {cfg.smoothing.mode}, Manifold: {cfg.smoothing.use_manifold}, Sigma: {cfg.smoothing.sigma}")
     
+    # Initialize state (or resume from checkpoint)
     results: List[Dict] = []
     total_correct = 0
     total_certified = 0
     total_abstained = 0
     radii: List[float] = []
+    start_idx = 0
     
-    for idx, (img_path, label) in enumerate(tqdm(test_samples, desc="Certifying (test)")):
+    # Check for existing checkpoint if resume is enabled
+    if cfg.checkpoint.resume:
+        partial_state = _load_partial_state(paths.experiment_dir, len(test_samples))
+        if partial_state is not None:
+            start_idx = partial_state["next_idx"]
+            results = partial_state["results"]
+            total_correct = partial_state["total_correct"]
+            total_certified = partial_state["total_certified"]
+            total_abstained = partial_state["total_abstained"]
+            radii = partial_state["radii"]
+            _log(f"Resuming from sample {start_idx}/{len(test_samples)}")
+    
+    if start_idx > 0:
+        _log(f"Skipping first {start_idx} already-processed samples")
+    
+    # Certification loop with checkpointing
+    checkpoint_every = cfg.checkpoint.checkpoint_every if cfg.checkpoint.enabled else 0
+    
+    for idx in tqdm(range(start_idx, len(test_samples)), desc="Certifying (test)", initial=start_idx, total=len(test_samples)):
+        img_path, label = test_samples[idx]
         img = Image.open(img_path).convert("RGB")
         img_tensor = smooth_transform(img)
         
@@ -578,6 +671,22 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             radii.append(cert.radius)
             if cert.pred == label:
                 total_correct += 1
+        
+        # Save checkpoint periodically
+        if checkpoint_every > 0 and (idx + 1) % checkpoint_every == 0:
+            _save_partial_state(
+                experiment_dir=paths.experiment_dir,
+                next_idx=idx + 1,
+                results=results,
+                total_correct=total_correct,
+                total_certified=total_certified,
+                total_abstained=total_abstained,
+                radii=radii,
+                num_test_samples=len(test_samples),
+            )
+    
+    # Remove partial state after successful completion
+    _remove_partial_state(paths.experiment_dir)
     
     # ─────────────────────────────────────────────────────────────────────────
     # Compute metrics

@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from .certify_celeba_schema import (
+    CertifyCheckpointConfig,
     CertifyConfig,
     CertifyDatasetConfig,
     CertifyIndexConfig,
@@ -38,6 +39,7 @@ def load_certify_config(path: str | Path) -> CertifyConfig:
         smoothing=_dict_to_dataclass(CertifySmoothingConfig, raw.get("smoothing")),
         index=_dict_to_dataclass(CertifyIndexConfig, raw.get("index")),
         output=_dict_to_dataclass(CertifyOutputConfig, raw.get("output")),
+        checkpoint=_dict_to_dataclass(CertifyCheckpointConfig, raw.get("checkpoint")),
     )
 
 

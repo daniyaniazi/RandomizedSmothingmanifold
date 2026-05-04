@@ -14,7 +14,7 @@ dataset:
   annotation_format: celeba
   file_extension: .jpg
   num_workers: 4
-  subset_size: 1000
+  subset_size: 100
 
 model:
   name: resnet18
@@ -32,7 +32,7 @@ vae:
 smoothing:
   mode: latent
   sigma: 0.5
-  n_samples: 100
+  n_samples: 50
   knn_k: 64
   eps_eig: 1.0e-06
   use_manifold: true
@@ -51,3 +51,9 @@ output:
   save_per_sample: true
   save_visualizations: true
   num_viz_samples: 10
+
+# Checkpoint settings for long-running jobs
+checkpoint:
+  enabled: true
+  checkpoint_every: 50  # save progress every 100 samples
+  resume: false  # set to true to resume from last checkpoint

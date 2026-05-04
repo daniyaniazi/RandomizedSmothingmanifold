@@ -199,14 +199,18 @@ def _resolve_eval_output_dir(cfg, resolved_index_path: str | None) -> Path:
     metric = str(getattr(cfg.smoothing, "index_metric", "euclidean")).strip().lower()
     layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
     index_name = Path(resolved_index_path).name if resolved_index_path else "in_memory_index"
+    
+    # Include sigma in path to avoid overwriting results from different sigma experiments
+    sigma = float(getattr(cfg.smoothing, "sigma", 0.25))
+    sigma_tag = f"sigma_{sigma:.2f}".replace(".", "_")
 
     masking_enabled = hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False))
     masking_mode = str(getattr(cfg.masking, "mode", "none")).strip().lower() if masking_enabled else "none"
 
-    base_dir = Path(cfg.output_dir) / "certify" / layer / metric / backend / index_name
+    base_dir = Path(cfg.output_dir) / "certify" / layer / metric / backend / index_name / sigma_tag
 
     if masking_enabled and masking_mode and masking_mode != "none":
-        return Path(cfg.output_dir) / "masked_certify" / layer / metric / backend / index_name / masking_mode
+        return Path(cfg.output_dir) / "masked_certify" / layer / metric / backend / index_name / masking_mode / sigma_tag
     return base_dir
 
 

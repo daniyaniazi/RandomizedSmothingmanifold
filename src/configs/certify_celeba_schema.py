@@ -67,6 +67,14 @@ class CertifyOutputConfig:
 
 
 @dataclass
+class CertifyCheckpointConfig:
+    """Checkpoint configuration for long-running certification jobs."""
+    enabled: bool = True
+    checkpoint_every: int = 100  # save partial state every N samples
+    resume: bool = False  # resume from partial state if available
+
+
+@dataclass
 class CertifyConfig:
     experiment_name: str = "celeba_certify"
     seed: int = 73
@@ -79,3 +87,4 @@ class CertifyConfig:
     smoothing: CertifySmoothingConfig = field(default_factory=CertifySmoothingConfig)
     index: CertifyIndexConfig = field(default_factory=CertifyIndexConfig)
     output: CertifyOutputConfig = field(default_factory=CertifyOutputConfig)
+    checkpoint: CertifyCheckpointConfig = field(default_factory=CertifyCheckpointConfig)
