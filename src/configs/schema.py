@@ -70,6 +70,7 @@ class TrainConfig:
 @dataclass
 class EvalConfig:
     max_batches: Optional[int] = None
+    test_subset: Optional[float] = None  # fraction of test set to use (0.0-1.0), None for full
 
 
 @dataclass
