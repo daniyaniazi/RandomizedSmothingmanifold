@@ -1,0 +1,44 @@
+# VAE training config for CelebA at 128x128 resolution
+# Standard CelebA images are 178x218 (aligned) - 128 is a good target
+
+experiment_name: vae_celeba_128
+output_dir: output/vae_celeba_128
+
+dataset:
+  name: CelebA
+  root_dir: /BS/databases08/CelebA
+  image_dir: img_align_celeba
+  file_extension: .jpg
+  num_workers: 8
+
+dataloader:
+  batch_size: 64  # Reduced due to larger image size
+  shuffle_train: true
+  pin_memory: true
+
+model:
+  in_channels: 3
+  image_size: 128  # Higher resolution to preserve more detail
+  latent_dim: 256  # Larger latent space for more capacity
+
+train:
+  seed: 73
+  device: cuda
+  epochs: 30
+  lr: 0.0005  # Slightly lower for stability
+  weight_decay: 0.0
+  beta: 0.0001
+
+logging:
+  log_every_n_steps: 50
+
+wandb:
+  enabled: false
+  project: randomized-smoothing-vae
+  entity: null
+  run_name: vae_celeba_128_30ep
+
+checkpoint:
+  save_every_n_epochs: 1
+  keep_last_k: 2
+  base_dir: output/pretrained_model/vae_celeba_128

@@ -1,0 +1,45 @@
+# VAE training config for CelebA-HQ at ORIGINAL 512x512 resolution
+# WARNING: Requires ~40-80GB GPU memory depending on batch size
+# Recommended: A100 80GB or multi-GPU setup
+
+experiment_name: vae_celebahq_512
+output_dir: output/vae_celebahq_512
+
+dataset:
+  name: CelebA-HQ
+  root_dir: /BS/databases08/CelebA-HQ/data512x512
+  image_dir: train
+  file_extension: .jpg
+  num_workers: 8
+
+dataloader:
+  batch_size: 4  # Very small batch due to memory constraints
+  shuffle_train: true
+  pin_memory: true
+
+model:
+  in_channels: 3
+  image_size: 512  # ORIGINAL resolution
+  latent_dim: 1024  # Large latent space for full resolution
+
+train:
+  seed: 73
+  device: cuda
+  epochs: 100  # More epochs needed with small batch
+  lr: 0.0001  # Lower LR for stability with small batch
+  weight_decay: 0.0
+  beta: 0.00001  # Very low beta - prioritize reconstruction
+
+logging:
+  log_every_n_steps: 100
+
+wandb:
+  enabled: false
+  project: randomized-smoothing-vae
+  entity: null
+  run_name: vae_celebahq_512_full
+
+checkpoint:
+  save_every_n_epochs: 5
+  keep_last_k: 3
+  base_dir: output/pretrained_model/vae_celebahq_512

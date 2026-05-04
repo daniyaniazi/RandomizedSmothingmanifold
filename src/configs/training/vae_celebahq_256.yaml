@@ -1,0 +1,44 @@
+# VAE training config for CelebA-HQ at 256x256 resolution
+# CelebA-HQ images are 512x512 - 256 captures more detail while being trainable
+
+experiment_name: vae_celebahq_256
+output_dir: output/vae_celebahq_256
+
+dataset:
+  name: CelebA-HQ
+  root_dir: /BS/databases08/CelebA-HQ/data512x512
+  image_dir: train
+  file_extension: .jpg
+  num_workers: 8
+
+dataloader:
+  batch_size: 16  # Smaller batch for larger images
+  shuffle_train: true
+  pin_memory: true
+
+model:
+  in_channels: 3
+  image_size: 256  # Higher resolution for HQ dataset
+  latent_dim: 512  # Larger latent space for higher resolution
+
+train:
+  seed: 73
+  device: cuda
+  epochs: 50  # More epochs for HQ training
+  lr: 0.0003  # Lower learning rate for stability
+  weight_decay: 0.0
+  beta: 0.00005  # Lower beta to prioritize reconstruction quality
+
+logging:
+  log_every_n_steps: 50
+
+wandb:
+  enabled: false
+  project: randomized-smoothing-vae
+  entity: null
+  run_name: vae_celebahq_256_50ep
+
+checkpoint:
+  save_every_n_epochs: 2
+  keep_last_k: 3
+  base_dir: output/pretrained_model/vae_celebahq_256
