@@ -42,6 +42,8 @@ class SmoothingConfig:
     index_metric: str = "euclidean"
     index_path: Optional[str] = None
     index_artifacts_dir: Optional[str] = None
+    token_embeddings_dir: Optional[str] = None
+    index_source_split: str = "train"  # train | val | test
     refresh_index: bool = False
     index_n_trees: int = 20
 

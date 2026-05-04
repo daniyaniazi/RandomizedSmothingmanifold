@@ -28,6 +28,10 @@ from src.models.transformer.ner.train import device_from_cfg, move_batch, set_se
 from src.smoothing.ner_token_manifold import sample_smoothed_token_predictions
 
 
+ENTITY_ORDER = ["O", "PER", "ORG", "LOC", "MISC"]
+LABEL_ORDER = ["O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MISC", "I-MISC"]
+
+
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
@@ -190,6 +194,69 @@ def _resolve_token_index_artifacts_dir(cfg, default_dir: Path) -> Path:
     return default_dir
 
 
+def _resolve_eval_output_dir(cfg, resolved_index_path: str | None) -> Path:
+    backend = str(getattr(cfg.smoothing, "index_backend", "torch")).strip().lower()
+    metric = str(getattr(cfg.smoothing, "index_metric", "euclidean")).strip().lower()
+    layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
+    index_name = Path(resolved_index_path).name if resolved_index_path else "in_memory_index"
+
+    masking_enabled = hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False))
+    masking_mode = str(getattr(cfg.masking, "mode", "none")).strip().lower() if masking_enabled else "none"
+
+    base_dir = Path(cfg.output_dir) / "certify" / layer / metric / backend / index_name
+
+    if masking_enabled and masking_mode and masking_mode != "none":
+        return Path(cfg.output_dir) / "masked_certify" / layer / metric / backend / index_name / masking_mode
+    return base_dir
+
+
+def _layer_tag(layer_index: int | None) -> str:
+    return "last" if layer_index is None else f"layer_{int(layer_index)}"
+
+
+def _resolve_token_embedding_dir(cfg) -> Path:
+    configured = getattr(cfg.smoothing, "token_embeddings_dir", None)
+    if configured:
+        return Path(configured)
+
+    legacy_configured = getattr(cfg.smoothing, "index_artifacts_dir", None)
+    if legacy_configured:
+        return Path(legacy_configured)
+
+    source_split = str(getattr(cfg.smoothing, "index_source_split", "train")).strip().lower()
+    layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
+    return Path(cfg.output_dir) / "token_layer_embeddings" / source_split / layer
+
+
+def _resolve_shared_index_root(cfg) -> Path:
+    source_split = str(getattr(cfg.smoothing, "index_source_split", "train")).strip().lower()
+    layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
+    metric = str(getattr(cfg.smoothing, "index_metric", "euclidean")).strip().lower()
+    backend = str(getattr(cfg.smoothing, "index_backend", "torch")).strip().lower()
+
+    return Path(cfg.output_dir) / "indexes" / source_split / layer / metric / backend
+
+
+def _default_index_file_name(backend: str) -> str | None:
+    if backend == "annoy":
+        return "annoy_index.ann"
+    if backend == "faiss":
+        return "faiss_index.faiss"
+    return None
+
+
+def _resolve_index_path(cfg, token_index_dir: Path) -> str | None:
+    configured = getattr(cfg.smoothing, "index_path", None)
+    if configured:
+        return str(Path(configured))
+
+    backend = str(getattr(cfg.smoothing, "index_backend", "torch")).strip().lower()
+    file_name = _default_index_file_name(backend)
+    if file_name is None:
+        return None
+    return str(token_index_dir / file_name)
+
+
 def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -> list[dict[str, float]]:
     k = max(1, min(k, int(len(counts))))
     idx = np.argsort(counts)[::-1][:k]
@@ -206,6 +273,16 @@ def _top_vote_labels(counts: np.ndarray, id2label: dict[int, str], k: int = 5) -
             }
         )
     return rows
+
+
+def _entity_category(label: str) -> str:
+    if label == "O":
+        return "O"
+    if "-" in label:
+        prefix, suffix = label.split("-", 1)
+        if prefix in {"B", "I", "E", "S", "U", "L"}:
+            return suffix
+    return label
 
 
 def _build_debug_examples(batch, out, tokenizer, id2label: dict[int, str], max_sentences: int = 3, max_tokens: int = 8):
@@ -282,6 +359,10 @@ def _build_debug_examples(batch, out, tokenizer, id2label: dict[int, str], max_s
                 "sampled_neighbour_tokens": sampled_neighbour_tokens,
                 "sampled_neighbour_labels": sampled_neighbour_labels,
                 "nearest_manifold_tokens": nearest_manifold_tokens,
+                "reconstructed_noisy_sentence_tokens": [
+                    token if token is not None else sentence_tokens[idx]
+                    for idx, token in enumerate(nearest_manifold_tokens)
+                ],
                 "majority_vote_labels": majority_vote_labels,
                 # legacy fields kept for compatibility
                 "sentence_tokens": sentence_tokens,
@@ -405,11 +486,24 @@ def evaluate_smoothed(
     sentence_count = 0
     sentence_token_counts = []
     debug_payload = None
+    debug_examples_all: list[dict] = []
     rng = np.random.default_rng(int(getattr(cfg.masking, "seed", 73)))
     total_masked_tokens = 0
     total_masked_sentences = 0
     start_batch = 0
     partial_path = (out_dir / "smoothed.partial.json") if out_dir is not None else None
+    cert_by_label: dict[str, dict[str, int]] = {}
+    cert_by_entity: dict[str, dict[str, int]] = {}
+
+    def _touch_stats(container: dict[str, dict[str, int]], key: str) -> dict[str, int]:
+        if key not in container:
+            container[key] = {
+                "total_tokens": 0,
+                "certified_tokens": 0,
+                "abstained_tokens": 0,
+                "certified_correct_tokens": 0,
+            }
+        return container[key]
 
     if resume and partial_path is not None:
         state = _load_partial_state(partial_path)
@@ -454,7 +548,7 @@ def evaluate_smoothed(
             layer_index=cfg.smoothing.layer_index,
             alpha_conf=cfg.certification.alpha,
             abstain_label=cfg.certification.abstain_label,
-            collect_debug=batch_idx == start_batch,
+            collect_debug=True,
         )
 
         pred_ids = out.pred_ids.detach().cpu().numpy()
@@ -468,11 +562,28 @@ def evaluate_smoothed(
                     continue
                 cert = out.certificates[row_idx][token_idx]
                 if cert is not None:
+                    true_label = id2label[int(l)]
+                    entity_label = _entity_category(true_label)
+                    by_label = _touch_stats(cert_by_label, true_label)
+                    by_entity = _touch_stats(cert_by_entity, entity_label)
+
                     radii.append(float(cert.radius))
                     abstentions += int(cert.abstained)
                     total_tokens += 1
+                    by_label["total_tokens"] += 1
+                    by_entity["total_tokens"] += 1
+
+                    if cert.abstained:
+                        by_label["abstained_tokens"] += 1
+                        by_entity["abstained_tokens"] += 1
+                    else:
+                        by_label["certified_tokens"] += 1
+                        by_entity["certified_tokens"] += 1
+
                     if (not cert.abstained) and int(p) == int(l):
                         certified_correct += 1
+                        by_label["certified_correct_tokens"] += 1
+                        by_entity["certified_correct_tokens"] += 1
                 if cert is not None and cert.abstained:
                     p_seq.append("ABSTAIN")
                 else:
@@ -484,32 +595,19 @@ def evaluate_smoothed(
                 sentence_count += 1
                 sentence_token_counts.append(len(l_seq))
 
-        if batch_idx == start_batch and out.debug is not None:
-            debug_rows = []
-            for row in out.debug:
-                debug_row = []
-                for item in row:
-                    if item is None:
-                        debug_row.append(None)
-                    else:
-                        debug_row.append(
-                            {
-                                "token": item.token,
-                                "true_label": item.true_label,
-                                "neighbor_tokens": item.neighbor_tokens,
-                                "neighbor_labels": item.neighbor_labels,
-                                "reconstruction_l2": item.reconstruction_l2,
-                                "noisy_l2": item.noisy_l2,
-                                "explained_variance": item.explained_variance,
-                                "noisy_nearest_token": item.noisy_nearest_token,
-                                "noisy_nearest_label": item.noisy_nearest_label,
-                            }
-                        )
-                debug_rows.append(debug_row)
-            debug_payload = {
-                "neighbors": debug_rows,
-                "examples": _build_debug_examples(batch=batch, out=out, tokenizer=tokenizer, id2label=id2label),
-            }
+        if out.debug is not None:
+            batch_examples = _build_debug_examples(
+                batch=batch,
+                out=out,
+                tokenizer=tokenizer,
+                id2label=id2label,
+                max_sentences=int(batch["input_ids"].shape[0]),
+                max_tokens=int(batch["input_ids"].shape[1]),
+            )
+            for item in batch_examples:
+                item["global_batch_index"] = int(batch_idx)
+            debug_examples_all.extend(batch_examples)
+            debug_payload = {"examples": debug_examples_all}
 
         if partial_path is not None and ((batch_idx + 1) % max(1, save_every_batches) == 0):
             running_metrics = _compute_running_metrics(
@@ -586,6 +684,27 @@ def evaluate_smoothed(
     metrics["masked_tokens"] = int(total_masked_tokens)
     metrics["masked_sentences"] = int(total_masked_sentences)
 
+    def _finalize_stats(container: dict[str, dict[str, int]]) -> dict[str, dict[str, float | int]]:
+        rows: dict[str, dict[str, float | int]] = {}
+        for key, value in container.items():
+            total = int(value["total_tokens"])
+            certified = int(value["certified_tokens"])
+            abstained_local = int(value["abstained_tokens"])
+            certified_correct_local = int(value["certified_correct_tokens"])
+            rows[key] = {
+                "total_tokens": total,
+                "certified_tokens": certified,
+                "abstained_tokens": abstained_local,
+                "certified_correct_tokens": certified_correct_local,
+                "certified_rate": float(certified / total) if total else 0.0,
+                "abstention_rate": float(abstained_local / total) if total else 0.0,
+                "certified_accuracy": float(certified_correct_local / certified) if certified else 0.0,
+            }
+        return rows
+
+    metrics["certification_by_label"] = _finalize_stats(cert_by_label)
+    metrics["certification_by_entity"] = _finalize_stats(cert_by_entity)
+
     if partial_path is not None and partial_path.exists():
         partial_path.unlink()
         _log(f"Removed partial state after successful completion: {partial_path}")
@@ -619,19 +738,6 @@ def run(
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    mode_value = "none"
-    masking_enabled = hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False))
-    if masking_enabled:
-        mode_value = str(getattr(cfg.masking, "mode", "none")).strip().lower()
-
-    if masking_enabled and mode_value and mode_value != "none":
-        out_dir = Path(cfg.output_dir) / "certify" / "masking" / mode_value
-    else:
-        out_dir = Path(cfg.output_dir) / "certify"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    save_resolved_config(cfg, out_dir / "resolved_config.yaml")
-    _log(f"Output directory resolved to {out_dir}")
-
     data = build_conll_dataloaders(cfg.dataset, cfg.dataloader, cfg.model.encoder_name)
     tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
     model = TransformerNER(
@@ -646,25 +752,51 @@ def run(
     model.eval()
     _log(f"Loaded checkpoint and model on device={device}")
 
-    token_index_dir = _resolve_token_index_artifacts_dir(cfg, out_dir / "token_index")
-    token_index_dir.mkdir(parents=True, exist_ok=True)
+    index_source_split = str(getattr(cfg.smoothing, "index_source_split", "train")).strip().lower()
+    if index_source_split == "train":
+        index_source_loader = data.train_loader
+    elif index_source_split == "val":
+        index_source_loader = data.val_loader
+    elif index_source_split == "test":
+        index_source_loader = data.test_loader
+    else:
+        raise ValueError(
+            f"Unsupported smoothing.index_source_split={index_source_split!r}; choose from train|val|test"
+        )
+
+    token_index_dir = _resolve_shared_index_root(cfg)
+    resolved_index_path = _resolve_index_path(cfg, token_index_dir)
+
+    out_dir = _resolve_eval_output_dir(cfg, resolved_index_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_resolved_config(cfg, out_dir / "resolved_config.yaml")
+    _log(f"Output directory resolved to {out_dir}")
+
+    token_embedding_dir = _resolve_token_embedding_dir(cfg)
+
+    if hasattr(cfg.smoothing, "index_path"):
+        cfg.smoothing.index_path = resolved_index_path
+
+    token_embedding_dir = _resolve_token_index_artifacts_dir(cfg, token_embedding_dir)
+    token_embedding_dir.mkdir(parents=True, exist_ok=True)
     token_index_artifacts = build_or_load_token_index(
-        out_dir=token_index_dir,
+        out_dir=token_embedding_dir,
         model=model,
-        loader=data.train_loader,
+        loader=index_source_loader,
         device=device,
         tokenizer_name=data.tokenizer_name,
         layer_index=cfg.smoothing.layer_index,
         backend=cfg.smoothing.index_backend,
         metric=cfg.smoothing.index_metric,
-        index_path=cfg.smoothing.index_path,
+        index_path=resolved_index_path,
         n_trees=cfg.smoothing.index_n_trees,
         rebuild=effective_rebuild_index,
     )
     _log(
         "Token index ready "
         f"(backend={cfg.smoothing.index_backend}, metric={cfg.smoothing.index_metric}, "
-        f"vectors={len(token_index_artifacts.token_texts)}, artifacts_dir={token_index_dir})"
+        f"source_split={index_source_split}, vectors={len(token_index_artifacts.token_texts)}, "
+        f"embeddings_dir={token_embedding_dir}, index_path={resolved_index_path})"
     )
     _log(
         "Masking config "
@@ -698,6 +830,12 @@ def run(
     )
 
     summary = {
+        "experiment": {
+            "name": cfg.experiment_name,
+            "config_path": cfg_path,
+            "checkpoint": checkpoint_path,
+            "output_dir": str(out_dir),
+        },
         "checkpoint": checkpoint_path,
         "split": split,
         "clean": clean_metrics,
@@ -723,10 +861,59 @@ def run(
         },
     }
 
+    concise_summary = {
+        "experiment_name": cfg.experiment_name,
+        "split": split,
+        "checkpoint": checkpoint_path,
+        "overall": {
+            "precision": smooth_metrics["precision"],
+            "recall": smooth_metrics["recall"],
+            "f1": smooth_metrics["f1"],
+            "token_accuracy": smooth_metrics["token_acc"],
+            "certified_token_accuracy": smooth_metrics["certified_token_acc"],
+        },
+        "certification_totals": {
+            "certified_correct_tokens": smooth_metrics["certified_correct_tokens"],
+            "total_certified_tokens": smooth_metrics["total_certified_tokens"],
+            "abstention_rate": smooth_metrics["abstention_rate"],
+            "mean_certified_radius": smooth_metrics["mean_certified_radius"],
+        },
+        "certification_by_entity": smooth_metrics.get("certification_by_entity", {}),
+        "certification_by_label": smooth_metrics.get("certification_by_label", {}),
+    }
+
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "results_summary.json").write_text(json.dumps(concise_summary, indent=2))
+    raw_by_entity = smooth_metrics.get("certification_by_entity", {})
+    raw_by_label = smooth_metrics.get("certification_by_label", {})
+    ordered_by_entity = {k: raw_by_entity[k] for k in ENTITY_ORDER if k in raw_by_entity}
+    ordered_by_entity.update({k: v for k, v in raw_by_entity.items() if k not in ordered_by_entity})
+    ordered_by_label = {k: raw_by_label[k] for k in LABEL_ORDER if k in raw_by_label}
+    ordered_by_label.update({k: v for k, v in raw_by_label.items() if k not in ordered_by_label})
+    (out_dir / "certification_by_category.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": cfg.experiment_name,
+                "split": split,
+                "by_entity": ordered_by_entity,
+                "by_label": ordered_by_label,
+            },
+            indent=2,
+        )
+    )
     _log(f"Wrote metrics to {(out_dir / 'metrics.json')}" )
     if debug_payload is not None:
         (out_dir / "debug_neighbors.json").write_text(json.dumps(debug_payload, indent=2))
+        (out_dir / "debug_sentences_detailed.json").write_text(
+            json.dumps(
+                {
+                    "experiment_name": cfg.experiment_name,
+                    "split": split,
+                    "examples": debug_payload.get("examples", []),
+                },
+                indent=2,
+            )
+        )
         _log(f"Wrote debug neighbors to {(out_dir / 'debug_neighbors.json')}")
         fig_path = _save_debug_vote_plot(debug_payload.get("examples", []), out_dir)
         if fig_path is not None:

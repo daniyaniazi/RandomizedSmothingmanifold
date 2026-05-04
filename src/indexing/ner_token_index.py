@@ -18,7 +18,8 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from .base import NeighborIndex, build_index
+from .base import NeighborIndex, build_index, load_index
+from .faiss_indexing.backend import save_faiss_index
 
 
 @dataclass
@@ -152,11 +153,33 @@ def build_or_load_token_index(
         )
         save_token_index_artifacts(out_dir, vectors, token_texts, label_ids)
 
-    index = build_token_neighbor_index(
-        vectors=vectors,
-        backend=backend,
-        metric=metric,
-        index_path=index_path,
-        n_trees=n_trees,
-    )
+    backend_norm = str(backend).strip().lower()
+    metric_norm = str(metric).strip().lower()
+    index_file = Path(index_path) if index_path is not None else None
+
+    if (
+        not rebuild
+        and index_file is not None
+        and index_file.exists()
+        and backend_norm in {"annoy", "faiss"}
+    ):
+        index = load_index(
+            dim=int(vectors.shape[1]),
+            index_path=str(index_file),
+            backend=backend_norm,
+            metric=metric_norm,
+        )
+        index.vectors = vectors
+    else:
+        index = build_token_neighbor_index(
+            vectors=vectors,
+            backend=backend_norm,
+            metric=metric_norm,
+            index_path=index_path,
+            n_trees=n_trees,
+        )
+
+        if backend_norm == "faiss" and index_file is not None:
+            save_faiss_index(index=index, index_path=str(index_file))
+
     return TokenIndexArtifacts(vectors=vectors, token_texts=token_texts, label_ids=label_ids, index=index)
