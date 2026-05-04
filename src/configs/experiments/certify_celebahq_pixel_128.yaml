@@ -1,0 +1,49 @@
+# CelebA-HQ Certification - Pixel Space Manifold Smoothing (128x128)
+# Higher quality source images - compare with standard CelebA
+
+experiment_name: certify_celebahq_pixel_manifold_128
+seed: 73
+device: cuda
+alpha_conf: 0.001
+
+dataset:
+  name: CelebA-HQ
+  root_dir: /BS/databases08/CelebA-HQ/data512x512
+  image_dir: train
+  annotation_file: /BS/dniazi_thesis/work/RandomizedSmothingmanifold/input/datasets/celebAHQ/Anno/list_attr_celeba_hq.txt
+  annotation_format: celeba
+  file_extension: .jpg
+  num_workers: 4
+  subset_size: 1000
+
+model:
+  name: resnet18
+  checkpoint_path: output/pretrained_model/smile_resnet_celebahq/best.pt
+  input_size: 224
+  num_classes: 1
+
+vae:
+  enabled: false
+
+smoothing:
+  mode: pixel
+  sigma: 0.25
+  n_samples: 100
+  knn_k: 64
+  eps_eig: 1.0e-06
+  use_manifold: true
+
+index:
+  backend: annoy
+  metric: euclidean
+  n_trees: 50
+  pixel_index_path: null
+  latent_index_path: null
+  build_if_missing: true
+
+output:
+  output_dir: output  # Results go to output/smile_classification/celebahq/
+  save_results: true
+  save_per_sample: true
+  save_visualizations: true
+  num_viz_samples: 10
