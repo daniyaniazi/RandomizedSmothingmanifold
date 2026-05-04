@@ -532,8 +532,19 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     ).to(device)
     
     ckpt = torch.load(cfg.model.checkpoint_path, map_location=device)
+    # Handle different checkpoint formats
     if "model_state_dict" in ckpt:
         classifier.load_state_dict(ckpt["model_state_dict"])
+    elif "model_state" in ckpt:
+        classifier.load_state_dict(ckpt["model_state"])
+    elif isinstance(ckpt, dict) and "conv1.weight" not in ckpt:
+        # Try to find state dict in common keys
+        for key in ["state_dict", "model"]:
+            if key in ckpt:
+                classifier.load_state_dict(ckpt[key])
+                break
+        else:
+            raise ValueError(f"Cannot find model weights in checkpoint. Keys: {list(ckpt.keys())}")
     else:
         classifier.load_state_dict(ckpt)
     classifier.eval()
