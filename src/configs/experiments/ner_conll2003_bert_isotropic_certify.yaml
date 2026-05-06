@@ -1,0 +1,54 @@
+experiment_name: ner_conll2003_bert_isotropic_certify
+output_dir: output/ner_conll2003_bert
+
+task:
+  name: ner
+  module: src.models.transformer.ner.train
+
+dataset:
+  name: conll2003
+  split_train: train
+  split_val: validation
+  split_test: test
+  text_field: tokens
+  label_field: ner_tags
+  max_length: 192
+  num_workers: 4
+
+dataloader:
+  batch_size: 16
+  shuffle_train: false
+
+model:
+  encoder_name: bert-base-uncased
+  dropout: 0.1
+
+smoothing:
+  enabled: true
+  mode: isotropic          # Gaussian isotropic noise (not manifold-aware)
+  target: hidden_states
+  sigma: 0.20              # noise standard deviation
+  layer_index: null        # use last hidden layer
+
+certification:
+  enabled: true
+  alpha: 0.001             # Clopper-Pearson confidence level
+  n0: 64                   # pilot samples for label selection
+  n: 100                   # samples for certification per token
+  abstain_label: -1
+
+train:
+  seed: 73
+  lr: 3.0e-05
+  weight_decay: 0.01
+  epochs: 20
+  device: cuda
+  grad_clip_norm: 1.0
+
+eval:
+  max_batches: 50
+  test_subset: 0.7         # fraction of test set to use
+
+wandb:
+  enabled: true
+  project: randomized-smoothing-ner

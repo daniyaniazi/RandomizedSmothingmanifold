@@ -240,6 +240,7 @@ def _resolve_token_index_artifacts_dir(cfg, default_dir: Path) -> Path:
 
 
 def _resolve_eval_output_dir(cfg, resolved_index_path: str | None) -> Path:
+    smoothing_mode = str(getattr(cfg.smoothing, "mode", "manifold")).strip().lower()
     backend = str(getattr(cfg.smoothing, "index_backend", "torch")).strip().lower()
     metric = str(getattr(cfg.smoothing, "index_metric", "euclidean")).strip().lower()
     layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
@@ -252,6 +253,13 @@ def _resolve_eval_output_dir(cfg, resolved_index_path: str | None) -> Path:
     masking_enabled = hasattr(cfg, "masking") and bool(getattr(cfg.masking, "enabled", False))
     masking_mode = str(getattr(cfg.masking, "mode", "none")).strip().lower() if masking_enabled else "none"
 
+    # Isotropic smoothing: simpler path (no index info needed)
+    if smoothing_mode == "isotropic":
+        if masking_enabled and masking_mode and masking_mode != "none":
+            return Path(cfg.output_dir) / "isotropic_masked_certify" / layer / masking_mode / sigma_tag
+        return Path(cfg.output_dir) / "isotropic_certify" / layer / sigma_tag
+
+    # Manifold smoothing: include index info in path
     base_dir = Path(cfg.output_dir) / "certify" / layer / metric / backend / index_name / sigma_tag
 
     if masking_enabled and masking_mode and masking_mode != "none":
