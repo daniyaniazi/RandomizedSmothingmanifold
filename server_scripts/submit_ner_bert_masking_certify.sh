@@ -13,9 +13,10 @@ set -euo pipefail
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 cd "$PROJECT_ROOT"
 mkdir -p output/slurm
+export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-if [[ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]]; then
-    source "$HOME/miniforge3/etc/profile.d/conda.sh"
+if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
+    . "$HOME/miniforge3/etc/profile.d/conda.sh"
     conda activate smoothing
 fi
 
@@ -26,7 +27,7 @@ echo "Start: $(date)"
 CHECKPOINT="${PROJECT_ROOT}/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt"
 CONFIG="${PROJECT_ROOT}/src/configs/experiments/ner_conll2003_bert_masking_certify.yaml"
 
-python -m src.eval.run_ner_experiment \
+python -m src.experiments.certify.ner \
     --config "$CONFIG" \
     --checkpoint "$CHECKPOINT" \
     --split test \

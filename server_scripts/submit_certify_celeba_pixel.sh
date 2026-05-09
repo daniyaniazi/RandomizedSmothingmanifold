@@ -16,9 +16,10 @@ set -euo pipefail
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 cd "$PROJECT_ROOT"
 mkdir -p output/slurm
+export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-if [[ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]]; then
-    source "$HOME/miniforge3/etc/profile.d/conda.sh"
+if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
+    . "$HOME/miniforge3/etc/profile.d/conda.sh"
     conda activate smoothing
 fi
 
@@ -33,7 +34,7 @@ echo "================================================"
 CONFIG_PATH="src/configs/experiments/certify_celeba_pixel_128.yaml"
 RESUME_FLAG="${RESUME:-false}"
 
-if [[ "$RESUME_FLAG" == "true" ]]; then
+if [ "$RESUME_FLAG" = "true" ]; then
     echo "Resume mode enabled - will continue from last checkpoint"
     # Create a temp config with resume enabled
     TEMP_CONFIG=$(mktemp /tmp/certify_config_XXXXXX.yaml)

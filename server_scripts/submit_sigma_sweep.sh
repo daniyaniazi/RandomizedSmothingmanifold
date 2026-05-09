@@ -179,7 +179,7 @@ with open('$TEMP_CONFIG', 'w') as f:
     if $IS_NER; then
         # NER experiment
         CHECKPOINT="${PROJECT_ROOT}/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt"
-        RUN_CMD="python -m src.eval.run_ner_experiment --config $TEMP_CONFIG --checkpoint $CHECKPOINT --split test --resume --save-every-batches 5"
+        RUN_CMD="python -m src.experiments.certify.ner --config $TEMP_CONFIG --checkpoint $CHECKPOINT --split test --resume --save-every-batches 5"
     else
         # CelebA/Image experiment
         RUN_CMD="python -m src.experiments.certify.celeba --config $TEMP_CONFIG"
@@ -194,13 +194,7 @@ with open('$TEMP_CONFIG', 'w') as f:
         --job-name=$JOB_NAME \
         --output=$PROJECT_ROOT/output/slurm/${JOB_NAME}-%j.out \
         --error=$PROJECT_ROOT/output/slurm/${JOB_NAME}-%j.err \
-        --wrap=\"#!/bin/bash
-cd $PROJECT_ROOT
-if [[ -f ~/miniforge3/etc/profile.d/conda.sh ]]; then
-    . ~/miniforge3/etc/profile.d/conda.sh
-    conda activate smoothing
-fi
-$RUN_CMD\""
+        --wrap='cd $PROJECT_ROOT && export PYTHONPATH=$PROJECT_ROOT:\$PYTHONPATH && . ~/miniforge3/etc/profile.d/conda.sh && conda activate smoothing && $RUN_CMD'"
     
     if $DRY_RUN; then
         echo "[DRY-RUN] Would run:"
