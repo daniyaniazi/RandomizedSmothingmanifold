@@ -149,12 +149,15 @@ echo "=============================================="
 echo ""
 
 # Submit one job per sigma
+SWEEP_CONFIG_DIR="${PROJECT_ROOT}/output/sweep_configs"
+mkdir -p "$SWEEP_CONFIG_DIR"
+
 for SIGMA in $SIGMAS; do
     SIGMA_TAG=$(echo "$SIGMA" | tr '.' '_')
     JOB_NAME="${EXP_NAME}_sigma_${SIGMA_TAG}"
     
-    # Create temp config with this sigma
-    TEMP_CONFIG="/tmp/${JOB_NAME}.yaml"
+    # Create config in project directory (accessible by compute nodes)
+    TEMP_CONFIG="${SWEEP_CONFIG_DIR}/${JOB_NAME}.yaml"
     
     # Copy config and override sigma
     python3 -c "
