@@ -3,8 +3,7 @@
 #SBATCH -t 48:00:00
 #SBATCH --gres gpu:1
 #SBATCH -c 8
-#SBATCH --mem=64G
-#SBATCH --tmp=50G
+#SBATCH --mem-per-cpu=8G
 #SBATCH -o /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/certify-celeba-latent-%j.out
 #SBATCH -e /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/certify-celeba-latent-%j.err
 #SBATCH -J certify-celeba-latent
