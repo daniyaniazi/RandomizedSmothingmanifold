@@ -22,9 +22,12 @@ if [[ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]]; then
     conda activate smoothing
 fi
 
+echo "================================================"
+echo "CelebA Pixel Manifold Certification"
 echo "Running on: $(hostname)"
 echo "GPU: ${CUDA_VISIBLE_DEVICES:-unset}"
-echo "Starting CelebA Pixel Certification"
+echo "Start: $(date)"
+echo "================================================"
 
 # Check if resume flag is set (useful for resubmitting after timeout)
 CONFIG_PATH="src/configs/experiments/certify_celeba_pixel_128.yaml"
@@ -35,8 +38,10 @@ if [[ "$RESUME_FLAG" == "true" ]]; then
     # Create a temp config with resume enabled
     TEMP_CONFIG=$(mktemp /tmp/certify_config_XXXXXX.yaml)
     sed 's/resume: false/resume: true/' "$CONFIG_PATH" > "$TEMP_CONFIG"
-    python -m src.certify.celeba_workflow --config "$TEMP_CONFIG"
+    python -m src.experiments.certify.celeba --config "$TEMP_CONFIG"
     rm -f "$TEMP_CONFIG"
 else
-    python -m src.certify.celeba_workflow --config "$CONFIG_PATH"
+    python -m src.experiments.certify.celeba --config "$CONFIG_PATH"
 fi
+
+echo "Done: $(date)"

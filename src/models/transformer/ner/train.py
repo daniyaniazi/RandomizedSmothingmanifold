@@ -16,7 +16,7 @@ from tqdm import tqdm
 from src.configs import ExperimentConfig, load_experiment_config, save_resolved_config
 from src.dataloaders import build_conll_dataloaders
 from src.models.transformer.ner.model import TransformerNER
-from src.smoothing import smooth_input_embeddings
+from src.smoothing.noise import smooth_input_embeddings
 
 
 def set_seed(seed: int) -> None:

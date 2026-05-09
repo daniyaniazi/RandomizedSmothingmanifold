@@ -1,34 +1,39 @@
-"""Certification workflow for CelebA / CelebA-HQ smile classification.
+"""CelebA / CelebA-HQ Certification Experiment.
 
-Directory Structure (following NER pattern):
+Run randomized smoothing certification on smile classifiers.
+Supports pixel-space and latent-space (VAE) smoothing.
+
+Output Directory Structure:
     output/smile_classification/{celeba|celebahq}/
-    ├── dataset/                          # Dataset info
     ├── index/
-    │   ├── pixel/
-    │   │   └── annoy/euclidean/
-    │   │       ├── index.ann
-    │   │       └── index_metadata.json
-    │   └── latent/
-    │       └── annoy/euclidean/
-    │           ├── index.ann
-    │           └── index_metadata.json
+    │   ├── pixel/annoy/euclidean/
+    │   └── latent/annoy/euclidean/
     └── certify/
-        ├── pixel_manifold/
-        │   ├── sigma_0_25/
-        │   │   ├── metrics.json
-        │   │   ├── results.csv
-        │   │   └── visualizations/
-        │   └── sigma_0_50/
-        └── latent_manifold/
-            └── sigma_0_50/
+        ├── pixel_manifold/sigma_0_50/
+        └── latent_manifold/sigma_0_50/
+            ├── metrics.json
+            ├── results.csv
+            └── visualizations/
 
 Key Design:
     - Index is built from TRAIN split
     - Certification runs on TEST split
-    - Uses existing SmileDataBundle from src.dataloaders.celeba_smile
 
 Usage:
-    python -m src.certify.celeba_workflow --config src/configs/experiments/certify_celeba_pixel_128.yaml
+    python -m src.experiments.certify.celeba --config CONFIG
+
+Examples:
+    # Latent space manifold smoothing
+    python -m src.experiments.certify.celeba \\
+        --config src/configs/experiments/certify_celeba_latent_128.yaml
+
+    # Pixel space manifold smoothing
+    python -m src.experiments.certify.celeba \\
+        --config src/configs/experiments/certify_celeba_pixel_128.yaml
+
+    # CelebA-HQ
+    python -m src.experiments.certify.celeba \\
+        --config src/configs/experiments/certify_celebahq_latent_128.yaml
 """
 
 from __future__ import annotations
@@ -54,9 +59,11 @@ from src.configs.train_smile_schema import SmileDataloaderConfig, SmileDatasetCo
 from src.certify.randomized import certify_token_from_counts, TokenCertificate
 from src.dataloaders.celeba_smile import build_smile_dataloaders
 from src.indexing.base import load_index, NeighborIndex
+from src.indexing.image_index import build_or_load_image_index, ImageIndexArtifacts
 from src.models.resnet import build_resnet_classifier
 from src.models.VAE import ConvVAE, load_checkpoint as load_vae_checkpoint
-from src.smoothing.workflow import fit_local_pca, whiten, unwhiten
+from src.smoothing.isotropic import IsotropicSmoother
+from src.smoothing.manifold import ManifoldSmoother
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,24 +233,31 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Index Building (on TRAIN set)
+# Index Building (uses generic utilities from src/indexing/image_index)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def build_pixel_index(
-    train_samples: List[Tuple[str, int]],
+def _create_image_dataloader(
+    samples: List[Tuple[str, int]],
     image_size: int,
-    index_dir: Path,
-    n_trees: int = 50,
-) -> NeighborIndex:
-    """Build Annoy index over flattened pixel vectors from TRAIN set."""
-    import annoy
+    batch_size: int = 32,
+) -> torch.utils.data.DataLoader:
+    """Create a simple dataloader from (path, label) samples."""
+    from torch.utils.data import Dataset, DataLoader
     
-    index_path = index_dir / "index.ann"
-    meta_path = index_dir / "index_metadata.json"
-    
-    dim = 3 * image_size * image_size
-    ann_index = annoy.AnnoyIndex(dim, "euclidean")
+    class SimpleImageDataset(Dataset):
+        def __init__(self, samples, transform):
+            self.samples = samples
+            self.transform = transform
+        
+        def __len__(self):
+            return len(self.samples)
+        
+        def __getitem__(self, idx):
+            path, label = self.samples[idx]
+            img = Image.open(path).convert("RGB")
+            img_tensor = self.transform(img)
+            return {"image": img_tensor, "label": label, "path": path}
     
     transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
@@ -251,88 +265,8 @@ def build_pixel_index(
         transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
     ])
     
-    index_map = {}
-    for idx, (path, label) in enumerate(tqdm(train_samples, desc="Building pixel index (train)")):
-        img = Image.open(path).convert("RGB")
-        img_tensor = transform(img)
-        flat = img_tensor.numpy().flatten().astype(np.float32)
-        ann_index.add_item(idx, flat)
-        index_map[idx] = {"path": str(path), "label": int(label)}
-    
-    ann_index.build(n_trees)
-    ann_index.save(str(index_path))
-    
-    metadata = {
-        "num_items": len(train_samples),
-        "dim": dim,
-        "image_size": image_size,
-        "n_trees": n_trees,
-        "split": "train",
-    }
-    meta_path.write_text(json.dumps(metadata, indent=2))
-    
-    # Save index map separately
-    (index_dir / "index_map.json").write_text(json.dumps(index_map, indent=2))
-    
-    _log(f"Pixel index saved: {index_path} ({len(train_samples)} items, dim={dim})")
-    return load_index(dim=dim, index_path=str(index_path), backend="annoy")
-
-
-def build_latent_index(
-    train_samples: List[Tuple[str, int]],
-    vae: ConvVAE,
-    index_dir: Path,
-    n_trees: int = 50,
-    device: torch.device = torch.device("cuda"),
-) -> NeighborIndex:
-    """Build Annoy index over VAE latent vectors from TRAIN set."""
-    import annoy
-    
-    index_path = index_dir / "index.ann"
-    meta_path = index_dir / "index_metadata.json"
-    
-    dim = vae.latent_dim
-    ann_index = annoy.AnnoyIndex(dim, "euclidean")
-    
-    transform = transforms.Compose([
-        transforms.Resize((vae.image_size, vae.image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
-    ])
-    
-    index_map = {}
-    latent_vectors = []
-    
-    vae.eval()
-    with torch.no_grad():
-        for idx, (path, label) in enumerate(tqdm(train_samples, desc="Building latent index (train)")):
-            img = Image.open(path).convert("RGB")
-            img_tensor = transform(img).unsqueeze(0).to(device)
-            mu, _ = vae.encode(img_tensor)
-            z = mu.squeeze(0).cpu().numpy().astype(np.float32)
-            ann_index.add_item(idx, z)
-            latent_vectors.append(z)
-            index_map[idx] = {"path": str(path), "label": int(label)}
-    
-    ann_index.build(n_trees)
-    ann_index.save(str(index_path))
-    
-    # Save latent vectors for neighbor lookup
-    np.savez(index_dir / "latent_vectors.npz", vectors=np.stack(latent_vectors))
-    
-    metadata = {
-        "num_items": len(train_samples),
-        "dim": dim,
-        "image_size": vae.image_size,
-        "latent_dim": vae.latent_dim,
-        "n_trees": n_trees,
-        "split": "train",
-    }
-    meta_path.write_text(json.dumps(metadata, indent=2))
-    (index_dir / "index_map.json").write_text(json.dumps(index_map, indent=2))
-    
-    _log(f"Latent index saved: {index_path} ({len(train_samples)} items, dim={dim})")
-    return load_index(dim=dim, index_path=str(index_path), backend="annoy")
+    dataset = SimpleImageDataset(samples, transform)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
 
 def load_or_build_pixel_index(
@@ -342,16 +276,35 @@ def load_or_build_pixel_index(
     n_trees: int = 50,
     force_rebuild: bool = False,
 ) -> NeighborIndex:
+    """Build or load pixel-space index using generic utilities."""
     index_path = index_dir / "index.ann"
-    meta_path = index_dir / "index_metadata.json"
     
-    if index_path.exists() and meta_path.exists() and not force_rebuild:
-        meta = json.loads(meta_path.read_text())
-        _log(f"Loading existing pixel index: {index_path} ({meta['num_items']} items)")
-        return load_index(dim=meta["dim"], index_path=str(index_path), backend="annoy")
+    # Check if index exists
+    if index_path.exists() and not force_rebuild:
+        dim = 3 * image_size * image_size
+        _log(f"Loading existing pixel index: {index_path}")
+        return load_index(dim=dim, index_path=str(index_path), backend="annoy")
     
+    # Build using generic utilities
     index_dir.mkdir(parents=True, exist_ok=True)
-    return build_pixel_index(train_samples, image_size, index_dir, n_trees)
+    _log(f"Building pixel index from {len(train_samples)} samples...")
+    
+    dataloader = _create_image_dataloader(train_samples, image_size)
+    
+    artifacts = build_or_load_image_index(
+        out_dir=index_dir,
+        dataloader=dataloader,
+        space="pixel",
+        backend="annoy",
+        metric="euclidean",
+        index_path=str(index_path),
+        n_trees=n_trees,
+        rebuild=force_rebuild,
+        metadata={"image_size": image_size, "split": "train", "num_items": len(train_samples)},
+    )
+    
+    _log(f"Pixel index saved: {index_path} ({len(train_samples)} items)")
+    return artifacts.index
 
 
 def load_or_build_latent_index(
@@ -362,85 +315,107 @@ def load_or_build_latent_index(
     device: torch.device = torch.device("cuda"),
     force_rebuild: bool = False,
 ) -> NeighborIndex:
+    """Build or load latent-space index using generic utilities."""
     index_path = index_dir / "index.ann"
-    meta_path = index_dir / "index_metadata.json"
     
-    if index_path.exists() and meta_path.exists() and not force_rebuild:
-        meta = json.loads(meta_path.read_text())
-        _log(f"Loading existing latent index: {index_path} ({meta['num_items']} items)")
-        return load_index(dim=meta["dim"], index_path=str(index_path), backend="annoy")
+    # Check if index exists
+    if index_path.exists() and not force_rebuild:
+        _log(f"Loading existing latent index: {index_path}")
+        return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy")
     
+    # Build using generic utilities
     index_dir.mkdir(parents=True, exist_ok=True)
-    return build_latent_index(train_samples, vae, index_dir, n_trees, device)
+    _log(f"Building latent index from {len(train_samples)} samples...")
+    
+    dataloader = _create_image_dataloader(train_samples, vae.image_size)
+    
+    # Create encoder function
+    vae.eval()
+    def vae_encoder(images: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            images = images.to(device)
+            if images.shape[-1] != vae.image_size:
+                images = torch.nn.functional.interpolate(
+                    images, size=vae.image_size, mode="bilinear", align_corners=False
+                )
+            mu, _ = vae.encode(images)
+            return mu.cpu()
+    
+    artifacts = build_or_load_image_index(
+        out_dir=index_dir,
+        dataloader=dataloader,
+        space="latent",
+        encoder=vae_encoder,
+        backend="annoy",
+        metric="euclidean",
+        index_path=str(index_path),
+        n_trees=n_trees,
+        rebuild=force_rebuild,
+        metadata={"latent_dim": vae.latent_dim, "split": "train", "num_items": len(train_samples)},
+    )
+    
+    _log(f"Latent index saved: {index_path} ({len(train_samples)} items)")
+    return artifacts.index
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Smoothing Functions
+# Smoothing Helpers (use generic smoothers from src/smoothing)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def get_neighbors_from_index(index: NeighborIndex, vector: np.ndarray, k: int) -> np.ndarray:
-    """Get k nearest neighbor vectors from Annoy index."""
-    if hasattr(index.index, "get_nns_by_vector"):
-        nn_ids = index.index.get_nns_by_vector(vector.tolist(), k)
-        neighbors = np.array([index.index.get_item_vector(i) for i in nn_ids], dtype=np.float32)
-        return neighbors
-    raise ValueError("Index does not support get_nns_by_vector")
+def create_pixel_smoother(
+    cfg: CertifyConfig,
+    index: Optional[NeighborIndex] = None,
+) -> IsotropicSmoother | ManifoldSmoother:
+    """Create pixel-space smoother based on config."""
+    if cfg.smoothing.use_manifold and index is not None:
+        return ManifoldSmoother(
+            sigma=cfg.smoothing.sigma,
+            index=index,
+            knn_k=cfg.smoothing.knn_k,
+            eps_eig=cfg.smoothing.eps_eig,
+        )
+    return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
 
-def sample_pixel_isotropic(img_tensor: torch.Tensor, sigma: float) -> torch.Tensor:
-    return img_tensor + torch.randn_like(img_tensor) * sigma
+def create_latent_smoother(
+    cfg: CertifyConfig,
+    index: Optional[NeighborIndex] = None,
+) -> IsotropicSmoother | ManifoldSmoother:
+    """Create latent-space smoother based on config."""
+    if cfg.smoothing.use_manifold and index is not None:
+        return ManifoldSmoother(
+            sigma=cfg.smoothing.sigma,
+            index=index,
+            knn_k=cfg.smoothing.knn_k,
+            eps_eig=cfg.smoothing.eps_eig,
+        )
+    return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
 
-def sample_pixel_manifold(
+def sample_pixel(
     img_tensor: torch.Tensor,
-    index: NeighborIndex,
-    sigma: float,
-    knn_k: int,
-    eps_eig: float = 1e-6,
+    smoother: IsotropicSmoother | ManifoldSmoother,
 ) -> torch.Tensor:
+    """Sample noisy pixel-space image using smoother."""
     flat = img_tensor.numpy().flatten().astype(np.float32)
-    neighbors = get_neighbors_from_index(index, flat, knn_k)
-    pca = fit_local_pca(neighbors, eps_eig=eps_eig)
-    white = whiten(flat, pca)
-    white_noised = white + np.random.randn(len(white)).astype(np.float32) * sigma
-    unwhite_vec = unwhiten(white_noised, pca)
-    return torch.from_numpy(unwhite_vec.reshape(img_tensor.shape)).float()
+    noisy_flat = smoother.sample(flat)
+    return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
 
 
-def sample_latent_isotropic(
+def sample_latent(
     img_tensor: torch.Tensor,
     vae: ConvVAE,
-    sigma: float,
+    smoother: IsotropicSmoother | ManifoldSmoother,
     device: torch.device,
 ) -> torch.Tensor:
-    with torch.no_grad():
-        x = img_tensor.unsqueeze(0).to(device)
-        mu, _ = vae.encode(x)
-        z_noised = mu + torch.randn_like(mu) * sigma
-        x_hat = vae.decode(z_noised)
-    return x_hat.squeeze(0).cpu()
-
-
-def sample_latent_manifold(
-    img_tensor: torch.Tensor,
-    vae: ConvVAE,
-    index: NeighborIndex,
-    sigma: float,
-    knn_k: int,
-    device: torch.device,
-    eps_eig: float = 1e-6,
-) -> torch.Tensor:
+    """Sample noisy latent-space image using VAE + smoother."""
     with torch.no_grad():
         x = img_tensor.unsqueeze(0).to(device)
         mu, _ = vae.encode(x)
         z = mu.squeeze(0).cpu().numpy().astype(np.float32)
     
-    neighbors = get_neighbors_from_index(index, z, knn_k)
-    pca = fit_local_pca(neighbors, eps_eig=eps_eig)
-    white = whiten(z, pca)
-    white_noised = white + np.random.randn(len(white)).astype(np.float32) * sigma
-    z_noised = unwhiten(white_noised, pca)
+    z_noised = smoother.sample(z)
     
     with torch.no_grad():
         z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
@@ -483,6 +458,8 @@ def save_sample_visualization(
     vae: ConvVAE | None,
     cfg,
     device: torch.device,
+    pixel_smoother: IsotropicSmoother | ManifoldSmoother | None = None,
+    latent_smoother: IsotropicSmoother | ManifoldSmoother | None = None,
     n_noisy_samples: int = 5,
 ) -> None:
     """Save visualization grid for a single sample.
@@ -499,6 +476,17 @@ def save_sample_visualization(
     except ImportError:
         _log("matplotlib not available, skipping visualization")
         return
+    
+    # Create isotropic smoother for comparison row
+    isotropic_smoother = IsotropicSmoother(sigma=cfg.smoothing.sigma)
+    
+    # Select smoother for manifold row
+    if cfg.smoothing.mode == "latent" and latent_smoother is not None:
+        manifold_smoother = latent_smoother
+    elif pixel_smoother is not None:
+        manifold_smoother = pixel_smoother
+    else:
+        manifold_smoother = isotropic_smoother  # Fallback
     
     viz_dir.mkdir(parents=True, exist_ok=True)
     
@@ -547,9 +535,9 @@ def save_sample_visualization(
     for i in range(n_noisy_samples):
         ax = fig.add_subplot(gs[1, i])
         if cfg.smoothing.mode == "latent" and vae is not None:
-            noisy = sample_latent_isotropic(img_tensor, vae, cfg.smoothing.sigma, device)
+            noisy = sample_latent(img_tensor, vae, isotropic_smoother, device)
         else:
-            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+            noisy = sample_pixel(img_tensor, isotropic_smoother)
         ax.imshow(_tensor_to_pil(noisy))
         if i == 0:
             ax.set_ylabel("Isotropic", fontsize=10)
@@ -559,14 +547,10 @@ def save_sample_visualization(
     # Row 3: Manifold smoothed samples
     for i in range(n_noisy_samples):
         ax = fig.add_subplot(gs[2, i])
-        if cfg.smoothing.mode == "latent" and vae is not None and index is not None:
-            noisy = sample_latent_manifold(img_tensor, vae, index, cfg.smoothing.sigma, 
-                                           cfg.smoothing.knn_k, device, cfg.smoothing.eps_eig)
-        elif index is not None:
-            noisy = sample_pixel_manifold(img_tensor, index, cfg.smoothing.sigma,
-                                          cfg.smoothing.knn_k, cfg.smoothing.eps_eig)
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
         else:
-            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+            noisy = sample_pixel(img_tensor, manifold_smoother)
         ax.imshow(_tensor_to_pil(noisy))
         if i == 0:
             ax.set_ylabel("Manifold", fontsize=10)
@@ -582,14 +566,10 @@ def save_sample_visualization(
     
     for i in range(n_noisy_samples):
         ax = fig.add_subplot(gs[3, i])
-        if cfg.smoothing.mode == "latent" and vae is not None and index is not None:
-            noisy = sample_latent_manifold(img_tensor, vae, index, cfg.smoothing.sigma,
-                                           cfg.smoothing.knn_k, device, cfg.smoothing.eps_eig)
-        elif index is not None:
-            noisy = sample_pixel_manifold(img_tensor, index, cfg.smoothing.sigma,
-                                          cfg.smoothing.knn_k, cfg.smoothing.eps_eig)
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
         else:
-            noisy = sample_pixel_isotropic(img_tensor, cfg.smoothing.sigma)
+            noisy = sample_pixel(img_tensor, manifold_smoother)
         
         # Convert to classifier input
         noisy_clipped = noisy.clamp(-1, 1) * 0.5 + 0.5
@@ -768,6 +748,12 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     ])
     
     # ─────────────────────────────────────────────────────────────────────────
+    # Create smoothers (using generic classes from src/smoothing)
+    # ─────────────────────────────────────────────────────────────────────────
+    pixel_smoother = create_pixel_smoother(cfg, pixel_index)
+    latent_smoother = create_latent_smoother(cfg, latent_index)
+    
+    # ─────────────────────────────────────────────────────────────────────────
     # Run certification on TEST set (with checkpoint support)
     # ─────────────────────────────────────────────────────────────────────────
     _log(f"Certifying {len(test_samples)} TEST samples")
@@ -804,22 +790,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         img = Image.open(img_path).convert("RGB")
         img_tensor = smooth_transform(img)
         
+        # Create sample function using generic smoothers
         if cfg.smoothing.mode == "pixel":
-            if cfg.smoothing.use_manifold and pixel_index is not None:
-                sample_fn = lambda t=img_tensor: sample_pixel_manifold(
-                    t, pixel_index, cfg.smoothing.sigma, cfg.smoothing.knn_k, cfg.smoothing.eps_eig
-                )
-            else:
-                sample_fn = lambda t=img_tensor: sample_pixel_isotropic(t, cfg.smoothing.sigma)
+            sample_fn = lambda t=img_tensor, s=pixel_smoother: sample_pixel(t, s)
         elif cfg.smoothing.mode == "latent" and vae is not None:
-            if cfg.smoothing.use_manifold and latent_index is not None:
-                sample_fn = lambda t=img_tensor: sample_latent_manifold(
-                    t, vae, latent_index, cfg.smoothing.sigma, cfg.smoothing.knn_k, device, cfg.smoothing.eps_eig
-                )
-            else:
-                sample_fn = lambda t=img_tensor: sample_latent_isotropic(t, vae, cfg.smoothing.sigma, device)
+            sample_fn = lambda t=img_tensor, s=latent_smoother, v=vae, d=device: sample_latent(t, v, s, d)
         else:
-            sample_fn = lambda t=img_tensor: sample_pixel_isotropic(t, cfg.smoothing.sigma)
+            # Default to pixel isotropic
+            sample_fn = lambda t=img_tensor, s=pixel_smoother: sample_pixel(t, s)
         
         cert = certify_single_sample(
             classifier=classifier,

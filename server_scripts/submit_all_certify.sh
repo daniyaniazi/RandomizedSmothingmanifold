@@ -1,37 +1,191 @@
 #!/usr/bin/env bash
-# Submit all CelebA certification experiments
-# Usage: bash server_scripts/submit_all_certify.sh
+# ============================================================================
+# MASTER CERTIFICATION EXPERIMENT RUNNER
+# ============================================================================
+# Submit all certification experiments to SLURM cluster
+#
+# Usage:
+#   ./submit_all_certify.sh [OPTIONS]
+#
+# Options:
+#   --celeba     Submit all CelebA experiments only
+#   --celebahq   Submit all CelebA-HQ experiments only
+#   --ner        Submit all NER experiments only
+#   --isotropic  Submit isotropic (Gaussian) baseline experiments only
+#   --manifold   Submit manifold-aware experiments only
+#   --dry-run    Print commands without submitting
+#   --help       Show this help message
+#
+# Experiment Matrix:
+# ┌─────────────┬────────────┬────────────┬──────────────────────────────────────┐
+# │ Domain      │ Smoothing  │ Variant    │ Script                               │
+# ├─────────────┼────────────┼────────────┼──────────────────────────────────────┤
+# │ CelebA      │ Isotropic  │ pixel      │ submit_certify_celeba_isotropic.sh   │
+# │ CelebA      │ Manifold   │ pixel      │ submit_certify_celeba_pixel.sh       │
+# │ CelebA      │ Manifold   │ latent     │ submit_certify_celeba_latent.sh      │
+# ├─────────────┼────────────┼────────────┼──────────────────────────────────────┤
+# │ CelebA-HQ   │ Isotropic  │ pixel      │ submit_certify_celebahq_isotropic.sh │
+# │ CelebA-HQ   │ Manifold   │ pixel      │ submit_certify_celebahq_pixel.sh     │
+# │ CelebA-HQ   │ Manifold   │ latent     │ submit_certify_celebahq_latent.sh    │
+# ├─────────────┼────────────┼────────────┼──────────────────────────────────────┤
+# │ NER         │ Isotropic  │ hidden     │ submit_ner_bert_isotropic_certify.sh │
+# │ NER         │ Manifold   │ hidden     │ submit_ner_bert_certify.sh           │
+# │ NER+Masking │ Isotropic  │ hidden     │ submit_ner_bert_isotropic_masking... │
+# │ NER+Masking │ Manifold   │ hidden     │ submit_ner_bert_masking_certify.sh   │
+# └─────────────┴────────────┴────────────┴──────────────────────────────────────┘
+# ============================================================================
 
 set -euo pipefail
 
-echo "Submitting CelebA certification experiments..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# CelebA Pixel
-echo "Submitting CelebA Pixel certification..."
-JOB1=$(sbatch server_scripts/submit_certify_celeba_pixel.sh | awk '{print $4}')
-echo "  Job ID: $JOB1"
+# Default: submit all
+SUBMIT_CELEBA=true
+SUBMIT_CELEBAHQ=true
+SUBMIT_NER=true
+SUBMIT_ISOTROPIC=true
+SUBMIT_MANIFOLD=true
+DRY_RUN=false
 
-# CelebA-HQ Pixel
-echo "Submitting CelebA-HQ Pixel certification..."
-JOB2=$(sbatch server_scripts/submit_certify_celebahq_pixel.sh | awk '{print $4}')
-echo "  Job ID: $JOB2"
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --celeba)
+            SUBMIT_CELEBAHQ=false
+            SUBMIT_NER=false
+            shift
+            ;;
+        --celebahq)
+            SUBMIT_CELEBA=false
+            SUBMIT_NER=false
+            shift
+            ;;
+        --ner)
+            SUBMIT_CELEBA=false
+            SUBMIT_CELEBAHQ=false
+            shift
+            ;;
+        --isotropic)
+            SUBMIT_MANIFOLD=false
+            shift
+            ;;
+        --manifold)
+            SUBMIT_ISOTROPIC=false
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help|-h)
+            head -50 "$0" | tail -n +2
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
-# CelebA Latent (depends on VAE training)
-echo "Submitting CelebA Latent certification..."
-JOB3=$(sbatch server_scripts/submit_certify_celeba_latent.sh | awk '{print $4}')
-echo "  Job ID: $JOB3"
+submit_job() {
+    local script=$1
+    local desc=$2
+    
+    if [[ ! -f "$script" ]]; then
+        echo "⚠️  Script not found: $script"
+        return
+    fi
+    
+    if $DRY_RUN; then
+        echo "🔹 [DRY-RUN] Would submit: $desc"
+        echo "   sbatch $script"
+    else
+        echo "🚀 Submitting: $desc"
+        sbatch "$script"
+    fi
+}
 
-# CelebA-HQ Latent (depends on VAE training)
-echo "Submitting CelebA-HQ Latent certification..."
-JOB4=$(sbatch server_scripts/submit_certify_celebahq_latent.sh | awk '{print $4}')
-echo "  Job ID: $JOB4"
-
+echo "=============================================="
+echo "CERTIFICATION EXPERIMENT SUBMISSION"
+echo "=============================================="
 echo ""
-echo "All jobs submitted!"
-echo "Monitor with: squeue -u \$USER"
-echo ""
-echo "Jobs:"
-echo "  $JOB1 - CelebA Pixel"
-echo "  $JOB2 - CelebA-HQ Pixel"
-echo "  $JOB3 - CelebA Latent"
-echo "  $JOB4 - CelebA-HQ Latent"
+
+# ============================================================================
+# CelebA Experiments
+# ============================================================================
+if $SUBMIT_CELEBA; then
+    echo "📁 CelebA Experiments"
+    echo "---------------------"
+    
+    if $SUBMIT_ISOTROPIC; then
+        submit_job "submit_certify_celeba_isotropic.sh" \
+            "CelebA Isotropic (Gaussian) - Pixel Space"
+        submit_job "submit_certify_celeba_isotropic_latent.sh" \
+            "CelebA Isotropic (Gaussian) - Latent Space (VAE)"
+    fi
+    
+    if $SUBMIT_MANIFOLD; then
+        submit_job "submit_certify_celeba_pixel.sh" \
+            "CelebA Manifold - Pixel Space"
+        submit_job "submit_certify_celeba_latent.sh" \
+            "CelebA Manifold - Latent Space (VAE)"
+    fi
+    echo ""
+fi
+
+# ============================================================================
+# CelebA-HQ Experiments
+# ============================================================================
+if $SUBMIT_CELEBAHQ; then
+    echo "📁 CelebA-HQ Experiments"
+    echo "------------------------"
+    
+    if $SUBMIT_ISOTROPIC; then
+        submit_job "submit_certify_celebahq_isotropic.sh" \
+            "CelebA-HQ Isotropic (Gaussian) - Pixel Space"
+        submit_job "submit_certify_celebahq_isotropic_latent.sh" \
+            "CelebA-HQ Isotropic (Gaussian) - Latent Space (VAE)"
+    fi
+    
+    if $SUBMIT_MANIFOLD; then
+        submit_job "submit_certify_celebahq_pixel.sh" \
+            "CelebA-HQ Manifold - Pixel Space"
+        submit_job "submit_certify_celebahq_latent.sh" \
+            "CelebA-HQ Manifold - Latent Space (VAE)"
+    fi
+    echo ""
+fi
+
+# ============================================================================
+# NER Experiments
+# ============================================================================
+if $SUBMIT_NER; then
+    echo "📁 NER Experiments (BERT + CoNLL-2003)"
+    echo "--------------------------------------"
+    
+    if $SUBMIT_ISOTROPIC; then
+        submit_job "submit_ner_bert_isotropic_certify.sh" \
+            "NER Isotropic (Gaussian) - Hidden States"
+        submit_job "submit_ner_bert_isotropic_masking_certify.sh" \
+            "NER Isotropic + Context Masking"
+    fi
+    
+    if $SUBMIT_MANIFOLD; then
+        submit_job "submit_ner_bert_certify.sh" \
+            "NER Manifold - Hidden States"
+        submit_job "submit_ner_bert_masking_certify.sh" \
+            "NER Manifold + Context Masking"
+    fi
+    echo ""
+fi
+
+echo "=============================================="
+if $DRY_RUN; then
+    echo "DRY RUN COMPLETE - No jobs submitted"
+else
+    echo "ALL JOBS SUBMITTED"
+    echo "Check status: squeue -u \$USER"
+fi
+echo "=============================================="

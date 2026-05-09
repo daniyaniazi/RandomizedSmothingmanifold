@@ -1,42 +1,38 @@
-from .covariance import batch_covariance, whitened_norm, whitening_transform
-from .noise import isotropic_noise_like, manifold_noise_from_batch, smooth_input_embeddings
-from .attention import attention_stability_report, layer_attention_breakdown_summary
-from .workflow import (
-	LocalPCA,
-	NeighborIndex,
-	build_index,
-	fit_local_pca,
-	load_index,
-	neighbor_vectors,
-	query_index,
-	reconstruct_from_local_pca,
-	sample_manifold_point,
-	smooth_tensor,
-	to_numpy_array,
-	unwhiten,
-	whiten,
-)
+"""Smoothing module for randomized smoothing.
+
+Provides isotropic (Gaussian) and manifold-aware smoothing.
+
+Main API:
+    - Smoother: Abstract base class
+    - IsotropicSmoother: N(0, σ²I) Gaussian noise
+    - ManifoldSmoother: Local PCA-based manifold smoothing
+    - create_smoother(): Factory function
+
+PCA utilities:
+    - LocalPCA: Fitted PCA dataclass
+    - fit_local_pca: Fit PCA on neighbors
+    - whiten/unwhiten: Transform to/from whitened space
+"""
+
+from .base import Smoother, SmoothingResult, create_smoother
+from .isotropic import IsotropicSmoother
+from .manifold import ManifoldSmoother, CachedPCA
+from .pca import LocalPCA, fit_local_pca, whiten, unwhiten, reconstruct, reconstruction_error
 
 __all__ = [
-	"isotropic_noise_like",
-	"manifold_noise_from_batch",
-	"smooth_input_embeddings",
-	"to_numpy_array",
-	"NeighborIndex",
-	"LocalPCA",
-	"build_index",
-	"load_index",
-	"query_index",
-	"reconstruct_from_local_pca",
-	"neighbor_vectors",
-	"fit_local_pca",
-	"whiten",
-	"unwhiten",
-	"sample_manifold_point",
-	"smooth_tensor",
-	"batch_covariance",
-	"whitening_transform",
-	"whitened_norm",
-	"attention_stability_report",
-	"layer_attention_breakdown_summary",
+    # Core API
+    "Smoother",
+    "SmoothingResult",
+    "create_smoother",
+    "IsotropicSmoother",
+    "ManifoldSmoother",
+    "CachedPCA",
+    # PCA utilities
+    "LocalPCA",
+    "fit_local_pca",
+    "whiten",
+    "unwhiten",
+    "reconstruct",
+    "reconstruction_error",
 ]
+

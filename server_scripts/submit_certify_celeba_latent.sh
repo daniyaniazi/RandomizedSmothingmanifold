@@ -19,9 +19,14 @@ if [[ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]]; then
     conda activate smoothing
 fi
 
+echo "================================================"
+echo "CelebA Latent Manifold Certification"
 echo "Running on: $(hostname)"
 echo "GPU: ${CUDA_VISIBLE_DEVICES:-unset}"
-echo "Starting CelebA Latent Certification"
+echo "Start: $(date)"
+echo "================================================"
 
-python -m src.certify.celeba_workflow \
+python -m src.experiments.certify.celeba \
     --config src/configs/experiments/certify_celeba_latent_128.yaml
+
+echo "Done: $(date)"

@@ -27,9 +27,10 @@ smoothing:
   enabled: true
   mode: manifold
   target: hidden_states
-  sigma: 0.20
+  sigma: 0.20  # default sigma
+  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   layer_index: null        # use last hidden layer
-  knn_k: 32
+  knn_k: 64
   eps_eig: 1.0e-06
   index_backend: annoy
   index_metric: euclidean
@@ -53,7 +54,7 @@ train:
   grad_clip_norm: 1.0
 
 eval:
-  max_batches: 50        # subset run for faster turnaround
+  max_batches: null     # using test_subset instead
   test_subset: 0.7       # fraction of test set to use (0.1 = 10%), null for full test set
 
 wandb:

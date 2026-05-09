@@ -1,14 +1,21 @@
-"""Token-wise manifold smoothing helpers for NER.
+"""Token-wise manifold smoothing for NER certification.
+
+This module provides NER-specific orchestration on top of the generic
+ManifoldSmoother. It handles:
+1. Token position tracking (batch_idx, token_idx)
+2. Model forward pass with noise injection
+3. Voting and certification per token
+
+The core smoothing algorithm uses ManifoldSmoother from src/smoothing/manifold.
 
 Workflow:
-1. get contextual hidden states for a sentence
-2. for each valid token, retrieve train-token neighbours (ONCE per token)
-3. fit local PCA (ONCE per token), then sample multiple noisy points
-4. inject the delta back into the chosen transformer layer
-5. classify the full sentence, then vote per token across noisy samples
+1. Get contextual hidden states for a sentence
+2. For each valid token, cache PCA using ManifoldSmoother (ONCE per token)
+3. Sample multiple noisy points using cached PCA
+4. Inject the delta back into the chosen transformer layer
+5. Classify the full sentence, then vote per token across noisy samples
 
 OPTIMIZATION: PCA is computed once per token and reused for all samples.
-This gives ~100x speedup for the PCA/neighbor lookup phase.
 """
 
 from __future__ import annotations
@@ -21,7 +28,8 @@ import torch
 
 from src.certify.randomized import TokenCertificate, certify_token_from_counts
 from src.indexing import hidden_state_for_layer
-from .workflow import NeighborIndex, fit_local_pca, neighbor_vectors, reconstruct_from_local_pca, sample_manifold_point, LocalPCA, whiten, unwhiten
+from src.indexing.base import NeighborIndex, query_index
+from .manifold import ManifoldSmoother, CachedPCA
 
 
 @dataclass
@@ -48,10 +56,12 @@ class SmoothedBatchOutput:
 
 @dataclass
 class CachedTokenPCA:
-    """Cached PCA info for a single token - reused across all samples."""
-    anchor: np.ndarray
-    pca: LocalPCA
-    neighbors: np.ndarray
+    """Cached PCA with token position info for NER.
+    
+    Extends the generic CachedPCA with batch/token indices for
+    reconstructing the smoothed hidden state tensor.
+    """
+    cached_pca: CachedPCA  # Generic cached PCA from ManifoldSmoother
     batch_idx: int
     token_idx: int
 
@@ -59,11 +69,20 @@ class CachedTokenPCA:
 def precompute_token_pcas(
     hidden: torch.Tensor,
     valid_mask: torch.Tensor,
-    neighbor_index: NeighborIndex,
-    knn_k: int,
-    eps_eig: float,
+    smoother: ManifoldSmoother,
 ) -> list[CachedTokenPCA]:
-    """Precompute PCA for all valid tokens ONCE (not per sample)."""
+    """Precompute PCA for all valid tokens ONCE (not per sample).
+    
+    Uses ManifoldSmoother.compute_pca() for the actual PCA computation.
+    
+    Args:
+        hidden: Hidden states tensor (batch, seq_len, dim)
+        valid_mask: Boolean mask for valid tokens
+        smoother: ManifoldSmoother instance with index and parameters
+        
+    Returns:
+        List of CachedTokenPCA for each valid token
+    """
     cached_pcas: list[CachedTokenPCA] = []
     batch_size, seq_len, _ = hidden.shape
     
@@ -73,15 +92,11 @@ def precompute_token_pcas(
                 continue
             
             anchor = hidden[batch_idx, token_idx].detach().cpu().numpy().astype(np.float32)
-            # Request k+1 neighbours and drop index 0 (self-match at distance 0)
-            all_neighbors = neighbor_vectors(neighbor_index, k=knn_k + 1, vector=anchor)
-            neighbors = all_neighbors[1:]
-            pca = fit_local_pca(neighbors, eps_eig=eps_eig)
+            # Use ManifoldSmoother to compute PCA (handles kNN + PCA)
+            cached_pca = smoother.compute_pca(anchor)
             
             cached_pcas.append(CachedTokenPCA(
-                anchor=anchor,
-                pca=pca,
-                neighbors=neighbors,
+                cached_pca=cached_pca,
                 batch_idx=batch_idx,
                 token_idx=token_idx,
             ))
@@ -89,27 +104,38 @@ def precompute_token_pcas(
     return cached_pcas
 
 
-def sample_from_cached_pca(cached: CachedTokenPCA, sigma: float) -> np.ndarray:
-    """Sample a single noisy point from cached PCA (fast - no KNN/PCA recomputation)."""
-    # Whiten the anchor point
-    whitened = whiten(cached.anchor, cached.pca)
-    # Add isotropic noise in whitened space
-    noise = np.random.randn(len(whitened)).astype(np.float32) * sigma
-    whitened_noisy = whitened + noise
-    # Unwhiten back to original space
-    return unwhiten(whitened_noisy, cached.pca)
+def sample_from_cached_token_pca(cached: CachedTokenPCA, smoother: ManifoldSmoother) -> np.ndarray:
+    """Sample a single noisy point using ManifoldSmoother.
+    
+    Args:
+        cached: CachedTokenPCA containing the generic CachedPCA
+        smoother: ManifoldSmoother instance
+        
+    Returns:
+        Noisy vector in original space
+    """
+    return smoother.sample_from_cached(cached.cached_pca)
 
 
 def smooth_token_tensor_with_cache(
     hidden: torch.Tensor,
     cached_pcas: list[CachedTokenPCA],
-    sigma: float,
+    smoother: ManifoldSmoother,
 ) -> torch.Tensor:
-    """Apply one round of manifold smoothing using precomputed PCAs."""
+    """Apply one round of manifold smoothing using precomputed PCAs.
+    
+    Args:
+        hidden: Hidden states tensor (batch, seq_len, dim)
+        cached_pcas: List of CachedTokenPCA from precompute_token_pcas
+        smoother: ManifoldSmoother instance
+        
+    Returns:
+        Smoothed hidden states tensor
+    """
     smoothed = hidden.clone()
     
     for cached in cached_pcas:
-        noisy = sample_from_cached_pca(cached, sigma)
+        noisy = sample_from_cached_token_pca(cached, smoother)
         smoothed[cached.batch_idx, cached.token_idx] = torch.as_tensor(
             noisy,
             device=hidden.device,
@@ -124,19 +150,29 @@ def smooth_token_tensor(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     valid_mask: torch.Tensor,
-    neighbor_index: NeighborIndex,
+    smoother: ManifoldSmoother,
     token_texts: list[str],
     label_ids: list[int],
-    sigma: float,
-    knn_k: int,
-    eps_eig: float,
     tokenizer,
     collect_debug: bool = False,
 ) -> tuple[torch.Tensor, list[list[TokenDebugRecord | None]] | None]:
-    """Smooth each valid token independently using a global train-token index.
+    """Smooth each valid token independently using ManifoldSmoother.
     
-    NOTE: This is the legacy function, kept for backward compatibility.
-    For better performance, use precompute_token_pcas + smooth_token_tensor_with_cache.
+    NOTE: For better performance, use precompute_token_pcas + smooth_token_tensor_with_cache.
+    
+    Args:
+        hidden: Hidden states tensor (batch, seq_len, dim)
+        input_ids: Token IDs for debug info
+        labels: Labels tensor for debug info
+        valid_mask: Boolean mask for valid tokens
+        smoother: ManifoldSmoother instance
+        token_texts: Token texts from index (for debug)
+        label_ids: Label IDs from index (for debug)
+        tokenizer: Tokenizer for debug info
+        collect_debug: Whether to collect debug info
+        
+    Returns:
+        Tuple of (smoothed hidden states, debug info)
     """
     smoothed = hidden.clone()
     debug_rows: list[list[TokenDebugRecord | None]] | None = [] if collect_debug else None
@@ -149,12 +185,10 @@ def smooth_token_tensor(
                 continue
 
             anchor = hidden[batch_idx, token_idx].detach().cpu().numpy().astype(np.float32)
-            # Request k+1 neighbours and drop index 0 (self-match at distance 0)
-            all_neighbors = neighbor_vectors(neighbor_index, k=knn_k + 1, vector=anchor)
-            neighbors = all_neighbors[1:]
-            pca = fit_local_pca(neighbors, eps_eig=eps_eig)
-            recon = reconstruct_from_local_pca(anchor, neighbors, eps_eig=eps_eig)
-            noisy = sample_manifold_point(anchor, neighbors, sigma=sigma, eps_eig=eps_eig)
+            
+            # Use ManifoldSmoother for sampling
+            result = smoother.sample_with_details(anchor)
+            noisy = result.noisy
 
             smoothed[batch_idx, token_idx] = torch.as_tensor(
                 noisy,
@@ -165,20 +199,17 @@ def smooth_token_tensor(
             if collect_debug and debug_row is not None:
                 neighbor_ids = np.asarray([], dtype=np.int64)
                 try:
-                    from .workflow import query_index
                     # k+1 to drop self-match at index 0
-                    all_ids = query_index(neighbor_index, k=knn_k + 1, vector=anchor)
+                    all_ids = query_index(smoother.index, k=smoother.knn_k + 1, vector=anchor)
                     neighbor_ids = all_ids[1:]
                 except Exception:
-                    neighbor_ids = np.arange(min(knn_k, len(token_texts)), dtype=np.int64)
+                    neighbor_ids = np.arange(min(smoother.knn_k, len(token_texts)), dtype=np.int64)
 
                 # Query index with the noisy vector to find where the smoothed point landed
-                noisy_nbr_id = -1
                 noisy_nearest_tok = ""
                 noisy_nearest_lbl = -1
                 try:
-                    from .workflow import query_index
-                    noisy_ids = query_index(neighbor_index, k=1, vector=noisy)
+                    noisy_ids = query_index(smoother.index, k=1, vector=noisy)
                     if len(noisy_ids) > 0:
                         noisy_nbr_id = int(noisy_ids[0])
                         noisy_nearest_tok = token_texts[noisy_nbr_id]
@@ -187,6 +218,13 @@ def smooth_token_tensor(
                     pass
 
                 tok = tokenizer.convert_ids_to_tokens([int(input_ids[batch_idx, token_idx].item())])[0]
+                
+                # Get reconstruction error (anchor through PCA round-trip)
+                # Use smoother to compute this
+                cached = smoother.compute_pca(anchor)
+                from .pca import whiten, unwhiten
+                recon = unwhiten(whiten(anchor, cached.pca), cached.pca)
+                
                 debug_row[token_idx] = TokenDebugRecord(
                     token=tok,
                     true_label=int(labels[batch_idx, token_idx].item()),
@@ -194,7 +232,7 @@ def smooth_token_tensor(
                     neighbor_labels=[int(label_ids[int(i)]) for i in neighbor_ids[: min(len(neighbor_ids), 10)]],
                     reconstruction_l2=float(np.linalg.norm(recon - anchor)),
                     noisy_l2=float(np.linalg.norm(noisy - anchor)),
-                    explained_variance=pca.evals[: min(10, len(pca.evals))].tolist(),
+                    explained_variance=cached.pca.evals[: min(10, len(cached.pca.evals))].tolist(),
                     noisy_nearest_token=noisy_nearest_tok,
                     noisy_nearest_label=noisy_nearest_lbl,
                 )
@@ -210,13 +248,29 @@ def _collect_debug_info(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     valid_mask: torch.Tensor,
-    neighbor_index: NeighborIndex,
+    smoother: ManifoldSmoother,
     token_texts: list[str],
     label_ids: list[int],
-    sigma: float,
     tokenizer,
 ) -> list[list[TokenDebugRecord | None]]:
-    """Collect debug info using cached PCAs."""
+    """Collect debug info using cached PCAs.
+    
+    Args:
+        cached_pcas: List of CachedTokenPCA from precompute_token_pcas
+        hidden: Hidden states tensor
+        input_ids: Token IDs
+        labels: Labels tensor
+        valid_mask: Boolean mask
+        smoother: ManifoldSmoother instance
+        token_texts: Token texts from index
+        label_ids: Label IDs from index
+        tokenizer: Tokenizer for token text lookup
+        
+    Returns:
+        Debug info for each batch/token position
+    """
+    from .pca import whiten, unwhiten
+    
     batch_size, seq_len, _ = hidden.shape
     debug_rows: list[list[TokenDebugRecord | None]] = []
     
@@ -227,27 +281,25 @@ def _collect_debug_info(
     for cached in cached_pcas:
         batch_idx = cached.batch_idx
         token_idx = cached.token_idx
-        anchor = cached.anchor
-        pca = cached.pca
+        anchor = cached.cached_pca.anchor
+        pca = cached.cached_pca.pca
         
         # Sample one noisy point for debug
-        noisy = sample_from_cached_pca(cached, sigma)
+        noisy = sample_from_cached_token_pca(cached, smoother)
         recon = unwhiten(whiten(anchor, pca), pca)  # Reconstruct through PCA
         
         neighbor_ids = np.asarray([], dtype=np.int64)
         try:
-            from .workflow import query_index
-            all_ids = query_index(neighbor_index, k=len(cached.neighbors) + 1, vector=anchor)
+            all_ids = query_index(smoother.index, k=smoother.knn_k + 1, vector=anchor)
             neighbor_ids = all_ids[1:]
         except Exception:
-            neighbor_ids = np.arange(min(len(cached.neighbors), len(token_texts)), dtype=np.int64)
+            neighbor_ids = np.arange(min(smoother.knn_k, len(token_texts)), dtype=np.int64)
         
         # Query index with the noisy vector
         noisy_nearest_tok = ""
         noisy_nearest_lbl = -1
         try:
-            from .workflow import query_index
-            noisy_ids = query_index(neighbor_index, k=1, vector=noisy)
+            noisy_ids = query_index(smoother.index, k=1, vector=noisy)
             if len(noisy_ids) > 0:
                 noisy_nbr_id = int(noisy_ids[0])
                 noisy_nearest_tok = token_texts[noisy_nbr_id]
@@ -290,8 +342,28 @@ def sample_smoothed_token_predictions(
 ) -> SmoothedBatchOutput:
     """Sample smoothed predictions with OPTIMIZED PCA caching.
     
-    PCA is computed ONCE per token, then reused for all num_samples iterations.
+    Uses ManifoldSmoother internally - PCA is computed ONCE per token,
+    then reused for all num_samples iterations.
     This gives ~100x speedup for the PCA/neighbor lookup phase.
+    
+    Args:
+        model: NER model with hidden state output
+        batch: Batch dict with input_ids, attention_mask, labels
+        neighbor_index: NeighborIndex for kNN lookups
+        token_texts: Token texts from training index
+        label_ids: Label IDs from training index
+        tokenizer: Tokenizer for debug info
+        num_samples: Number of smoothing samples
+        sigma: Noise standard deviation
+        knn_k: Number of neighbors for local PCA
+        eps_eig: Eigenvalue floor for PCA
+        layer_index: Which transformer layer to inject noise
+        alpha_conf: Confidence level for certification
+        abstain_label: Label ID for abstention
+        collect_debug: Whether to collect debug info
+        
+    Returns:
+        SmoothedBatchOutput with predictions, vote counts, and certificates
     """
     model.eval()
 
@@ -315,13 +387,19 @@ def sample_smoothed_token_predictions(
 
     target_layer = model.num_layers() - 1 if layer_index is None else layer_index
 
-    # OPTIMIZATION: Precompute PCA for all tokens ONCE
+    # Create ManifoldSmoother instance (used for all tokens)
+    smoother = ManifoldSmoother(
+        sigma=sigma,
+        index=neighbor_index,
+        knn_k=knn_k,
+        eps_eig=eps_eig,
+    )
+
+    # OPTIMIZATION: Precompute PCA for all tokens ONCE using smoother
     cached_pcas = precompute_token_pcas(
         hidden=clean_hidden,
         valid_mask=valid_mask,
-        neighbor_index=neighbor_index,
-        knn_k=knn_k,
-        eps_eig=eps_eig,
+        smoother=smoother,
     )
     
     # Collect debug info once (using first sample)
@@ -332,10 +410,9 @@ def sample_smoothed_token_predictions(
             input_ids=input_ids,
             labels=labels,
             valid_mask=valid_mask,
-            neighbor_index=neighbor_index,
+            smoother=smoother,
             token_texts=token_texts,
             label_ids=label_ids,
-            sigma=sigma,
             tokenizer=tokenizer,
         )
 
@@ -345,7 +422,7 @@ def sample_smoothed_token_predictions(
         smoothed_hidden = smooth_token_tensor_with_cache(
             hidden=clean_hidden,
             cached_pcas=cached_pcas,
-            sigma=sigma,
+            smoother=smoother,
         )
 
         delta = smoothed_hidden - clean_hidden

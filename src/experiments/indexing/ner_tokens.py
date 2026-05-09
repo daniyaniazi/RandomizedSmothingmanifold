@@ -1,3 +1,25 @@
+"""Build NER token embedding index.
+
+Extracts token embeddings from a trained NER model and saves them
+for use in manifold smoothing certification.
+
+Usage:
+    python -m src.experiments.indexing.ner_tokens \\
+        --config CONFIG --checkpoint CHECKPOINT --out-dir OUTPUT_DIR
+
+Example:
+    python -m src.experiments.indexing.ner_tokens \\
+        --config src/configs/experiments/ner_conll2003_bert_certify.yaml \\
+        --checkpoint output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt \\
+        --out-dir output/ner_conll2003_bert/token_embeddings/train/last \\
+        --split train
+
+Output files:
+    - token_vectors.npz: Embedding vectors (N x D)
+    - token_metadata.json: Token texts and labels
+    - label_map.json: Label ID to name mapping
+"""
+
 from __future__ import annotations
 
 import argparse

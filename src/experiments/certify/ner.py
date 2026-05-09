@@ -1,11 +1,33 @@
-"""Run clean vs token-wise manifold-smoothed NER evaluation.
+"""NER Certification Experiment.
 
-This script keeps the workflow simple and modular:
-1. load trained NER checkpoint
-2. build or load a train-token index for a chosen hidden layer
-3. evaluate clean baseline on val/test split
-4. evaluate token-wise manifold smoothing with voting/certification
-5. save metrics and a small debug artifact for visualization
+Run randomized smoothing certification on NER models.
+Supports both isotropic (Gaussian) and manifold smoothing.
+
+Workflow:
+1. Load trained NER checkpoint
+2. Build or load a train-token kNN index for the chosen hidden layer
+3. Evaluate clean baseline on val/test split
+4. Evaluate with smoothing + voting/certification
+5. Save metrics and debug artifacts
+
+Usage:
+    python -m src.experiments.certify.ner --config CONFIG --checkpoint CHECKPOINT
+
+Examples:
+    # Manifold smoothing
+    python -m src.experiments.certify.ner \\
+        --config src/configs/experiments/ner_conll2003_bert_certify.yaml \\
+        --checkpoint output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
+
+    # Isotropic smoothing
+    python -m src.experiments.certify.ner \\
+        --config src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml \\
+        --checkpoint output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
+
+    # With masking
+    python -m src.experiments.certify.ner \\
+        --config src/configs/experiments/ner_conll2003_bert_masking_certify.yaml \\
+        --checkpoint output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
 """
 
 from __future__ import annotations

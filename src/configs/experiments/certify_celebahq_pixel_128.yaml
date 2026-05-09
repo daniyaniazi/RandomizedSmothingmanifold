@@ -28,7 +28,8 @@ vae:
 
 smoothing:
   mode: pixel
-  sigma: 0.25
+  sigma: 0.25  # default sigma
+  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   n_samples: 100
   knn_k: 64
   eps_eig: 1.0e-06

@@ -1,0 +1,109 @@
+# =============================================================================
+# SIGMA SWEEP GUIDE - Running experiments with multiple noise levels
+# =============================================================================
+#
+# Each config now has a `sigma_values` array. The sweep script reads this
+# and submits ONE JOB PER SIGMA to avoid timeout issues.
+#
+# WORKFLOW:
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Submit sweep:
+#    ./server_scripts/submit_sigma_sweep.sh src/configs/experiments/certify_celeba_latent_128.yaml
+#
+# 2. Monitor jobs:
+#    squeue -u $USER
+#
+# 3. After completion, aggregate results:
+#    python server_scripts/aggregate_sigma_results.py \
+#        --results-dir output/smile_classification/celeba/certify/latent_manifold
+#
+# OUTPUT STRUCTURE (each sigma gets its own directory):
+# ─────────────────────────────────────────────────────────────────────────────
+#   output/smile_classification/celeba/certify/latent_manifold/
+#   ├── sigma_0_25/
+#   │   ├── metrics.json      ← {accuracy, certified_rate, mean_radius, ...}
+#   │   ├── results.csv       ← per-sample results
+#   │   └── visualizations/
+#   ├── sigma_0_50/
+#   │   └── ...
+#   ├── sigma_0_75/
+#   │   └── ...
+#   └── sigma_comparison.csv  ← aggregated (created by aggregate script)
+#
+# =============================================================================
+# UNDERSTANDING SIGMA (σ)
+# =============================================================================
+#
+# σ controls the TRADE-OFF between accuracy and certified radius:
+#
+#     Certified Radius R = σ · Φ⁻¹(p_A)
+#
+#     where Φ⁻¹ = inverse Gaussian CDF, p_A = winning class probability
+#
+#     ┌─────────────┬─────────────────────┬─────────────────────┐
+#     │             │ Lower σ (0.1-0.25)  │ Higher σ (0.5-1.0)  │
+#     ├─────────────┼─────────────────────┼─────────────────────┤
+#     │ Noise       │ Less perturbation   │ More perturbation   │
+#     │ Accuracy    │ Higher (less noise) │ Lower (more noise)  │
+#     │ Cert Radius │ Smaller             │ Larger              │
+#     │ Use case    │ Fine-grained cert   │ Robustness proof    │
+#     └─────────────┴─────────────────────┴─────────────────────┘
+#
+# MANIFOLD vs ISOTROPIC:
+# - Same σ value, but manifold constrains noise to data directions
+# - Manifold typically achieves HIGHER accuracy at same σ
+# - Both yield same certified radius formula
+#
+# =============================================================================
+# SIGMA VALUES BY SPACE
+# =============================================================================
+
+pixel_space:
+  description: "Images normalized to [0,1]"
+  sigma_values: [0.12, 0.25, 0.50]
+  notes: |
+    - 0.12: Minimal visible noise, small radius
+    - 0.25: Balanced (default), moderate radius  
+    - 0.50: Noticeable noise, larger radius
+
+latent_space:
+  description: "VAE latent vectors (typically standardized)"
+  sigma_values: [0.25, 0.50, 0.75, 1.00]
+  notes: |
+    - Latent space is ~N(0,1), so higher σ is valid
+    - Decoder smooths noise artifacts
+    - Can push to σ=1.0 or higher
+
+hidden_states:
+  description: "Transformer hidden representations"
+  sigma_values: [0.10, 0.20, 0.30, 0.50]
+  notes: |
+    - BERT hidden dim ~768, values typically < 5
+    - Start conservative (0.10-0.20)
+    - 0.50 is stress-test territory
+
+# =============================================================================
+# QUICK REFERENCE - COMMANDS
+# =============================================================================
+#
+# Submit sigma sweep (one job per sigma):
+#   ./server_scripts/submit_sigma_sweep.sh CONFIG_FILE [--dry-run]
+#
+# Examples:
+#   # CelebA latent manifold (4 sigmas → 4 jobs)
+#   ./submit_sigma_sweep.sh src/configs/experiments/certify_celeba_latent_128.yaml
+#
+#   # CelebA latent isotropic  
+#   ./submit_sigma_sweep.sh src/configs/experiments/certify_celeba_isotropic_latent_128.yaml
+#
+#   # NER manifold
+#   ./submit_sigma_sweep.sh src/configs/experiments/ner_conll2003_bert_certify.yaml
+#
+#   # Preview without submitting
+#   ./submit_sigma_sweep.sh src/configs/experiments/certify_celeba_latent_128.yaml --dry-run
+#
+# Aggregate results after jobs complete:
+#   python server_scripts/aggregate_sigma_results.py \
+#       --results-dir output/smile_classification/celeba/certify/latent_manifold
+#
+# =============================================================================

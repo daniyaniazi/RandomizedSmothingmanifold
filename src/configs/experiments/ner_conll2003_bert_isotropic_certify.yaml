@@ -27,7 +27,8 @@ smoothing:
   enabled: true
   mode: isotropic          # Gaussian isotropic noise (not manifold-aware)
   target: hidden_states
-  sigma: 0.20              # noise standard deviation
+  sigma: 0.20  # default sigma
+  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   layer_index: null        # use last hidden layer
 
 certification:
@@ -46,7 +47,7 @@ train:
   grad_clip_norm: 1.0
 
 eval:
-  max_batches: 50
+  max_batches: null     # using test_subset instead
   test_subset: 0.7         # fraction of test set to use
 
 wandb:

@@ -9,7 +9,7 @@ from pathlib import Path
 from src.configs.train_smile_io import load_smile_training_config
 from src.configs.train_smile_schema import SmileTrainingConfig
 from src.dataloaders.celeba_smile import build_smile_dataloaders
-from src.models.resnet_smile import build_resnet_smile_classifier
+from src.models.resnet import build_resnet_classifier
 
 import torch
 from torch import nn
@@ -35,7 +35,7 @@ def run():
 	print(f"[smoke] pos_weight:   {data.pos_weight:.4f}")
 
 	print(f"[smoke] building model: {cfg.model.name}")
-	model = build_resnet_smile_classifier(
+	model = build_resnet_classifier(
 		name=cfg.model.name,
 		pretrained=cfg.model.pretrained,
 		dropout=cfg.model.dropout,
