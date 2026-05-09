@@ -462,13 +462,13 @@ def save_sample_visualization(
     latent_smoother: IsotropicSmoother | ManifoldSmoother | None = None,
     n_noisy_samples: int = 5,
 ) -> None:
-    """Save visualization grid for a single sample.
+    """Save visualization grid for a single sample (Jonas-style layout).
     
     Grid layout:
-    Row 1: Original | Neighbor 1 | Neighbor 2 | Neighbor 3 | Neighbor 4
-    Row 2: Isotropic noisy 1-5
-    Row 3: Manifold noisy 1-5 (smoothed)
-    Row 4: Classifier input 1-5 (after classifier transform)
+    Row 1: Original | PCA Reconstruction (empty cells after)
+    Row 2: Samples with noise in whitened space (manifold smoothing)
+    Row 3: Samples with noise in original space (isotropic/Gaussian)
+    Row 4: k-NN Neighbors
     """
     try:
         import matplotlib.pyplot as plt
@@ -490,11 +490,8 @@ def save_sample_visualization(
     
     viz_dir.mkdir(parents=True, exist_ok=True)
     
-    fig = plt.figure(figsize=(15, 12))
-    gs = gridspec.GridSpec(4, 5, figure=fig, hspace=0.3, wspace=0.1)
-    
-    # Row labels
-    row_labels = ["Original + Neighbors", "Isotropic Noise", "Manifold Smooth", "Classifier Input"]
+    fig = plt.figure(figsize=(3 * n_noisy_samples, 12))
+    gs = gridspec.GridSpec(4, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
     
     # Get flat vector for neighbor lookup
     if cfg.smoothing.mode == "latent" and vae is not None:
@@ -505,90 +502,94 @@ def save_sample_visualization(
     else:
         query_vec = img_tensor.numpy().flatten().astype(np.float32)
     
-    # Row 1: Original + 4 neighbors
+    # =========================================================================
+    # Row 1: Original + PCA Reconstruction
+    # =========================================================================
     ax = fig.add_subplot(gs[0, 0])
     ax.imshow(_tensor_to_pil(img_tensor))
-    ax.set_title(f"Original\nLabel: {'smile' if label else 'no smile'}", fontsize=9)
+    ax.set_title("Original", fontsize=10)
     ax.axis("off")
     
-    # Get neighbors
-    if index is not None and hasattr(index.index, "get_nns_by_vector"):
-        nn_ids = index.index.get_nns_by_vector(query_vec.tolist(), 5)
-        for i, nn_id in enumerate(nn_ids[1:5]):  # skip self
-            ax = fig.add_subplot(gs[0, i + 1])
-            nn_vec = np.array(index.index.get_item_vector(nn_id), dtype=np.float32)
-            
-            if cfg.smoothing.mode == "latent" and vae is not None:
-                # Decode latent neighbor
-                with torch.no_grad():
-                    z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
-                    nn_img = vae.decode(z_t).squeeze(0).cpu()
-                ax.imshow(_tensor_to_pil(nn_img))
-            else:
-                # Reshape pixel neighbor
-                nn_img = torch.from_numpy(nn_vec.reshape(img_tensor.shape))
-                ax.imshow(_tensor_to_pil(nn_img))
-            ax.set_title(f"Neighbor {i+1}", fontsize=9)
-            ax.axis("off")
+    # PCA reconstruction (encode -> decode for latent, or just show original for pixel)
+    ax = fig.add_subplot(gs[0, 1])
+    if cfg.smoothing.mode == "latent" and vae is not None:
+        with torch.no_grad():
+            x = img_tensor.unsqueeze(0).to(device)
+            mu, _ = vae.encode(x)
+            x_recon = vae.decode(mu).squeeze(0).cpu()
+        ax.imshow(_tensor_to_pil(x_recon))
+        ax.set_title("PCA Reconstruction (Latent)", fontsize=10)
+    else:
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("PCA Reconstruction", fontsize=10)
+    ax.axis("off")
     
-    # Row 2: Isotropic noisy samples
+    # Empty remaining cells in row 1
+    for i in range(2, n_noisy_samples):
+        ax = fig.add_subplot(gs[0, i])
+        ax.axis("off")
+    
+    # =========================================================================
+    # Row 2: Manifold smoothing - samples with noise in whitened space
+    # =========================================================================
     for i in range(n_noisy_samples):
         ax = fig.add_subplot(gs[1, i])
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
+        else:
+            noisy = sample_pixel(img_tensor, manifold_smoother)
+        ax.imshow(_tensor_to_pil(noisy))
+        ax.axis("off")
+        if i == 0:
+            space_name = "whitened latent" if cfg.smoothing.mode == "latent" else "whitened"
+            ax.set_title(f"Samples with noise in {space_name} space", fontsize=10)
+    
+    # =========================================================================
+    # Row 3: Isotropic/Gaussian - samples with noise in original space
+    # =========================================================================
+    for i in range(n_noisy_samples):
+        ax = fig.add_subplot(gs[2, i])
         if cfg.smoothing.mode == "latent" and vae is not None:
             noisy = sample_latent(img_tensor, vae, isotropic_smoother, device)
         else:
             noisy = sample_pixel(img_tensor, isotropic_smoother)
         ax.imshow(_tensor_to_pil(noisy))
-        if i == 0:
-            ax.set_ylabel("Isotropic", fontsize=10)
-        ax.set_title(f"σ={cfg.smoothing.sigma}", fontsize=8)
         ax.axis("off")
-    
-    # Row 3: Manifold smoothed samples
-    for i in range(n_noisy_samples):
-        ax = fig.add_subplot(gs[2, i])
-        if cfg.smoothing.mode == "latent" and vae is not None:
-            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
-        else:
-            noisy = sample_pixel(img_tensor, manifold_smoother)
-        ax.imshow(_tensor_to_pil(noisy))
         if i == 0:
-            ax.set_ylabel("Manifold", fontsize=10)
-        ax.set_title(f"k={cfg.smoothing.knn_k}", fontsize=8)
-        ax.axis("off")
+            space_name = "latent" if cfg.smoothing.mode == "latent" else "original"
+            ax.set_title(f"Samples with noise in {space_name} space", fontsize=10)
     
-    # Row 4: What classifier sees (after transform)
-    classifier_transform = transforms.Compose([
-        transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-    
-    for i in range(n_noisy_samples):
-        ax = fig.add_subplot(gs[3, i])
-        if cfg.smoothing.mode == "latent" and vae is not None:
-            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
-        else:
-            noisy = sample_pixel(img_tensor, manifold_smoother)
-        
-        # Convert to classifier input
-        noisy_clipped = noisy.clamp(-1, 1) * 0.5 + 0.5
-        noisy_pil = transforms.ToPILImage()(noisy_clipped)
-        # Show the resized version (what classifier sees)
-        resized = noisy_pil.resize((cfg.model.input_size, cfg.model.input_size))
-        ax.imshow(resized)
-        if i == 0:
-            ax.set_ylabel("Clf Input", fontsize=10)
-        ax.set_title(f"{cfg.model.input_size}x{cfg.model.input_size}", fontsize=8)
-        ax.axis("off")
+    # =========================================================================
+    # Row 4: k-NN Neighbors
+    # =========================================================================
+    if index is not None and hasattr(index.index, "get_nns_by_vector"):
+        nn_ids = index.index.get_nns_by_vector(query_vec.tolist(), n_noisy_samples + 1)
+        for i, nn_id in enumerate(nn_ids[:n_noisy_samples]):
+            ax = fig.add_subplot(gs[3, i])
+            nn_vec = np.array(index.index.get_item_vector(nn_id), dtype=np.float32)
+            
+            if cfg.smoothing.mode == "latent" and vae is not None:
+                with torch.no_grad():
+                    z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
+                    nn_img = vae.decode(z_t).squeeze(0).cpu()
+                ax.imshow(_tensor_to_pil(nn_img))
+            else:
+                nn_img = torch.from_numpy(nn_vec.reshape(img_tensor.shape))
+                ax.imshow(_tensor_to_pil(nn_img))
+            ax.axis("off")
+            if i == 0:
+                ax.set_title("Neighbors", fontsize=10)
     
     # Title with certification result
-    cert_status = "ABSTAIN" if abstained else ("✓ CORRECT" if pred == label else "✗ WRONG")
+    cert_status = "ABSTAIN" if abstained else ("CORRECT" if pred == label else "WRONG")
     pred_label = "smile" if pred == 1 else "no smile"
+    true_label = "smile" if label == 1 else "no smile"
+    smoothing_type = "Manifold" if cfg.smoothing.use_manifold else "Isotropic"
     fig.suptitle(
-        f"Sample {sample_idx} | True: {'smile' if label else 'no smile'} | "
-        f"Pred: {pred_label} | Radius: {radius:.4f} | {cert_status}",
-        fontsize=12, fontweight="bold"
+        f"Sample {sample_idx} | {cfg.smoothing.mode.capitalize()} {smoothing_type} | "
+        f"σ={cfg.smoothing.sigma} | True: {true_label} | Pred: {pred_label} | "
+        f"Radius: {radius:.4f} | {cert_status}",
+        fontsize=11, fontweight="bold"
     )
     
     # Save
