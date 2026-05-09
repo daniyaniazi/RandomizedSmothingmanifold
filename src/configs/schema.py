@@ -1,7 +1,7 @@
 """Typed configuration schema for smoothing experiments."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass
@@ -35,6 +35,7 @@ class SmoothingConfig:
     target: str = "hidden_states"  # hidden_states | input_embeddings | latent | image_tensor
     space: str = "input_embeddings"  # deprecated alias retained for compatibility
     sigma: float = 0.10
+    sigma_values: Optional[List[float]] = None  # for sigma sweep experiments
     layer_index: Optional[int] = None
     knn_k: int = 64
     eps_eig: float = 1e-6
