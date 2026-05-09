@@ -194,7 +194,13 @@ with open('$TEMP_CONFIG', 'w') as f:
         --job-name=$JOB_NAME \
         --output=$PROJECT_ROOT/output/slurm/${JOB_NAME}-%j.out \
         --error=$PROJECT_ROOT/output/slurm/${JOB_NAME}-%j.err \
-        --wrap=\"cd $PROJECT_ROOT && source ~/miniforge3/etc/profile.d/conda.sh && conda activate smoothing && $RUN_CMD\""
+        --wrap=\"#!/bin/bash
+cd $PROJECT_ROOT
+if [[ -f ~/miniforge3/etc/profile.d/conda.sh ]]; then
+    . ~/miniforge3/etc/profile.d/conda.sh
+    conda activate smoothing
+fi
+$RUN_CMD\""
     
     if $DRY_RUN; then
         echo "[DRY-RUN] Would run:"
