@@ -960,6 +960,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 vae=vae,
                 cfg=cfg,
                 device=device,
+                pixel_smoother=pixel_smoother,
+                latent_smoother=latent_smoother,
             )
         
         # Save checkpoint periodically
