@@ -16,7 +16,7 @@ set -euo pipefail
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 cd "$PROJECT_ROOT"
 mkdir -p output/slurm
-export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 
 if [ -f "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh" ]; then
     . "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
