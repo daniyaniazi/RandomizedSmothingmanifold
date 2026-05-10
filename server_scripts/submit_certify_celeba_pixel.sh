@@ -18,8 +18,8 @@ cd "$PROJECT_ROOT"
 mkdir -p output/slurm
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-if [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
-    . "$HOME/miniforge3/etc/profile.d/conda.sh"
+if [ -f "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh" ]; then
+    . "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
     conda activate smoothing
 fi
 

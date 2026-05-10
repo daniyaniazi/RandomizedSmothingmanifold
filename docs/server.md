@@ -7,18 +7,18 @@
 ssh slurm-submit.mpi-inf.mpg.de
 
 <!-- STEP 2: Install Miniforge3 (once) -->
-cd ~
+cd /BS/dniazi_thesis/work
 wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-bash Miniforge3-Linux-x86_64.sh -b -p "$HOME/miniforge3"
+bash Miniforge3-Linux-x86_64.sh -b -p /BS/dniazi_thesis/work/miniforge3_new
 
 <!-- STEP 3: Enable conda + configure conda-forge (once) -->
-source "$HOME/miniforge3/etc/profile.d/conda.sh"
+source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
 conda config --set channel_priority strict
 conda config --add channels conda-forge
 conda config --remove channels defaults || true
 
 <!-- Add to ~/.bashrc so conda is always available -->
-echo 'source "$HOME/miniforge3/etc/profile.d/conda.sh"' >> ~/.bashrc
+echo 'source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"' >> ~/.bashrc
 
 <!-- STEP 4: Create project environment (once) -->
 conda create -n smoothing python=3.11 pip -y
@@ -54,7 +54,7 @@ gpusession start
 <!-- or -->
 srun -p gpu20 --gres gpu:1 -c 4 --mem-per-cpu=4G --pty /bin/bash
 <!-- inside the session -->
-source "$HOME/miniforge3/etc/profile.d/conda.sh"
+source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
 conda activate smoothing
 cd /BS/dniazi_thesis/work/RandomizedSmothingmanifold
 python -m src.experiments.training.resnet_smile.main --config src/configs/training/smile_resnet_celeba.yaml
@@ -85,6 +85,6 @@ tail -f output/slurm/smoke-48293049.out                 <!--Out logs -->
 <!-- RUN Basic .py file -->
 ssh slurm-submit
 cd /BS/dniazi_thesis/work/RandomizedSmothingmanifold
-source "$HOME/miniforge3/etc/profile.d/conda.sh"
+source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
 conda activate smoothing
 python test.py

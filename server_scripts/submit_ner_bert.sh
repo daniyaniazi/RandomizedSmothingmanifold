@@ -14,8 +14,8 @@ PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 cd "$PROJECT_ROOT"
 mkdir -p output/slurm
 
-if [[ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]]; then
-    source "$HOME/miniforge3/etc/profile.d/conda.sh"
+if [[ -f "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh" ]]; then
+    source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
     conda activate smoothing
 fi
 
