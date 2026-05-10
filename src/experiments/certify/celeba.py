@@ -610,7 +610,16 @@ def save_sample_visualization(
         ax.axis("off")
 
         ax = fig.add_subplot(gs[0, 1])
-        ax.imshow(_tensor_to_pil(img_tensor))
+        # Compute actual PCA reconstruction (whiten -> unwhiten round-trip)
+        if isinstance(manifold_sm, ManifoldSmoother):
+            from src.smoothing.pca import whiten, unwhiten
+            cached = manifold_sm.compute_pca(query_vec)
+            w = whiten(query_vec, cached.pca)
+            recon_vec = unwhiten(w, cached.pca)
+            recon_tensor = torch.from_numpy(recon_vec.reshape(img_tensor.shape)).float()
+            ax.imshow(_tensor_to_pil(recon_tensor))
+        else:
+            ax.imshow(_tensor_to_pil(img_tensor))
         ax.set_title("PCA Reconstruction", fontsize=10)
         ax.axis("off")
         for i in range(2, n_noisy_samples):
@@ -653,10 +662,20 @@ def save_sample_visualization(
         ax.axis("off")
 
         ax = fig.add_subplot(gs[0, 1])
-        with torch.no_grad():
-            x = img_tensor.unsqueeze(0).to(device)
-            mu, _ = vae.encode(x)
-            x_recon = vae.decode(mu).squeeze(0).cpu()
+        # Compute actual latent PCA reconstruction (whiten -> unwhiten in latent space, then decode)
+        if isinstance(manifold_sm_latent, ManifoldSmoother):
+            from src.smoothing.pca import whiten, unwhiten
+            cached = manifold_sm_latent.compute_pca(query_vec)
+            w = whiten(query_vec, cached.pca)
+            recon_z = unwhiten(w, cached.pca)
+            with torch.no_grad():
+                z_t = torch.from_numpy(recon_z[None, :]).to(device=device, dtype=torch.float32)
+                x_recon = vae.decode(z_t).squeeze(0).cpu()
+        else:
+            with torch.no_grad():
+                x = img_tensor.unsqueeze(0).to(device)
+                mu, _ = vae.encode(x)
+                x_recon = vae.decode(mu).squeeze(0).cpu()
         ax.imshow(_tensor_to_pil(x_recon))
         ax.set_title("PCA Reconstruction (Latent)", fontsize=10)
         ax.axis("off")
