@@ -2,7 +2,7 @@
 # =============================================================================
 # SUBMIT ALL CERTIFICATION SIGMA SWEEPS
 # =============================================================================
-# Submits all 10 experiment types × 4 sigmas = 40 jobs total
+# Submits all 12 experiment types × 4 sigmas = 48 jobs total
 #
 # CelebA Experiments:
 #   1. CelebA Pixel Isotropic (Gaussian)
@@ -10,15 +10,21 @@
 #   3. CelebA Latent Isotropic (Gaussian)
 #   4. CelebA Latent Manifold
 #
+# CelebA-HQ Experiments:
+#   5. CelebA-HQ Pixel Isotropic (Gaussian)
+#   6. CelebA-HQ Pixel Manifold
+#   7. CelebA-HQ Latent Isotropic (Gaussian)
+#   8. CelebA-HQ Latent Manifold
+#
 # NER Experiments:
-#   5. NER Isotropic (Gaussian)
-#   6. NER Manifold
-#   7. NER + Context Masking Isotropic
-#   8. NER + Context Masking Manifold
+#   9.  NER Isotropic (Gaussian)
+#   10. NER Manifold
+#   11. NER + Context Masking Isotropic
+#   12. NER + Context Masking Manifold
 #
 # Usage:
 #   ./submit_all_sigma_sweeps.sh [--dry-run]
-#   ./submit_all_sigma_sweeps.sh [--dry-run] [--celeba-only | --ner-only]
+#   ./submit_all_sigma_sweeps.sh [--dry-run] [--celeba-only | --celebahq-only | --ner-only]
 # =============================================================================
 
 set -euo pipefail
@@ -28,6 +34,7 @@ cd "$SCRIPT_DIR"
 
 DRY_RUN=""
 CELEBA_ONLY=false
+CELEBAHQ_ONLY=false
 NER_ONLY=false
 
 for arg in "$@"; do
@@ -41,6 +48,9 @@ for arg in "$@"; do
         --celeba-only)
             CELEBA_ONLY=true
             ;;
+        --celebahq-only)
+            CELEBAHQ_ONLY=true
+            ;;
         --ner-only)
             NER_ONLY=true
             ;;
@@ -51,7 +61,7 @@ echo ""
 echo "=============================================="
 echo "SUBMITTING ALL CERTIFICATION SIGMA SWEEPS"
 echo "=============================================="
-echo "10 experiments × 4 sigmas = 40 jobs total"
+echo "12 experiments × 4 sigmas = 48 jobs total"
 echo "Sigmas: [0.25, 0.50, 0.75, 1.00]"
 echo "=============================================="
 echo ""
@@ -76,7 +86,7 @@ submit_sweep() {
 # =============================================================================
 # CELEBA EXPERIMENTS
 # =============================================================================
-if [ "$NER_ONLY" = false ]; then
+if [ "$NER_ONLY" = false ] && [ "$CELEBAHQ_ONLY" = false ]; then
 
 echo "=============================================="
 echo "CELEBA EXPERIMENTS (Pixel + Latent)"
@@ -105,30 +115,61 @@ submit_sweep \
 fi
 
 # =============================================================================
+# CELEBAHQ EXPERIMENTS
+# =============================================================================
+if [ "$NER_ONLY" = false ] && [ "$CELEBA_ONLY" = false ]; then
+
+echo "=============================================="
+echo "CELEBAHQ EXPERIMENTS (Pixel + Latent)"
+echo "=============================================="
+
+# 5. CelebA-HQ Pixel Isotropic (Gaussian)
+submit_sweep \
+    "src/configs/experiments/certify_celebahq_isotropic_pixel_128.yaml" \
+    "CelebA-HQ Pixel ISOTROPIC (Gaussian baseline)"
+
+# 6. CelebA-HQ Pixel Manifold
+submit_sweep \
+    "src/configs/experiments/certify_celebahq_pixel_128.yaml" \
+    "CelebA-HQ Pixel MANIFOLD"
+
+# 7. CelebA-HQ Latent Isotropic (Gaussian)
+submit_sweep \
+    "src/configs/experiments/certify_celebahq_isotropic_latent_128.yaml" \
+    "CelebA-HQ Latent ISOTROPIC (Gaussian baseline)"
+
+# 8. CelebA-HQ Latent Manifold
+submit_sweep \
+    "src/configs/experiments/certify_celebahq_latent_128.yaml" \
+    "CelebA-HQ Latent MANIFOLD"
+
+fi
+
+# =============================================================================
 # NER EXPERIMENTS
 # =============================================================================
-if [ "$CELEBA_ONLY" = false ]; then
+if [ "$CELEBA_ONLY" = false ] && [ "$CELEBAHQ_ONLY" = false ]; then
 
 echo "=============================================="
 echo "NER EXPERIMENTS"
 echo "=============================================="
 
-# 5. NER Isotropic (Gaussian)
+# 9. NER Isotropic (Gaussian)
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml" \
     "NER ISOTROPIC (Gaussian baseline)"
 
-# 6. NER Manifold
+# 10. NER Manifold
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_certify.yaml" \
     "NER MANIFOLD"
 
-# 7. NER + Context Masking Isotropic
+# 11. NER + Context Masking Isotropic
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_isotropic_masking_certify.yaml" \
     "NER + Context Masking ISOTROPIC"
 
-# 8. NER + Context Masking Manifold
+# 12. NER + Context Masking Manifold
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_masking_certify.yaml" \
     "NER + Context Masking MANIFOLD"
@@ -145,6 +186,7 @@ if [[ -z "$DRY_RUN" ]]; then
     echo ""
     echo "Results will be saved to:"
     echo "  - output/smile_classification/celeba/certify/..."
+    echo "  - output/smile_classification/celebahq/certify/..."
     echo "  - output/ner_conll2003_bert/certify/..."
 else
     echo "This was a DRY RUN - no jobs were submitted"
