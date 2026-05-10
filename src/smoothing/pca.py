@@ -39,7 +39,11 @@ def fit_local_pca(
     neighbors: np.ndarray,
     eps_eig: float = 1e-6,
 ) -> LocalPCA:
-    """Fit local PCA on a set of neighbor vectors.
+    """Fit local PCA on a set of neighbor vectors (Jonas-style).
+    
+    Uses sklearn PCA like the notebook: centers the data, fits PCA with
+    n_components = K (number of neighbors), returns eigenvalues and
+    eigenvector matrix.
     
     Args:
         neighbors: Neighbor vectors (K, D)
@@ -48,28 +52,30 @@ def fit_local_pca(
     Returns:
         LocalPCA object with mean, eigenvalues, and eigenvectors
     """
+    from sklearn.decomposition import PCA
+    
     if neighbors.ndim != 2:
         raise ValueError(f"Neighbors must be 2D, got shape {neighbors.shape}")
     
     neighbors = np.asarray(neighbors, dtype=np.float32)
+    K, D = neighbors.shape
     
-    # Compute mean and center data
+    # Center data
     mean = neighbors.mean(axis=0)
     centered = neighbors - mean
     
-    # Compute covariance matrix
-    n_samples = max(centered.shape[0] - 1, 1)
-    cov = (centered.T @ centered) / n_samples
+    # Fit PCA (same as Jonas's notebook)
+    n_components = min(K, D)
+    pca = PCA(n_components=n_components)
+    pca.fit(centered)
     
-    # Eigendecomposition
-    evals, evecs = np.linalg.eigh(cov)
+    ev = np.maximum(pca.explained_variance_.astype(np.float32), eps_eig)
+    # pca.components_ has shape (n_components, D) — rows are eigenvectors
+    # We store eigenvectors as columns (D, n_components) to match our whiten/unwhiten
+    Vt = pca.components_.astype(np.float32)  # (n_components, D)
+    evecs = Vt.T  # (D, n_components)
     
-    # Sort by descending eigenvalue
-    order = np.argsort(evals)[::-1]
-    evals = np.clip(evals[order], a_min=eps_eig, a_max=None).astype(np.float32)
-    evecs = evecs[:, order].astype(np.float32)
-    
-    return LocalPCA(mean=mean, evals=evals, evecs=evecs)
+    return LocalPCA(mean=mean, evals=ev, evecs=evecs)
 
 
 def whiten(vector: np.ndarray, pca: LocalPCA) -> np.ndarray:

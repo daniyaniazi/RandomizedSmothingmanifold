@@ -8,7 +8,7 @@ smoothing:
   target: hidden_states      # hidden_states | input_embeddings | image_tensor | latent
   sigma: 0.10                # scale of noise in whitened PCA space
   layer_index: null          # null = last hidden layer; set int for intermediate layer
-  knn_k: 64                  # number of neighbours for local PCA
+  knn_k: 500                 # number of neighbours for local PCA (500 for CelebA, 64 for NER)
   eps_eig: 1.0e-06           # floor for eigenvalues (numerical stability)
   index_backend: annoy       # torch | annoy | faiss
   index_metric: euclidean
