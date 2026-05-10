@@ -840,7 +840,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     latent_index = None
     pixel_size = cfg.vae.image_size if cfg.vae.enabled else 128
     
-    if cfg.smoothing.mode in ("pixel", "both") and cfg.smoothing.use_manifold:
+    # Build pixel index for pixel mode OR for latent manifold mode (needed for comparison viz rows)
+    if cfg.smoothing.use_manifold:
         pixel_index = load_or_build_pixel_index(
             train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees
         )
