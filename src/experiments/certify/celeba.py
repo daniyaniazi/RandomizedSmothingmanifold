@@ -446,6 +446,31 @@ def _tensor_to_pil(tensor: torch.Tensor, mean: List[float] = None, std: List[flo
     return Image.fromarray(img_np)
 
 
+def _get_nn_images(
+    index: NeighborIndex,
+    query_vec: np.ndarray,
+    n: int,
+    img_shape: tuple,
+    vae: ConvVAE | None,
+    device: torch.device,
+    is_latent: bool,
+) -> List[torch.Tensor]:
+    """Retrieve decoded neighbor images from the kNN index."""
+    imgs = []
+    if index is not None and hasattr(index.index, "get_nns_by_vector"):
+        nn_ids = index.index.get_nns_by_vector(query_vec.tolist(), n + 1)
+        for nn_id in nn_ids[:n]:
+            nn_vec = np.array(index.index.get_item_vector(nn_id), dtype=np.float32)
+            if is_latent and vae is not None:
+                with torch.no_grad():
+                    z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
+                    nn_img = vae.decode(z_t).squeeze(0).cpu()
+                imgs.append(nn_img)
+            else:
+                imgs.append(torch.from_numpy(nn_vec.reshape(img_shape)).float())
+    return imgs
+
+
 def save_sample_visualization(
     viz_dir: Path,
     sample_idx: int,
@@ -462,13 +487,32 @@ def save_sample_visualization(
     latent_smoother: IsotropicSmoother | ManifoldSmoother | None = None,
     n_noisy_samples: int = 5,
 ) -> None:
-    """Save visualization grid for a single sample (Jonas-style layout).
-    
-    Grid layout:
-    Row 1: Original | PCA Reconstruction (empty cells after)
-    Row 2: Samples with noise in whitened space (manifold smoothing)
-    Row 3: Samples with noise in original space (isotropic/Gaussian)
-    Row 4: k-NN Neighbors
+    """Save visualization grid for a single sample.
+
+    Layout varies by mode:
+
+    **Pixel Isotropic** (mode=pixel, use_manifold=False) — 2 rows:
+        Row 1: Original (+ empty)
+        Row 2: Gaussian noise samples in pixel space
+
+    **Latent Isotropic** (mode=latent, use_manifold=False) — 3 rows:
+        Row 1: Original (+ empty)
+        Row 2: Isotropic noise in latent space (decoded)
+        Row 3: Same samples shown as if isotropic noise were in pixel space
+
+    **Pixel Manifold** (mode=pixel, use_manifold=True) — 4 rows (Jonas-style):
+        Row 1: Original | PCA Reconstruction
+        Row 2: Samples with noise in whitened space
+        Row 3: Samples with Gaussian noise in original pixel space
+        Row 4: k-NN Neighbors
+
+    **Latent Manifold** (mode=latent, use_manifold=True) — 6 rows:
+        Row 1: Original | PCA Reconstruction (Latent)
+        Row 2: Latent samples with noise in whitened space (decoded)
+        Row 3: Pixel samples with noise in whitened space (for comparison)
+        Row 4: Latent samples with Gaussian noise (decoded)
+        Row 5: Pixel samples with Gaussian noise (for comparison)
+        Row 6: k-NN Neighbors
     """
     try:
         import matplotlib.pyplot as plt
@@ -476,111 +520,179 @@ def save_sample_visualization(
     except ImportError:
         _log("matplotlib not available, skipping visualization")
         return
-    
-    # Create isotropic smoother for comparison row
-    isotropic_smoother = IsotropicSmoother(sigma=cfg.smoothing.sigma)
-    
-    # Select smoother for manifold row
-    if cfg.smoothing.mode == "latent" and latent_smoother is not None:
-        manifold_smoother = latent_smoother
-    elif pixel_smoother is not None:
-        manifold_smoother = pixel_smoother
-    else:
-        manifold_smoother = isotropic_smoother  # Fallback
-    
+
     viz_dir.mkdir(parents=True, exist_ok=True)
-    
-    fig = plt.figure(figsize=(3 * n_noisy_samples, 12))
-    gs = gridspec.GridSpec(4, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
-    
-    # Get flat vector for neighbor lookup
-    if cfg.smoothing.mode == "latent" and vae is not None:
+
+    is_latent = cfg.smoothing.mode == "latent" and vae is not None
+    is_manifold = cfg.smoothing.use_manifold
+
+    # Isotropic smoothers (pixel and latent) for comparison rows
+    iso_pixel = IsotropicSmoother(sigma=cfg.smoothing.sigma)
+    iso_latent = IsotropicSmoother(sigma=cfg.smoothing.sigma) if is_latent else None
+
+    # Query vector for neighbor lookup
+    if is_latent:
         with torch.no_grad():
             x = img_tensor.unsqueeze(0).to(device)
             mu, _ = vae.encode(x)
             query_vec = mu.squeeze(0).cpu().numpy().astype(np.float32)
     else:
         query_vec = img_tensor.numpy().flatten().astype(np.float32)
-    
-    # =========================================================================
-    # Row 1: Original + PCA Reconstruction
-    # =========================================================================
-    ax = fig.add_subplot(gs[0, 0])
-    ax.imshow(_tensor_to_pil(img_tensor))
-    ax.set_title("Original", fontsize=10)
-    ax.axis("off")
-    
-    # PCA reconstruction (encode -> decode for latent, or just show original for pixel)
-    ax = fig.add_subplot(gs[0, 1])
-    if cfg.smoothing.mode == "latent" and vae is not None:
+
+    # ------------------------------------------------------------------
+    # Helper: draw a row of noisy samples
+    # ------------------------------------------------------------------
+    def _draw_sample_row(gs, row, title, sample_fn):
+        for i in range(n_noisy_samples):
+            ax = fig.add_subplot(gs[row, i])
+            ax.imshow(_tensor_to_pil(sample_fn()))
+            ax.axis("off")
+            if i == 0:
+                ax.set_title(title, fontsize=10)
+
+    # ------------------------------------------------------------------
+    # PIXEL ISOTROPIC  (no PCA, no whitening, no neighbors)
+    # ------------------------------------------------------------------
+    if not is_latent and not is_manifold:
+        n_rows = 2
+        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
+        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+
+        # Row 0: Original
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("Original", fontsize=10)
+        ax.axis("off")
+        for i in range(1, n_noisy_samples):
+            fig.add_subplot(gs[0, i]).axis("off")
+
+        # Row 1: Gaussian noise in pixel space
+        _draw_sample_row(gs, 1, "Samples with Gaussian noise in pixel space",
+                         lambda: sample_pixel(img_tensor, iso_pixel))
+
+    # ------------------------------------------------------------------
+    # LATENT ISOTROPIC  (no PCA, no whitening, no neighbors)
+    # ------------------------------------------------------------------
+    elif is_latent and not is_manifold:
+        n_rows = 3
+        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
+        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+
+        # Row 0: Original
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("Original", fontsize=10)
+        ax.axis("off")
+        for i in range(1, n_noisy_samples):
+            fig.add_subplot(gs[0, i]).axis("off")
+
+        # Row 1: Isotropic noise in latent space (decoded)
+        _draw_sample_row(gs, 1, "Samples with isotropic noise in latent space",
+                         lambda: sample_latent(img_tensor, vae, iso_latent, device))
+
+        # Row 2: Isotropic noise in pixel space (for visual comparison)
+        _draw_sample_row(gs, 2, "Samples with isotropic noise in pixel space",
+                         lambda: sample_pixel(img_tensor, iso_pixel))
+
+    # ------------------------------------------------------------------
+    # PIXEL MANIFOLD  (Jonas-style: PCA whitened + Gaussian + neighbors)
+    # ------------------------------------------------------------------
+    elif not is_latent and is_manifold:
+        manifold_sm = pixel_smoother if pixel_smoother is not None else iso_pixel
+        n_rows = 4
+        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
+        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+
+        # Row 0: Original + PCA Reconstruction
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("Original", fontsize=10)
+        ax.axis("off")
+
+        ax = fig.add_subplot(gs[0, 1])
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("PCA Reconstruction", fontsize=10)
+        ax.axis("off")
+        for i in range(2, n_noisy_samples):
+            fig.add_subplot(gs[0, i]).axis("off")
+
+        # Row 1: Whitened space noise (manifold smoother)
+        _draw_sample_row(gs, 1, "Samples with noise in whitened space",
+                         lambda: sample_pixel(img_tensor, manifold_sm))
+
+        # Row 2: Gaussian noise in original pixel space
+        _draw_sample_row(gs, 2, "Samples with noise in original space",
+                         lambda: sample_pixel(img_tensor, iso_pixel))
+
+        # Row 3: Neighbors
+        nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
+                                 img_tensor.shape, vae, device, is_latent=False)
+        for i in range(n_noisy_samples):
+            ax = fig.add_subplot(gs[3, i])
+            if i < len(nn_imgs):
+                ax.imshow(_tensor_to_pil(nn_imgs[i]))
+            ax.axis("off")
+            if i == 0:
+                ax.set_title("Neighbors", fontsize=10)
+
+    # ------------------------------------------------------------------
+    # LATENT MANIFOLD  (Jonas-style in latent + pixel comparison rows)
+    # ------------------------------------------------------------------
+    else:  # is_latent and is_manifold
+        manifold_sm_latent = latent_smoother if latent_smoother is not None else iso_latent
+        manifold_sm_pixel = pixel_smoother if pixel_smoother is not None else iso_pixel
+
+        n_rows = 6
+        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
+        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+
+        # Row 0: Original + PCA Reconstruction (Latent)
+        ax = fig.add_subplot(gs[0, 0])
+        ax.imshow(_tensor_to_pil(img_tensor))
+        ax.set_title("Original", fontsize=10)
+        ax.axis("off")
+
+        ax = fig.add_subplot(gs[0, 1])
         with torch.no_grad():
             x = img_tensor.unsqueeze(0).to(device)
             mu, _ = vae.encode(x)
             x_recon = vae.decode(mu).squeeze(0).cpu()
         ax.imshow(_tensor_to_pil(x_recon))
         ax.set_title("PCA Reconstruction (Latent)", fontsize=10)
-    else:
-        ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("PCA Reconstruction", fontsize=10)
-    ax.axis("off")
-    
-    # Empty remaining cells in row 1
-    for i in range(2, n_noisy_samples):
-        ax = fig.add_subplot(gs[0, i])
         ax.axis("off")
-    
-    # =========================================================================
-    # Row 2: Manifold smoothing - samples with noise in whitened space
-    # =========================================================================
-    for i in range(n_noisy_samples):
-        ax = fig.add_subplot(gs[1, i])
-        if cfg.smoothing.mode == "latent" and vae is not None:
-            noisy = sample_latent(img_tensor, vae, manifold_smoother, device)
-        else:
-            noisy = sample_pixel(img_tensor, manifold_smoother)
-        ax.imshow(_tensor_to_pil(noisy))
-        ax.axis("off")
-        if i == 0:
-            space_name = "whitened latent" if cfg.smoothing.mode == "latent" else "whitened"
-            ax.set_title(f"Samples with noise in {space_name} space", fontsize=10)
-    
-    # =========================================================================
-    # Row 3: Isotropic/Gaussian - samples with noise in original space
-    # =========================================================================
-    for i in range(n_noisy_samples):
-        ax = fig.add_subplot(gs[2, i])
-        if cfg.smoothing.mode == "latent" and vae is not None:
-            noisy = sample_latent(img_tensor, vae, isotropic_smoother, device)
-        else:
-            noisy = sample_pixel(img_tensor, isotropic_smoother)
-        ax.imshow(_tensor_to_pil(noisy))
-        ax.axis("off")
-        if i == 0:
-            space_name = "latent" if cfg.smoothing.mode == "latent" else "original"
-            ax.set_title(f"Samples with noise in {space_name} space", fontsize=10)
-    
-    # =========================================================================
-    # Row 4: k-NN Neighbors
-    # =========================================================================
-    if index is not None and hasattr(index.index, "get_nns_by_vector"):
-        nn_ids = index.index.get_nns_by_vector(query_vec.tolist(), n_noisy_samples + 1)
-        for i, nn_id in enumerate(nn_ids[:n_noisy_samples]):
-            ax = fig.add_subplot(gs[3, i])
-            nn_vec = np.array(index.index.get_item_vector(nn_id), dtype=np.float32)
-            
-            if cfg.smoothing.mode == "latent" and vae is not None:
-                with torch.no_grad():
-                    z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
-                    nn_img = vae.decode(z_t).squeeze(0).cpu()
-                ax.imshow(_tensor_to_pil(nn_img))
-            else:
-                nn_img = torch.from_numpy(nn_vec.reshape(img_tensor.shape))
-                ax.imshow(_tensor_to_pil(nn_img))
+        for i in range(2, n_noisy_samples):
+            fig.add_subplot(gs[0, i]).axis("off")
+
+        # Row 1: Latent whitened space noise (manifold smoother, decoded)
+        _draw_sample_row(gs, 1, "Samples with noise in whitened latent space",
+                         lambda: sample_latent(img_tensor, vae, manifold_sm_latent, device))
+
+        # Row 2: Pixel whitened space noise (for comparison)
+        _draw_sample_row(gs, 2, "Samples with noise in whitened pixel space",
+                         lambda: sample_pixel(img_tensor, manifold_sm_pixel))
+
+        # Row 3: Latent Gaussian noise (decoded)
+        _draw_sample_row(gs, 3, "Samples with Gaussian noise in latent space",
+                         lambda: sample_latent(img_tensor, vae, iso_latent, device))
+
+        # Row 4: Pixel Gaussian noise (for comparison)
+        _draw_sample_row(gs, 4, "Samples with Gaussian noise in pixel space",
+                         lambda: sample_pixel(img_tensor, iso_pixel))
+
+        # Row 5: Neighbors
+        nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
+                                 img_tensor.shape, vae, device, is_latent=True)
+        for i in range(n_noisy_samples):
+            ax = fig.add_subplot(gs[5, i])
+            if i < len(nn_imgs):
+                ax.imshow(_tensor_to_pil(nn_imgs[i]))
             ax.axis("off")
             if i == 0:
                 ax.set_title("Neighbors", fontsize=10)
-    
+
+    # ------------------------------------------------------------------
     # Title with certification result
+    # ------------------------------------------------------------------
     cert_status = "ABSTAIN" if abstained else ("CORRECT" if pred == label else "WRONG")
     pred_label = "smile" if pred == 1 else "no smile"
     true_label = "smile" if label == 1 else "no smile"
@@ -589,9 +701,9 @@ def save_sample_visualization(
         f"Sample {sample_idx} | {cfg.smoothing.mode.capitalize()} {smoothing_type} | "
         f"σ={cfg.smoothing.sigma} | True: {true_label} | Pred: {pred_label} | "
         f"Radius: {radius:.4f} | {cert_status}",
-        fontsize=11, fontweight="bold"
+        fontsize=11, fontweight="bold",
     )
-    
+
     # Save
     fig_path = viz_dir / f"sample_{sample_idx:04d}.png"
     plt.savefig(fig_path, dpi=100, bbox_inches="tight")
