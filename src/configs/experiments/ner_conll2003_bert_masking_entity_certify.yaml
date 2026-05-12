@@ -1,4 +1,4 @@
-experiment_name: ner_conll2003_bert_isotropic_masking_certify
+experiment_name: ner_conll2003_bert_masking_entity_certify
 output_dir: output/ner_conll2003_bert
 
 task:
@@ -25,10 +25,18 @@ model:
 
 smoothing:
   enabled: true
-  mode: isotropic          # Gaussian isotropic noise (not manifold-aware)
+  mode: manifold
   target: hidden_states
   sigma: 0.50
   layer_index: null
+  knn_k: 64
+  eps_eig: 1.0e-06
+  index_backend: annoy
+  index_metric: euclidean
+  index_path: null
+  index_artifacts_dir: null
+  refresh_index: false
+  index_n_trees: 50
 
 certification:
   enabled: true
@@ -38,13 +46,13 @@ certification:
   abstain_label: -1
 
 eval:
-  max_batches: null     # using test_subset instead
-  test_subset: 0.7         # fraction of test set to use
+  max_batches: null
+  test_subset: 0.7
 
 masking:
   enabled: true
-  mode: context            # context | entity | hybrid
-  entity_label_ids: [1, 2, 3, 4, 5, 6, 7, 8]  # all BIO entity labels — context mode masks everything NOT in this set
+  mode: entity
+  entity_label_ids: [1, 2, 3, 4, 5, 6, 7, 8]  # all BIO entity labels (B/I-PER, ORG, LOC, MISC)
   mask_ratio: 0.15
   max_masks_per_sentence: null
   cap_by_batch_avg_tokens: true

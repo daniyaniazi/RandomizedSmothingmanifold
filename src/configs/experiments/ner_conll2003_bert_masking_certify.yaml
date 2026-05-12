@@ -27,8 +27,7 @@ smoothing:
   enabled: true
   mode: manifold
   target: hidden_states
-  sigma: 0.20  # default sigma
-  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
+  sigma: 0.50
   layer_index: null
   knn_k: 64
   eps_eig: 1.0e-06
@@ -53,7 +52,7 @@ eval:
 masking:
   enabled: true
   mode: context           # context | entity | hybrid
-  entity_label_ids: [1]   # label id 1 by your request; update as needed
+  entity_label_ids: [1, 2, 3, 4, 5, 6, 7, 8]  # all BIO entity labels — context mode masks everything NOT in this set
   mask_ratio: 0.15
   max_masks_per_sentence: null
   cap_by_batch_avg_tokens: true
