@@ -1,7 +1,7 @@
-# CelebA-HQ Certification - Pixel Space Manifold Smoothing (128x128)
-# Higher quality source images - compare with standard CelebA
+# CelebA-HQ Certification - Pixel Space Isotropic (Gaussian) Smoothing
+# Baseline: standard Gaussian noise without manifold awareness
 
-experiment_name: certify_celebahq_pixel_manifold_128
+experiment_name: certify_celebahq_isotropic_pixel
 seed: 73
 device: cuda
 alpha_conf: 0.001
@@ -21,7 +21,7 @@ model:
   checkpoint_path: output/pretrained_model/smile_resnet_celebahq_512/best.pt
   input_size: 512
   num_classes: 1
-  dropout: 0.1  # must match training config
+  dropout: 0.1
 
 vae:
   enabled: false
@@ -33,25 +33,24 @@ smoothing:
   n_samples: 100
   knn_k: 500
   eps_eig: 1.0e-06
-  use_manifold: true
+  use_manifold: false  # KEY: isotropic Gaussian noise
 
 index:
   backend: annoy
   metric: euclidean
-  n_trees: 50
+  n_trees: 10
   pixel_index_path: null
   latent_index_path: null
   build_if_missing: true
 
 output:
-  output_dir: output  # Results go to output/smile_classification/celebahq/
+  output_dir: output
   save_results: true
   save_per_sample: true
   save_visualizations: true
   num_viz_samples: 10
 
-# Checkpoint settings for long-running jobs
 checkpoint:
   enabled: true
-  checkpoint_every: 100  # save progress every 100 samples
-  resume: false  # set to true to resume from last checkpoint
+  checkpoint_every: 100
+  resume: false

@@ -125,22 +125,22 @@ echo "=============================================="
 
 # 5. CelebA-HQ Pixel Isotropic (Gaussian)
 submit_sweep \
-    "src/configs/experiments/certify_celebahq_isotropic_pixel_128.yaml" \
+    "src/configs/experiments/certify_celebahq_isotropic_pixel.yaml" \
     "CelebA-HQ Pixel ISOTROPIC (Gaussian baseline)"
 
 # 6. CelebA-HQ Pixel Manifold
 submit_sweep \
-    "src/configs/experiments/certify_celebahq_pixel_128.yaml" \
+    "src/configs/experiments/certify_celebahq_pixel.yaml" \
     "CelebA-HQ Pixel MANIFOLD"
 
 # 7. CelebA-HQ Latent Isotropic (Gaussian)
 submit_sweep \
-    "src/configs/experiments/certify_celebahq_isotropic_latent_128.yaml" \
+    "src/configs/experiments/certify_celebahq_isotropic_latent.yaml" \
     "CelebA-HQ Latent ISOTROPIC (Gaussian baseline)"
 
 # 8. CelebA-HQ Latent Manifold
 submit_sweep \
-    "src/configs/experiments/certify_celebahq_latent_128.yaml" \
+    "src/configs/experiments/certify_celebahq_latent.yaml" \
     "CelebA-HQ Latent MANIFOLD"
 
 fi

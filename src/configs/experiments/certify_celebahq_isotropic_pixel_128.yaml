@@ -18,7 +18,7 @@ dataset:
 
 model:
   name: resnet18
-  checkpoint_path: output/pretrained_model/smile_resnet_celebahq/best.pt
+  checkpoint_path: output/pretrained_model/smile_resnet_celebahq_512/best.pt
   input_size: 512
   num_classes: 1
   dropout: 0.1

@@ -33,7 +33,7 @@ Examples:
 
     # CelebA-HQ
     python -m src.experiments.certify.celeba \\
-        --config src/configs/experiments/certify_celebahq_latent_128.yaml
+        --config src/configs/experiments/certify_celebahq_latent.yaml
 """
 
 from __future__ import annotations

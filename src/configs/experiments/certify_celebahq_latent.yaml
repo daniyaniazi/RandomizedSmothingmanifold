@@ -1,7 +1,7 @@
-# CelebA-HQ Certification - Latent Space Isotropic (Gaussian) Smoothing
-# Baseline: standard Gaussian noise in VAE latent space (no manifold)
+# CelebA-HQ Certification - Latent Space Manifold Smoothing (128x128 VAE)
+# Uses VAE trained on CelebA-HQ for latent smoothing
 
-experiment_name: certify_celebahq_isotropic_latent_128
+experiment_name: certify_celebahq_latent_manifold
 seed: 73
 device: cuda
 alpha_conf: 0.001
@@ -14,18 +14,18 @@ dataset:
   annotation_format: celeba
   file_extension: .jpg
   num_workers: 4
-  subset_size: 5000
+  subset_size: 1000
 
 model:
   name: resnet18
-  checkpoint_path: output/pretrained_model/smile_resnet_celebahq/best.pt
+  checkpoint_path: output/pretrained_model/smile_resnet_celebahq_512/best.pt
   input_size: 512
   num_classes: 1
-  dropout: 0.1
+  dropout: 0.1  # must match training config
 
 vae:
   enabled: true
-  checkpoint_path: output/pretrained_model/vae_celebahq_128/best.pt
+  checkpoint_path: output/pretrained_model/vae_celebahq_512/best.pt
   image_size: 512  # must match trained VAE
   latent_dim: 1024  # must match trained VAE
   in_channels: 3
@@ -37,7 +37,7 @@ smoothing:
   n_samples: 100
   knn_k: 500
   eps_eig: 1.0e-06
-  use_manifold: false  # KEY: isotropic Gaussian noise in latent space
+  use_manifold: true
 
 index:
   backend: annoy
@@ -48,13 +48,14 @@ index:
   build_if_missing: true
 
 output:
-  output_dir: output
+  output_dir: output  # Results go to output/smile_classification/celebahq/
   save_results: true
   save_per_sample: true
   save_visualizations: true
   num_viz_samples: 10
 
+# Checkpoint settings for long-running jobs
 checkpoint:
   enabled: true
-  checkpoint_every: 50
-  resume: false
+  checkpoint_every: 50  # save progress every 100 samples
+  resume: false  # set to true to resume from last checkpoint
