@@ -32,7 +32,7 @@ import torch
 
 from src.configs.certify_celeba_io import load_certify_config
 from src.dataloaders.celeba_smile import build_smile_dataloaders
-from src.configs.train_smile_schema import SmileDatasetConfig, SmileDataloaderConfig
+from src.configs.train_smile_schema import SmileDatasetConfig, SmileDataloaderConfig, SmileModelConfig
 from src.models.VAE import ConvVAE, load_checkpoint as load_vae_checkpoint
 from src.indexing.image_index import (
     extract_pixel_vectors,
@@ -98,11 +98,14 @@ Examples:
         batch_size=32,
         shuffle_train=False,
     )
+    model_cfg = SmileModelConfig(
+        input_size=cfg.model.input_size if args.space == "pixel" else getattr(cfg.vae, 'image_size', 128),
+    )
     
     data = build_smile_dataloaders(
         dataset_cfg=dataset_cfg,
         loader_cfg=loader_cfg,
-        input_size=cfg.model.input_size if args.space == "pixel" else cfg.vae.image_size,
+        model_cfg=model_cfg,
     )
     
     # Set output directory
