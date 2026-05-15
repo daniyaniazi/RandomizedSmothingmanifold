@@ -113,75 +113,122 @@ Examples:
     index_dir = out_dir / args.backend / cfg.index.metric
     index_dir.mkdir(parents=True, exist_ok=True)
     
-    # Extract vectors using generic utilities
-    if args.space == "pixel":
-        _log("Extracting pixel vectors...")
-        vectors = extract_pixel_vectors(
-            dataloader=data.train_loader,
-            image_key="image",
-            device=device,
-            max_samples=args.max_samples,
-        )
+    if args.space == "pixel" and args.backend == "annoy":
+        # ── Streaming mode for pixel+annoy: add vectors directly to avoid OOM ──
+        from annoy import AnnoyIndex
+        
+        # Determine dimension from first batch
+        first_batch = next(iter(data.train_loader))
+        images = first_batch["image"] if isinstance(first_batch, dict) else first_batch[0]
+        dim = images.view(images.size(0), -1).shape[1]
+        _log(f"Streaming pixel vectors into Annoy index (dim={dim})...")
+        
+        metric_map = {"euclidean": "euclidean", "cosine": "angular", "manhattan": "manhattan"}
+        ann = AnnoyIndex(dim, metric_map.get(cfg.index.metric, "euclidean"))
+        
+        item_idx = 0
+        max_samples = args.max_samples
+        for batch in data.train_loader:
+            images = batch["image"] if isinstance(batch, dict) else batch[0]
+            flat = images.view(images.size(0), -1).numpy()
+            for vec in flat:
+                ann.add_item(item_idx, vec)
+                item_idx += 1
+                if max_samples and item_idx >= max_samples:
+                    break
+            if max_samples and item_idx >= max_samples:
+                break
+            if item_idx % 10000 == 0:
+                _log(f"  Added {item_idx} vectors...")
+        
+        _log(f"Added {item_idx} vectors. Building {cfg.index.n_trees} trees...")
+        ann.build(cfg.index.n_trees)
+        
+        index_path = str(index_dir / "index.ann")
+        ann.save(index_path)
+        file_size_mb = Path(index_path).stat().st_size / (1024 * 1024)
+        _log(f"Index saved: {index_path} ({file_size_mb:.1f} MB)")
+        
+        # Save lightweight metadata (skip saving the full vectors array)
+        import json
+        metadata = {
+            "space": args.space,
+            "backend": args.backend,
+            "metric": cfg.index.metric,
+            "n_vectors": item_idx,
+            "embedding_dim": dim,
+            "dataset": cfg.dataset.name,
+            "image_size": cfg.model.input_size,
+        }
+        with open(index_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        _log(f"Done! {item_idx} vectors, dim={dim}")
+    
     else:
-        _log("Loading VAE...")
-        vae = ConvVAE(
-            image_size=cfg.vae.image_size,
-            latent_dim=cfg.vae.latent_dim,
-            in_channels=cfg.vae.in_channels,
-        ).to(device)
-        load_vae_checkpoint(vae, cfg.vae.checkpoint_path, device=device)
-        vae.eval()
+        # ── Original batch mode for latent space (small vectors, fits in memory) ──
+        if args.space == "pixel":
+            _log("Extracting pixel vectors...")
+            vectors = extract_pixel_vectors(
+                dataloader=data.train_loader,
+                image_key="image",
+                device=device,
+                max_samples=args.max_samples,
+            )
+        else:
+            _log("Loading VAE...")
+            vae = ConvVAE(
+                image_size=cfg.vae.image_size,
+                latent_dim=cfg.vae.latent_dim,
+                in_channels=cfg.vae.in_channels,
+            ).to(device)
+            load_vae_checkpoint(vae, cfg.vae.checkpoint_path, device=device)
+            vae.eval()
+            
+            def vae_encoder(images: torch.Tensor) -> torch.Tensor:
+                if images.shape[-1] != vae.image_size:
+                    images = torch.nn.functional.interpolate(
+                        images, size=vae.image_size, mode="bilinear", align_corners=False
+                    )
+                mu, _ = vae.encode(images)
+                return mu
+            
+            _log("Extracting latent vectors...")
+            vectors = extract_latent_vectors(
+                dataloader=data.train_loader,
+                encoder=vae_encoder,
+                image_key="image",
+                device=device,
+                max_samples=args.max_samples,
+            )
         
-        # Create encoder function for generic utility
-        def vae_encoder(images: torch.Tensor) -> torch.Tensor:
-            # Resize to VAE input size if needed
-            if images.shape[-1] != vae.image_size:
-                images = torch.nn.functional.interpolate(
-                    images, size=vae.image_size, mode="bilinear", align_corners=False
-                )
-            mu, _ = vae.encode(images)
-            return mu
+        _log(f"Building {args.backend} index with {len(vectors)} vectors of dim {vectors.shape[1]}...")
         
-        _log("Extracting latent vectors...")
-        vectors = extract_latent_vectors(
-            dataloader=data.train_loader,
-            encoder=vae_encoder,
-            image_key="image",
-            device=device,
-            max_samples=args.max_samples,
+        index = build_image_neighbor_index(
+            vectors=vectors,
+            backend=args.backend,
+            metric=cfg.index.metric,
+            n_trees=cfg.index.n_trees if args.backend == "annoy" else 20,
         )
-    
-    _log(f"Building {args.backend} index with {len(vectors)} vectors of dim {vectors.shape[1]}...")
-    
-    # Build index using generic utility
-    index = build_image_neighbor_index(
-        vectors=vectors,
-        backend=args.backend,
-        metric=cfg.index.metric,
-        n_trees=cfg.index.n_trees if args.backend == "annoy" else 20,
-    )
-    
-    # Save index based on backend
-    index_path = str(index_dir / "index")
-    if args.backend == "annoy":
-        save_annoy_index(index, index_path)
-    elif args.backend == "faiss":
-        save_faiss_index(index, index_path)
-    # torch backend doesn't need saving (vectors are stored separately)
-    
-    # Save vectors and metadata
-    metadata = {
-        "space": args.space,
-        "backend": args.backend,
-        "metric": cfg.index.metric,
-        "n_vectors": len(vectors),
-        "embedding_dim": int(vectors.shape[1]),
-        "dataset": cfg.dataset.name,
-    }
-    save_image_index_artifacts(index_dir, vectors, metadata)
-    
-    _log(f"Index saved to: {index_dir}")
-    _log(f"Vectors: {len(vectors)}, Dim: {vectors.shape[1]}")
+        
+        index_path = str(index_dir / "index")
+        if args.backend == "annoy":
+            save_annoy_index(index, index_path)
+        elif args.backend == "faiss":
+            save_faiss_index(index, index_path)
+        
+        metadata = {
+            "space": args.space,
+            "backend": args.backend,
+            "metric": cfg.index.metric,
+            "n_vectors": len(vectors),
+            "embedding_dim": int(vectors.shape[1]),
+            "dataset": cfg.dataset.name,
+        }
+        save_image_index_artifacts(index_dir, vectors, metadata)
+        
+        _log(f"Index saved to: {index_dir}")
+        _log(f"Vectors: {len(vectors)}, Dim: {vectors.shape[1]}")
 
 
 if __name__ == "__main__":
