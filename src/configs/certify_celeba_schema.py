@@ -24,7 +24,7 @@ class CertifyDatasetConfig:
 class CertifyModelConfig:
     name: str = "resnet18"
     checkpoint_path: str = ""
-    input_size: int = 224
+    input_size: int = 224  # CelebA: 224, CelebA-HQ: 512 — used for ALL transforms
     num_classes: int = 1  # binary for smile
     dropout: float = 0.5  # must match training config to load weights correctly
 

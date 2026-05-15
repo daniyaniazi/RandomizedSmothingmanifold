@@ -19,6 +19,10 @@ def train_vae(
     device: torch.device,
     epochs: int = 5,
     beta: float = 1e-4,
+    ckpt_dir: str | Path | None = None,
+    save_every: int = 1,
+    start_epoch: int = 1,
+    history: list | None = None,
 ) -> List[Dict]:
     """
     Train the VAE for a given number of epochs.
@@ -28,9 +32,10 @@ def train_vae(
     history : list of dicts with keys epoch, loss, recon, kld.
     """
     model.train()
-    history = []
+    if history is None:
+        history = []
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         total_loss = total_recon = total_kld = 0.0
         pbar = tqdm(train_loader, desc=f"VAE epoch {epoch}/{epochs}")
 
@@ -65,6 +70,19 @@ def train_vae(
             f"Epoch {epoch:02d} | loss={stats['loss']:.5f} "
             f"recon={stats['recon']:.5f} kld={stats['kld']:.5f}"
         )
+
+        # Save per-epoch checkpoint for resume
+        if ckpt_dir is not None and epoch % save_every == 0:
+            ckpt_path = Path(ckpt_dir)
+            ckpt_path.mkdir(parents=True, exist_ok=True)
+            latest = ckpt_path / "latest.pt"
+            torch.save({
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "epoch": epoch,
+                "history": history,
+            }, latest)
+            print(f"  Checkpoint saved → {latest}")
 
     return history
 

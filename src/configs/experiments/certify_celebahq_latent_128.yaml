@@ -19,15 +19,15 @@ dataset:
 model:
   name: resnet18
   checkpoint_path: output/pretrained_model/smile_resnet_celebahq/best.pt
-  input_size: 224
+  input_size: 512
   num_classes: 1
   dropout: 0.1  # must match training config
 
 vae:
   enabled: true
   checkpoint_path: output/pretrained_model/vae_celebahq_128/best.pt
-  image_size: 128
-  latent_dim: 256
+  image_size: 512  # must match trained VAE
+  latent_dim: 1024  # must match trained VAE
   in_channels: 3
 
 smoothing:

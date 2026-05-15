@@ -26,13 +26,13 @@ model:
   name: resnet18
   pretrained: true
   dropout: 0.1
-  input_size: 224
+  input_size: 512  # native CelebA-HQ resolution
 
 train:
   seed: 73
   device: cuda
-  epochs: 20
-  lr: 0.0001
+  epochs: 30  # more epochs needed at higher resolution
+  lr: 0.00005  # lower LR for 512x512 stability
   weight_decay: 0.0001
   grad_clip_norm: 1.0
   label_smoothing: 0.0
@@ -45,8 +45,8 @@ wandb:
   enabled: true
   project: randomized-smoothing-smile
   entity: null
-  run_name: smile_resnet18_celebahq_20ep
+  run_name: smile_resnet18_celebahq_512_30ep
 
 checkpoint:
   keep_last_k: 2
-  base_dir: output/pretrained_model/smile_resnet_celebahq
+  base_dir: output/pretrained_model/smile_resnet_celebahq_512

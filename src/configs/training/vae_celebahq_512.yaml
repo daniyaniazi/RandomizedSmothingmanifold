@@ -13,7 +13,7 @@ dataset:
   num_workers: 8
 
 dataloader:
-  batch_size: 4  # Very small batch due to memory constraints
+  batch_size: 32  # 32GB GPU memory allows larger batch
   shuffle_train: true
   pin_memory: true
 
@@ -25,7 +25,7 @@ model:
 train:
   seed: 73
   device: cuda
-  epochs: 100  # More epochs needed with small batch
+  epochs: 50  # Larger batch allows fewer epochs
   lr: 0.0001  # Lower LR for stability with small batch
   weight_decay: 0.0
   beta: 0.00001  # Very low beta - prioritize reconstruction

@@ -156,6 +156,20 @@ def train(cfg: VaeTrainingConfig) -> None:
 
     wandb_run = _init_wandb(cfg)
 
+    # ── Resume from checkpoint ──
+    start_epoch = 1
+    prev_history = None
+    resume_path = ckpt_dir / "latest.pt"
+    if resume_path.exists():
+        print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt["model_state"])
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        prev_history = ckpt.get("history", [])
+        print(f"  Resumed at epoch {start_epoch}/{cfg.train.epochs}")
+
     history = train_vae(
         model=model,
         train_loader=loader,
@@ -163,6 +177,10 @@ def train(cfg: VaeTrainingConfig) -> None:
         device=device,
         epochs=cfg.train.epochs,
         beta=cfg.train.beta,
+        ckpt_dir=ckpt_dir,
+        save_every=cfg.checkpoint.save_every_n_epochs,
+        start_epoch=start_epoch,
+        history=prev_history,
     )
 
     # Save final and best-style checkpoint names for easy downstream loading.

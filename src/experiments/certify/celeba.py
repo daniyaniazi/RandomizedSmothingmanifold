@@ -835,7 +835,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     classifier_transform = transforms.Compose([
         transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
     ])
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -857,7 +857,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # ─────────────────────────────────────────────────────────────────────────
     pixel_index = None
     latent_index = None
-    pixel_size = cfg.vae.image_size if cfg.vae.enabled else 128
+    # Use model.input_size so index, smoothing, and classifier all operate at the same resolution.
+    # CelebA: 224×224, CelebA-HQ: 512×512 (set in config).
+    pixel_size = cfg.model.input_size
     
     # Build pixel index for pixel mode OR for latent manifold mode (needed for comparison viz rows)
     if cfg.smoothing.use_manifold:
@@ -873,7 +875,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # ─────────────────────────────────────────────────────────────────────────
     # Transform for smoothing
     # ─────────────────────────────────────────────────────────────────────────
-    smooth_size = vae.image_size if vae is not None else pixel_size
+    smooth_size = pixel_size  # same resolution for index, smoothing, and classifier
     smooth_transform = transforms.Compose([
         transforms.Resize((smooth_size, smooth_size)),
         transforms.ToTensor(),

@@ -133,8 +133,21 @@ def train(cfg: SmileTrainingConfig) -> None:
     best_val_acc = 0.0
     saved_ckpts: list[Path] = []
     history: list[dict] = []
+    start_epoch = 1
 
-    for epoch in range(1, cfg.train.epochs + 1):
+    # ── Resume from checkpoint ──
+    resume_path = ckpt_dir / "latest.pt"
+    if resume_path.exists():
+        print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val_acc = ckpt.get("best_val_acc", 0.0)
+        history = ckpt.get("history", [])
+        print(f"  Resumed at epoch {start_epoch}, best_val_acc={best_val_acc:.4f}")
+
+    for epoch in range(start_epoch, cfg.train.epochs + 1):
         print(f"\n── Epoch {epoch}/{cfg.train.epochs} ──────────────")
 
         train_loss, train_acc = run_epoch(
@@ -177,6 +190,16 @@ def train(cfg: SmileTrainingConfig) -> None:
                 old = saved_ckpts.pop(0)
                 if old.exists():
                     old.unlink()
+
+        # Always save latest.pt for resume (includes optimizer state)
+        latest_path = ckpt_dir / "latest.pt"
+        torch.save({
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "best_val_acc": best_val_acc,
+            "history": history,
+        }, latest_path)
 
     # Final evaluation on the test set
     print("\n── Test set evaluation ──────────────")
