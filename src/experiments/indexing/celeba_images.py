@@ -11,7 +11,7 @@ Usage:
 Example:
     # Build pixel-space index
     python -m src.experiments.indexing.celeba_images \\
-        --config src/configs/experiments/certify_celeba_pixel_128.yaml \\
+        --config src/configs/experiments/certify_celeba_pixel.yaml \\
         --space pixel
 
     # Build latent-space index (uses VAE encoder)
@@ -58,7 +58,7 @@ def main():
 Examples:
   # Build pixel-space index for CelebA
   python -m src.experiments.indexing.celeba_images \\
-      --config src/configs/experiments/certify_celeba_pixel_128.yaml \\
+      --config src/configs/experiments/certify_celeba_pixel.yaml \\
       --space pixel
 
   # Build latent-space index using VAE

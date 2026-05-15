@@ -29,7 +29,7 @@ Examples:
 
     # Pixel space manifold smoothing
     python -m src.experiments.certify.celeba \\
-        --config src/configs/experiments/certify_celeba_pixel_128.yaml
+        --config src/configs/experiments/certify_celeba_pixel.yaml
 
     # CelebA-HQ
     python -m src.experiments.certify.celeba \\

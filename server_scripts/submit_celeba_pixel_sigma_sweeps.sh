@@ -55,14 +55,14 @@ submit_sweep() {
 # 1. CelebA Pixel Isotropic (Gaussian)
 # =============================================================================
 submit_sweep \
-    "src/configs/experiments/certify_celeba_isotropic_pixel_128.yaml" \
+    "src/configs/experiments/certify_celeba_isotropic_pixel.yaml" \
     "CelebA Pixel ISOTROPIC (Gaussian baseline)"
 
 # =============================================================================
 # 2. CelebA Pixel Manifold
 # =============================================================================
 submit_sweep \
-    "src/configs/experiments/certify_celeba_pixel_128.yaml" \
+    "src/configs/experiments/certify_celeba_pixel.yaml" \
     "CelebA Pixel MANIFOLD"
 
 # =============================================================================

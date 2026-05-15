@@ -1,7 +1,7 @@
 # CelebA Certification - Pixel Space Manifold Smoothing (128x128)
 # Compare with CelebA-HQ to evaluate dataset quality impact
 
-experiment_name: certify_celeba_pixel_manifold_128
+experiment_name: certify_celeba_pixel_manifold
 seed: 73
 device: cuda
 alpha_conf: 0.001  # confidence level for certification bounds

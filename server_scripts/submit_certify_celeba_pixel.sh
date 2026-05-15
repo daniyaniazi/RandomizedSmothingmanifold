@@ -31,7 +31,7 @@ echo "Start: $(date)"
 echo "================================================"
 
 # Check if resume flag is set (useful for resubmitting after timeout)
-CONFIG_PATH="src/configs/experiments/certify_celeba_pixel_128.yaml"
+CONFIG_PATH="src/configs/experiments/certify_celeba_pixel.yaml"
 RESUME_FLAG="${RESUME:-false}"
 
 if [ "$RESUME_FLAG" = "true" ]; then

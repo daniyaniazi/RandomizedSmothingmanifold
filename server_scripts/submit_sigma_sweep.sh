@@ -59,7 +59,7 @@ Examples:
   ./submit_sigma_sweep.sh src/configs/experiments/ner_conll2003_bert_certify.yaml --time 24:00:00
 
   # Dry run to preview jobs
-  ./submit_sigma_sweep.sh src/configs/experiments/certify_celeba_pixel_128.yaml --dry-run
+  ./submit_sigma_sweep.sh src/configs/experiments/certify_celeba_pixel.yaml --dry-run
 EOF
 }
 
