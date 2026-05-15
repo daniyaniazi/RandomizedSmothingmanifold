@@ -97,7 +97,6 @@ Examples:
     loader_cfg = SmileDataloaderConfig(
         batch_size=32,
         shuffle_train=False,
-        num_workers=cfg.dataset.num_workers,
     )
     
     data = build_smile_dataloaders(
