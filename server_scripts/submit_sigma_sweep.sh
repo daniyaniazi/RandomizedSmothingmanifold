@@ -166,6 +166,10 @@ with open('$CONFIG_FILE') as f:
     cfg = yaml.safe_load(f)
 cfg['smoothing']['sigma'] = $SIGMA
 cfg['experiment_name'] = '$JOB_NAME'
+# Always enable resume so resubmitted jobs pick up from checkpoint
+if 'checkpoint' not in cfg:
+    cfg['checkpoint'] = {}
+cfg['checkpoint']['resume'] = True
 with open('$TEMP_CONFIG', 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False)
 "
