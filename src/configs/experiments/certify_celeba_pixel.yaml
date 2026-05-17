@@ -14,7 +14,7 @@ dataset:
   annotation_format: celeba
   file_extension: ""
   num_workers: 4
-  subset_size: 1000  # use subset for faster testing, set null for full dataset
+  subset_size: 500  # use subset for faster testing, set null for full dataset
 
 model:
   name: resnet18
@@ -31,7 +31,7 @@ smoothing:
   sigma: 0.25  # default sigma
   sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   n_samples: 100
-  knn_k: 500
+  knn_k: 100
   eps_eig: 1.0e-06
   use_manifold: true  # true = local PCA manifold, false = isotropic
 
