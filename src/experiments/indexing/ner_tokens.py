@@ -31,7 +31,7 @@ import yaml
 
 from src.configs.schema import DataloaderConfig, DatasetConfig
 from src.dataloaders.ner_conll import build_conll_dataloaders
-from src.indexing.ner_token_index import extract_token_vectors, save_token_index_artifacts
+from src.indexing.ner_token_index import extract_token_vectors, deduplicate_token_vectors, save_token_index_artifacts
 from src.models.transformer.ner.model import TransformerNER
 
 
@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, default="train", choices=["train", "validation", "test"], help="Dataset split to index.")
     parser.add_argument("--layer-index", type=int, default=None, help="Optional transformer layer index to extract.")
     parser.add_argument("--max-batches", type=int, default=None, help="Optional limit for faster debugging.")
+    parser.add_argument("--no-dedup", action="store_true", help="Skip deduplication of same (token, label) embeddings.")
     return parser.parse_args()
 
 
@@ -101,6 +102,11 @@ def main() -> None:
         layer_index=args.layer_index,
         max_batches=args.max_batches,
     )
+
+    if not args.no_dedup:
+        vectors, token_texts, label_ids = deduplicate_token_vectors(
+            vectors, token_texts, label_ids,
+        )
 
     save_token_index_artifacts(out_dir, vectors, token_texts, label_ids)
     (out_dir / "label_map.json").write_text(json.dumps({"id2label": data.id2label}, indent=2))

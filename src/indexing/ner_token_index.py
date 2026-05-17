@@ -85,6 +85,53 @@ def extract_token_vectors(
     return np.stack(vectors).astype(np.float32), token_texts, label_ids
 
 
+def deduplicate_token_vectors(
+    vectors: np.ndarray,
+    token_texts: list[str],
+    label_ids: list[int],
+) -> tuple[np.ndarray, list[str], list[int]]:
+    """Average embeddings for duplicate (token_text, label_id) pairs.
+
+    BERT produces a different contextual embedding for every occurrence of a
+    token in the corpus.  When the same token (e.g. "swiss") appears many times
+    with the same label, KNN neighbors end up being redundant copies of that
+    token.  This function collapses them into a single mean embedding per
+    unique (token, label) key, giving the index better diversity.
+
+    Args:
+        vectors: (N, D) embedding matrix.
+        token_texts: length-N list of sub-word strings.
+        label_ids: length-N list of integer NER label ids.
+
+    Returns:
+        Deduplicated (vectors, token_texts, label_ids).
+    """
+    from collections import defaultdict
+
+    # Group indices by (token, label)
+    groups: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for i, (tok, lab) in enumerate(zip(token_texts, label_ids)):
+        groups[(tok, lab)].append(i)
+
+    dedup_vectors: list[np.ndarray] = []
+    dedup_texts: list[str] = []
+    dedup_labels: list[int] = []
+
+    for (tok, lab), idxs in groups.items():
+        mean_vec = vectors[idxs].mean(axis=0)
+        dedup_vectors.append(mean_vec)
+        dedup_texts.append(tok)
+        dedup_labels.append(lab)
+
+    n_before = len(token_texts)
+    n_after = len(dedup_texts)
+    if n_before != n_after:
+        print(f"[dedup] {n_before} → {n_after} unique (token, label) pairs "
+              f"({n_before - n_after} duplicates averaged)")
+
+    return np.stack(dedup_vectors).astype(np.float32), dedup_texts, dedup_labels
+
+
 def save_token_index_artifacts(
     out_dir: str | Path,
     vectors: np.ndarray,
@@ -135,6 +182,7 @@ def build_or_load_token_index(
     n_trees: int = 20,
     max_batches: int | None = None,
     rebuild: bool = False,
+    deduplicate: bool = True,
 ) -> TokenIndexArtifacts:
     out_dir = Path(out_dir)
     vectors_path = out_dir / "token_vectors.npz"
@@ -151,6 +199,10 @@ def build_or_load_token_index(
             layer_index=layer_index,
             max_batches=max_batches,
         )
+        if deduplicate:
+            vectors, token_texts, label_ids = deduplicate_token_vectors(
+                vectors, token_texts, label_ids,
+            )
         save_token_index_artifacts(out_dir, vectors, token_texts, label_ids)
 
     backend_norm = str(backend).strip().lower()
