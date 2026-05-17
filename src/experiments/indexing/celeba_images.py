@@ -38,6 +38,7 @@ from src.indexing.image_index import (
     extract_pixel_vectors,
     extract_latent_vectors,
     build_image_neighbor_index,
+    build_or_load_pixel_index_streaming,
     save_image_index_artifacts,
 )
 from src.indexing.annoy_indexing import save_annoy_index
@@ -114,56 +115,32 @@ Examples:
     index_dir.mkdir(parents=True, exist_ok=True)
     
     if args.space == "pixel" and args.backend == "annoy":
-        # ── Streaming mode for pixel+annoy: add vectors directly to avoid OOM ──
-        from annoy import AnnoyIndex
-        
-        # Determine dimension from first batch
+        # ── Streaming mode for pixel+annoy: avoids OOM for high-dim vectors ──
         first_batch = next(iter(data.train_loader))
-        images = first_batch["image"] if isinstance(first_batch, dict) else first_batch[0]
-        dim = images.view(images.size(0), -1).shape[1]
+        img = first_batch["image"] if isinstance(first_batch, dict) else first_batch[0]
+        dim = img.view(img.size(0), -1).shape[1]
         _log(f"Streaming pixel vectors into Annoy index (dim={dim})...")
-        
-        metric_map = {"euclidean": "euclidean", "cosine": "angular", "manhattan": "manhattan"}
-        ann = AnnoyIndex(dim, metric_map.get(cfg.index.metric, "euclidean"))
-        
-        item_idx = 0
-        max_samples = args.max_samples
-        for batch in data.train_loader:
-            images = batch["image"] if isinstance(batch, dict) else batch[0]
-            flat = images.view(images.size(0), -1).numpy()
-            for vec in flat:
-                ann.add_item(item_idx, vec)
-                item_idx += 1
-                if max_samples and item_idx >= max_samples:
-                    break
-            if max_samples and item_idx >= max_samples:
-                break
-            if item_idx % 10000 == 0:
-                _log(f"  Added {item_idx} vectors...")
-        
-        _log(f"Added {item_idx} vectors. Building {cfg.index.n_trees} trees...")
-        ann.build(cfg.index.n_trees)
-        
-        index_path = str(index_dir / "index.ann")
-        ann.save(index_path)
-        file_size_mb = Path(index_path).stat().st_size / (1024 * 1024)
-        _log(f"Index saved: {index_path} ({file_size_mb:.1f} MB)")
-        
-        # Save lightweight metadata (skip saving the full vectors array)
-        import json
-        metadata = {
-            "space": args.space,
-            "backend": args.backend,
-            "metric": cfg.index.metric,
-            "n_vectors": item_idx,
-            "embedding_dim": dim,
-            "dataset": cfg.dataset.name,
-            "image_size": cfg.model.input_size,
-        }
-        with open(index_dir / "metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-        
-        _log(f"Done! {item_idx} vectors, dim={dim}")
+
+        artifacts = build_or_load_pixel_index_streaming(
+            out_dir=index_dir,
+            dataloader=data.train_loader,
+            dim=dim,
+            image_key="image",
+            metric=cfg.index.metric,
+            n_trees=cfg.index.n_trees,
+            max_samples=args.max_samples,
+            metadata={
+                "space": args.space,
+                "backend": args.backend,
+                "metric": cfg.index.metric,
+                "dataset": cfg.dataset.name,
+                "image_size": cfg.model.input_size,
+            },
+            log_fn=_log,
+        )
+
+        n = artifacts.metadata.get("n_vectors", "?") if artifacts.metadata else "?"
+        _log(f"Done! {n} vectors, dim={dim}")
     
     else:
         # ── Original batch mode for latent space (small vectors, fits in memory) ──

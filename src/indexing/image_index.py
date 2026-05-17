@@ -31,6 +31,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .base import NeighborIndex, build_index, load_index
+from .annoy_indexing import build_annoy_index_streaming
 
 
 @dataclass
@@ -334,3 +335,72 @@ def build_or_load_image_index(
         )
     
     return ImageIndexArtifacts(vectors=vectors, index=index, metadata=metadata)
+
+
+def build_or_load_pixel_index_streaming(
+    out_dir: str | Path,
+    dataloader: DataLoader,
+    dim: int,
+    image_key: str = "image",
+    metric: str = "euclidean",
+    n_trees: int = 20,
+    max_samples: int | None = None,
+    rebuild: bool = False,
+    metadata: dict | None = None,
+    log_fn=None,
+) -> ImageIndexArtifacts:
+    """Build or load a pixel-space Annoy index using streaming (no full vector array in memory).
+
+    This is the memory-safe alternative to ``build_or_load_image_index`` for
+    high-dimensional pixel vectors (e.g. 224×224×3 = 150 528 dims) that would
+    OOM if materialized as a single numpy array.
+
+    Args:
+        out_dir: Directory for the index and metadata files.
+        dataloader: DataLoader yielding image batches.
+        dim: Dimensionality of each flattened pixel vector (C*H*W).
+        image_key: Key to access images in batch dict.
+        metric: Distance metric for Annoy.
+        n_trees: Number of Annoy trees.
+        max_samples: Stop after this many vectors (None = all).
+        rebuild: Force rebuild even if index exists on disk.
+        metadata: Optional metadata dict to save alongside the index.
+        log_fn: Optional logging function, e.g. print.
+
+    Returns:
+        ImageIndexArtifacts with ``vectors=None`` (not stored in memory).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    index_path = out_dir / "index.ann"
+    meta_path = out_dir / "metadata.json"
+
+    if not rebuild and index_path.exists() and meta_path.exists():
+        _log = log_fn or (lambda m: None)
+        _log(f"Loading existing streaming index from {index_path}")
+        index = load_index(
+            dim=dim,
+            index_path=str(index_path),
+            backend="annoy",
+            metric=metric,
+        )
+        saved_meta = json.loads(meta_path.read_text())
+        return ImageIndexArtifacts(vectors=None, index=index, metadata=saved_meta)
+
+    index = build_annoy_index_streaming(
+        dataloader=dataloader,
+        dim=dim,
+        metric=metric,
+        index_path=str(index_path),
+        n_trees=n_trees,
+        max_samples=max_samples,
+        image_key=image_key,
+        log_fn=log_fn,
+    )
+
+    if metadata is not None:
+        metadata["n_vectors"] = index.index.get_n_items()
+        metadata["embedding_dim"] = dim
+        meta_path.write_text(json.dumps(metadata, indent=2))
+
+    return ImageIndexArtifacts(vectors=None, index=index, metadata=metadata)
