@@ -52,6 +52,8 @@ class SmoothedBatchOutput:
     vote_counts: np.ndarray
     certificates: list[list[TokenCertificate | None]]
     debug: list[list[TokenDebugRecord | None]] | None = None
+    # Per-token eigenvalues for volume computation: eigenvalues[batch_idx][token_idx] = np.ndarray or None
+    eigenvalues: list[list[np.ndarray | None]] | None = None
 
 
 @dataclass
@@ -465,9 +467,17 @@ def sample_smoothed_token_predictions(
             row.append(cert)
         certificates.append(row)
 
+    # Extract eigenvalues from cached PCAs for volume computation
+    token_eigenvalues: list[list[np.ndarray | None]] = [
+        [None] * seq_len for _ in range(batch_size)
+    ]
+    for cpca in cached_pcas:
+        token_eigenvalues[cpca.batch_idx][cpca.token_idx] = cpca.cached_pca.pca.evals
+
     return SmoothedBatchOutput(
         pred_ids=pred_tensor,
         vote_counts=vote_counts,
         certificates=certificates,
         debug=debug_output,
+        eigenvalues=token_eigenvalues,
     )
