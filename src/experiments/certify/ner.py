@@ -318,9 +318,9 @@ def _resolve_shared_index_root(cfg) -> Path:
 
 def _default_index_file_name(backend: str) -> str | None:
     if backend == "annoy":
-        return "annoy_index.ann"
+        return "index.ann"
     if backend == "faiss":
-        return "faiss_index.faiss"
+        return "index.faiss"
     return None
 
 

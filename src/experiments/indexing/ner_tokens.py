@@ -130,8 +130,10 @@ def main() -> None:
         n_trees=args.n_trees,
     )
 
-    # Save index to the path certification expects
-    index_dir = out_dir.parent.parent / "indexes" / args.split / _layer_tag(args.layer_index) / args.metric / args.backend
+    # Save index to the path certification expects:
+    # <output_dir>/indexes/<split>/<layer>/<metric>/<backend>/
+    output_dir = Path(config.get("output_dir", out_dir.parent.parent.parent))
+    index_dir = output_dir / "indexes" / args.split / _layer_tag(args.layer_index) / args.metric / args.backend
     index_dir.mkdir(parents=True, exist_ok=True)
 
     if args.backend == "annoy":
