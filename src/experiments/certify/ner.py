@@ -802,7 +802,7 @@ def evaluate_smoothed(
         f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}"
     )
 
-    return metrics, debug_payload
+    return metrics, debug_payload, radii, token_eigenvalues_list
 
 
 def run(
@@ -921,7 +921,7 @@ def run(
         tokenizer=tokenizer,
         masking_cfg=cfg.masking,
     )
-    smooth_metrics, debug_payload = evaluate_smoothed(
+    smooth_metrics, debug_payload, radii, token_eigenvalues_list = evaluate_smoothed(
         model=model,
         loader=target_loader,
         device=device,
