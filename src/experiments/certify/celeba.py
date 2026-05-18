@@ -956,6 +956,17 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "correct": (cert.pred == label) if not cert.abstained else False,
             "certified_correct": (cert.pred == label and not cert.abstained),
         }
+
+        # Volume computation: extract eigenvalues from manifold smoother
+        if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
+            cached = pixel_smoother.compute_pca(img_tensor.numpy().reshape(-1))
+            result["eigenvalues"] = cached.pca.evals.tolist()
+        elif isinstance(latent_smoother, ManifoldSmoother) and cfg.smoothing.mode == "latent" and vae is not None:
+            with torch.no_grad():
+                mu, _ = vae.encode(img_tensor.unsqueeze(0).to(device))
+            cached = latent_smoother.compute_pca(mu.cpu().numpy().reshape(-1))
+            result["eigenvalues"] = cached.pca.evals.tolist()
+
         results.append(result)
         
         if cert.abstained:
@@ -1055,6 +1066,127 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     _log(f"Class No-Smile:     {metrics['class_no_smile_correct']}/{metrics['class_no_smile_total']} = {100*metrics['class_no_smile_accuracy']:.2f}%")
     _log(f"Class Smile:        {metrics['class_smile_correct']}/{metrics['class_smile_total']} = {100*metrics['class_smile_accuracy']:.2f}%")
     _log("=" * 70)
+
+    # ── Volume computation — 4-quantity framework ──
+    # The full picture requires cross-referencing BOTH iso and mani runs (done in notebook).
+    # Per-run, we store raw ingredients + what we CAN compute locally:
+    #
+    # Qty 1: V_iso,D      = C_D · r_iso^D              (classical RS — from ISO run only)
+    # Qty 2: V_iso,k      = C_k · r_iso^k              (fair semantic baseline — needs r_iso + k from mani)
+    # Qty 3: V_mani,pred  = C_k · r_iso^k · √det(Λ)   (geometry-only gain — needs r_iso + eigenvalues)
+    # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ)  (real manifold certificate — from MANI run)
+    #
+    # geometry_factor = 0.5 · Σ log(λ_i) = log(√det(Λ))  — r-independent, pure eigenvalue gain
+    # This equals log(Qty3) - log(Qty2) = log(Qty4) - log(C_k · r_mani^k)
+    #
+    # MANIFOLD RUN stores: Qty 4, geometry_factor, k, D, per-sample eigenvalues + radii
+    # ISOTROPIC RUN stores: Qty 1, D, per-sample radii
+    # NOTEBOOK cross-references to compute Qty 2 and Qty 3.
+    from src.certify.randomized import (
+        log_volume_isotropic,
+        log_volume_manifold,
+        eigenvalue_diagnostics,
+    )
+
+    k_pca = None
+    
+    # Ambient dimension
+    if cfg.smoothing.mode == "latent" and vae is not None:
+        ambient_dim = vae.latent_dim
+    else:
+        ambient_dim = cfg.model.input_size * cfg.model.input_size * 3  # pixel space: H*W*C
+    
+    # Try to load companion iso radii for cross-reference (Qty 1, 2, 3)
+    iso_companion_radii = None
+    sigma_tag = f"sigma_{cfg.smoothing.sigma:.2f}".replace(".", "_")
+    iso_mode_tag = f"{cfg.smoothing.mode}_isotropic"
+    iso_companion_dir = paths.certify_dir / iso_mode_tag / sigma_tag
+    iso_csv = iso_companion_dir / "results.csv"
+    if iso_csv.exists():
+        import csv as csv_mod
+        with open(iso_csv) as f:
+            reader = csv_mod.DictReader(f)
+            iso_companion_radii = np.array([float(row["radius"]) for row in reader if float(row["radius"]) > 0])
+        _log(f"Loaded {len(iso_companion_radii)} iso radii from companion: {iso_csv}")
+    else:
+        _log(f"No companion iso results at {iso_csv} — Qty 1,2,3 will be unavailable")
+
+    geometry_factors = []
+    lv_mani_actuals = []
+    lv_iso_Ds = []
+
+    for r in results:
+        if r["radius"] <= 0:
+            continue
+        evals = r.get("eigenvalues")
+        if evals is not None:
+            # Manifold run → Qty 4 + geometry_factor
+            evals_arr = np.array(evals, dtype=np.float64)
+            k_pca = len(evals_arr)
+            lv_mani = log_volume_manifold(r["radius"], evals_arr)       # Qty 4
+            geom = 0.5 * np.sum(np.log(np.maximum(evals_arr, 1e-30)))   # geometry factor
+            diag = eigenvalue_diagnostics(evals_arr)
+            r["log_vol_mani_actual"] = lv_mani
+            r["geometry_factor"] = geom
+            r["eigen_k"] = k_pca
+            r["ambient_D"] = ambient_dim
+            r["eigen_effective_rank"] = diag.effective_rank
+            r["eigen_condition_number"] = diag.condition_number
+            r["eigen_sum"] = diag.eigenvalue_sum
+            lv_mani_actuals.append(lv_mani)
+            geometry_factors.append(geom)
+        else:
+            # Isotropic run → Qty 1: V_iso,D = C_D · r_iso^D
+            lv_iso_D = log_volume_isotropic(r["radius"], ambient_dim)
+            r["log_vol_iso_D"] = lv_iso_D
+            r["log_vol_mani_actual"] = None
+            r["geometry_factor"] = None
+            r["eigen_k"] = None
+            r["ambient_D"] = ambient_dim
+            lv_iso_Ds.append(lv_iso_D)
+
+    # Aggregate volume stats
+    if lv_mani_actuals or lv_iso_Ds:
+        # Compute Qty 1, 2, 3 from companion iso radii if available
+        mean_log_vol_iso_D = None
+        mean_log_vol_iso_k = None
+        mean_log_vol_mani_pred = None
+        if iso_companion_radii is not None and len(iso_companion_radii) > 0 and k_pca is not None:
+            mean_geom = float(np.mean(geometry_factors)) if geometry_factors else 0.0
+            lv_iso_D_from_iso = [log_volume_isotropic(r, ambient_dim) for r in iso_companion_radii]
+            lv_iso_k_from_iso = [log_volume_isotropic(r, k_pca) for r in iso_companion_radii]
+            lv_mani_pred_from_iso = [log_volume_isotropic(r, k_pca) + mean_geom for r in iso_companion_radii]
+            mean_log_vol_iso_D = float(np.mean(lv_iso_D_from_iso))
+            mean_log_vol_iso_k = float(np.mean(lv_iso_k_from_iso))
+            mean_log_vol_mani_pred = float(np.mean(lv_mani_pred_from_iso))
+        elif lv_iso_Ds:
+            # This IS the isotropic run — Qty 1 directly
+            mean_log_vol_iso_D = float(np.mean(lv_iso_Ds))
+
+        metrics["volume"] = {
+            "k_pca": k_pca,
+            "ambient_D": ambient_dim,
+            # Qty 1: V_iso,D = C_D · r_iso^D
+            "mean_log_vol_iso_D": mean_log_vol_iso_D,
+            # Qty 2: V_iso,k = C_k · r_iso^k
+            "mean_log_vol_iso_k": mean_log_vol_iso_k,
+            # Qty 3: V_mani,pred = C_k · r_iso^k · √det(Λ)
+            "mean_log_vol_mani_pred": mean_log_vol_mani_pred,
+            # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ)
+            "mean_log_vol_mani_actual": float(np.mean(lv_mani_actuals)) if lv_mani_actuals else None,
+            # Geometry factor (r-independent): 0.5·Σlog(λ_i)
+            "mean_geometry_factor": float(np.mean(geometry_factors)) if geometry_factors else None,
+            "median_geometry_factor": float(np.median(geometry_factors)) if geometry_factors else None,
+            # Diagnostics
+            "mean_effective_rank": float(np.mean([r["eigen_effective_rank"] for r in results if r.get("eigen_effective_rank")])) if any(r.get("eigen_effective_rank") for r in results) else None,
+            "mean_condition_number": float(np.mean([r["eigen_condition_number"] for r in results if r.get("eigen_condition_number")])) if any(r.get("eigen_condition_number") for r in results) else None,
+        }
+        vol = metrics["volume"]
+        if vol["mean_log_vol_mani_actual"] is not None:
+            _log(f"Volume (k={k_pca}, D={ambient_dim}): mani_actual={vol['mean_log_vol_mani_actual']:.2f}, "
+                 f"geom_factor={vol['mean_geometry_factor']:.2f}, eff_rank={vol['mean_effective_rank']:.1f}")
+        elif vol["mean_log_vol_iso_D"] is not None:
+            _log(f"Volume (iso, D={ambient_dim}): mean_log_vol_iso_D={vol['mean_log_vol_iso_D']:.2f}")
     
     # Save results
     if cfg.output.save_results:
@@ -1063,13 +1195,26 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         
         if cfg.output.save_per_sample:
             csv_path = paths.experiment_dir / "results.csv"
+            fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "correct", "certified_correct",
+                          "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
+                          "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
             with open(csv_path, "w", newline="") as f:
-                fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "correct", "certified_correct"]
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
                 for r in results:
-                    writer.writerow({k: r[k] for k in fieldnames})
+                    writer.writerow(r)
             _log(f"Results: {csv_path}")
+
+            # Save eigenvalue spectra for all samples (for spectrum plots)
+            eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if "eigenvalues" in r]
+            if eigen_samples:
+                eigen_path = paths.experiment_dir / "eigenvalues.npz"
+                np.savez_compressed(
+                    eigen_path,
+                    indices=np.array([e[0] for e in eigen_samples]),
+                    eigenvalues=np.array([e[1] for e in eigen_samples], dtype=np.float32),
+                )
+                _log(f"Eigenvalues: {eigen_path}")
         
         # Save summary visualization
         if cfg.output.save_visualizations:

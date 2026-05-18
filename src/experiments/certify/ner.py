@@ -559,6 +559,7 @@ def evaluate_smoothed(
     y_true_all = []
     y_pred_all = []
     radii = []
+    token_eigenvalues_list: list[np.ndarray] = []
     abstentions = 0
     total_tokens = 0
     certified_correct = 0
@@ -651,6 +652,12 @@ def evaluate_smoothed(
                     total_tokens += 1
                     by_label["total_tokens"] += 1
                     by_entity["total_tokens"] += 1
+
+                    # Collect eigenvalues for volume computation
+                    if out.eigenvalues is not None:
+                        evals = out.eigenvalues[row_idx][token_idx]
+                        if evals is not None:
+                            token_eigenvalues_list.append(evals)
 
                     if cert.abstained:
                         by_label["abstained_tokens"] += 1
@@ -981,6 +988,135 @@ def run(
         "certification_by_entity": smooth_metrics.get("certification_by_entity", {}),
         "certification_by_label": smooth_metrics.get("certification_by_label", {}),
     }
+
+    # ── Volume computation — 4-quantity framework ──
+    # Qty 1: V_iso,D      = C_D · r_iso^D             (classical RS)
+    # Qty 2: V_iso,k      = C_k · r_iso^k             (fair semantic baseline)
+    # Qty 3: V_mani,pred  = C_k · r_iso^k · √det(Λ)  (geometry-only gain)
+    # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ) (real manifold certificate)
+    #
+    # Manifold run: has r_mani, eigenvalues → Qty 4 directly.
+    #   Also tries to load r_iso from companion iso run → computes Qty 1, 2, 3.
+    # Isotropic run: has r_iso → Qty 1 directly.
+
+    if token_eigenvalues_list and radii:
+        from src.certify.randomized import (
+            log_volume_isotropic,
+            log_volume_manifold,
+            eigenvalue_diagnostics,
+        )
+        all_evals = np.array([e for e in token_eigenvalues_list], dtype=np.float64)
+        mean_evals = all_evals.mean(axis=0)
+        k_pca = len(mean_evals)
+        hidden_dim = model.config.hidden_size if hasattr(model, 'config') else 768
+
+        # Qty 4: actual manifold certified volume
+        certified_radii = [r for r in radii if r > 0]
+        lv_mani_actuals = []
+        for i, r in enumerate(certified_radii):
+            evals = token_eigenvalues_list[i] if i < len(token_eigenvalues_list) else mean_evals
+            lv_mani_actuals.append(log_volume_manifold(r, evals))
+
+        # Geometry factor: 0.5 * Σ log(λ_i) — r-independent
+        per_token_geom = []
+        for evals in token_eigenvalues_list:
+            per_token_geom.append(0.5 * np.sum(np.log(np.maximum(evals, 1e-30))))
+        mean_geometry_factor = float(np.mean(per_token_geom))
+
+        # Try to load r_iso from companion isotropic run → compute Qty 1, 2, 3
+        sigma = float(getattr(cfg.smoothing, "sigma", 0.25))
+        sigma_tag = f"sigma_{sigma:.2f}".replace(".", "_")
+        layer = _layer_tag(getattr(cfg.smoothing, "layer_index", None))
+        iso_companion_dir = Path(cfg.output_dir) / "isotropic_certify" / layer / sigma_tag
+        iso_radii_path = iso_companion_dir / "iso_radii.npz"
+
+        iso_radii = None
+        if iso_radii_path.exists():
+            iso_radii = np.load(iso_radii_path)["certified_radii"]
+            _log(f"Loaded {len(iso_radii)} iso radii from companion: {iso_radii_path}")
+        else:
+            _log(f"No companion iso radii at {iso_radii_path} — Qty 1,2,3 unavailable")
+
+        # Compute all quantities
+        mean_log_vol_iso_D = None   # Qty 1
+        mean_log_vol_iso_k = None   # Qty 2
+        mean_log_vol_mani_pred = None  # Qty 3
+        if iso_radii is not None and len(iso_radii) > 0:
+            iso_certified = iso_radii[iso_radii > 0]
+            lv_iso_Ds = [log_volume_isotropic(r, hidden_dim) for r in iso_certified]
+            lv_iso_ks = [log_volume_isotropic(r, k_pca) for r in iso_certified]
+            # Qty 3: use mean geometry factor applied to each iso radius
+            lv_mani_preds = [log_volume_isotropic(r, k_pca) + mean_geometry_factor for r in iso_certified]
+            mean_log_vol_iso_D = float(np.mean(lv_iso_Ds))
+            mean_log_vol_iso_k = float(np.mean(lv_iso_ks))
+            mean_log_vol_mani_pred = float(np.mean(lv_mani_preds))
+
+        diag = eigenvalue_diagnostics(mean_evals)
+        volume_stats = {
+            "k_pca": k_pca,
+            "ambient_D": hidden_dim,
+            "n_certified_tokens": len(certified_radii),
+            "n_tokens_with_eigenvalues": len(token_eigenvalues_list),
+            # Qty 1: V_iso,D = C_D · r_iso^D
+            "mean_log_vol_iso_D": mean_log_vol_iso_D,
+            # Qty 2: V_iso,k = C_k · r_iso^k
+            "mean_log_vol_iso_k": mean_log_vol_iso_k,
+            # Qty 3: V_mani,pred = C_k · r_iso^k · √det(Λ)
+            "mean_log_vol_mani_pred": mean_log_vol_mani_pred,
+            # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ)
+            "mean_log_vol_mani_actual": float(np.mean(lv_mani_actuals)),
+            # Geometry factor (r-independent): 0.5·Σlog(λ_i)
+            "mean_geometry_factor": mean_geometry_factor,
+            "median_geometry_factor": float(np.median(per_token_geom)),
+            # Diagnostics
+            "mean_effective_rank": float(diag.effective_rank),
+            "mean_condition_number": float(diag.condition_number),
+            "eigen_diagnostics": diag.to_dict(),
+        }
+        summary["volume"] = volume_stats
+        concise_summary["volume"] = volume_stats
+        _log(f"Volume (k={k_pca}, D={hidden_dim}): "
+             f"Qty4={volume_stats['mean_log_vol_mani_actual']:.2f}, "
+             f"Qty1={'%.2f' % mean_log_vol_iso_D if mean_log_vol_iso_D else 'N/A'}, "
+             f"geom_factor={mean_geometry_factor:.2f}, eff_rank={diag.effective_rank:.1f}")
+
+        # Save eigenvalue spectra + per-token radii
+        if out_dir is not None:
+            np.savez_compressed(
+                out_dir / "eigenvalues.npz",
+                eigenvalues=all_evals,
+                mean_eigenvalues=mean_evals,
+                certified_radii=np.array(certified_radii, dtype=np.float64),
+                per_token_geometry_factor=np.array(per_token_geom, dtype=np.float64),
+            )
+    elif radii:
+        # Isotropic run: store Qty 1 (V_iso,D) + raw radii for notebook cross-ref
+        from src.certify.randomized import log_volume_isotropic
+        hidden_dim = model.config.hidden_size if hasattr(model, 'config') else 768
+        certified_radii = [r for r in radii if r > 0]
+        # Qty 1: classical isotropic volume at ambient D
+        lv_iso_Ds = [log_volume_isotropic(r, hidden_dim) for r in certified_radii]
+        volume_stats = {
+            "k_pca": None,
+            "ambient_D": hidden_dim,
+            "n_certified_tokens": len(certified_radii),
+            "n_tokens_with_eigenvalues": 0,
+            "mean_log_vol_iso_D": float(np.mean(lv_iso_Ds)) if lv_iso_Ds else None,
+            "mean_log_vol_mani_actual": None,
+            "mean_geometry_factor": None,
+            "mean_effective_rank": None,
+            "mean_condition_number": None,
+        }
+        summary["volume"] = volume_stats
+        concise_summary["volume"] = volume_stats
+        # Save radii for notebook cross-ref (Qty 2 & 3 computed there)
+        if out_dir is not None and certified_radii:
+            np.savez_compressed(
+                out_dir / "iso_radii.npz",
+                certified_radii=np.array(certified_radii, dtype=np.float64),
+            )
+        if lv_iso_Ds:
+            _log(f"Volume (iso, D={hidden_dim}): mean_log_vol_iso_D={volume_stats['mean_log_vol_iso_D']:.2f}")
 
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
     (out_dir / "results_summary.json").write_text(json.dumps(concise_summary, indent=2))
