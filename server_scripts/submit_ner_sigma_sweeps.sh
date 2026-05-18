@@ -68,18 +68,18 @@ submit_sweep \
     "NER MANIFOLD"
 
 # =============================================================================
-# 3. NER + Context Masking Isotropic
-# =============================================================================
-submit_sweep \
-    "src/configs/experiments/ner_conll2003_bert_isotropic_masking_certify.yaml" \
-    "NER + MASKING ISOTROPIC (Gaussian baseline)"
+# # 3. NER + Context Masking Isotropic
+# # =============================================================================
+# submit_sweep \
+#     "src/configs/experiments/ner_conll2003_bert_isotropic_masking_certify.yaml" \
+#     "NER + MASKING ISOTROPIC (Gaussian baseline)"
 
-# =============================================================================
-# 4. NER + Context Masking Manifold
-# =============================================================================
-submit_sweep \
-    "src/configs/experiments/ner_conll2003_bert_masking_certify.yaml" \
-    "NER + MASKING MANIFOLD"
+# # =============================================================================
+# # 4. NER + Context Masking Manifold
+# # =============================================================================
+# submit_sweep \
+#     "src/configs/experiments/ner_conll2003_bert_masking_certify.yaml" \
+#     "NER + MASKING MANIFOLD"
 
 # =============================================================================
 # SUMMARY
