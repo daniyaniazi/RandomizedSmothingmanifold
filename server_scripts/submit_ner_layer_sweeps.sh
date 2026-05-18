@@ -108,9 +108,9 @@ if [ "$MANIFOLD" = true ]; then
                "NER Manifold — Layer ${L} (σ=0.50)" \
                "ner-manifold-L${L}"
     done
-    submit "${CONFIGS_DIR}/ner_conll2003_bert_certify.yaml" \
-           "NER Manifold — Last layer (σ=0.50)" \
-           "ner-manifold-Llast"
+    # submit "${CONFIGS_DIR}/ner_conll2003_bert_certify.yaml" \
+    #        "NER Manifold — Last layer (σ=0.50)" \
+    #        "ner-manifold-Llast"
     echo ""
 fi
 
@@ -122,9 +122,9 @@ if [ "$ISOTROPIC" = true ]; then
                "NER Isotropic — Layer ${L} (σ=0.50)" \
                "ner-iso-L${L}"
     done
-    submit "${CONFIGS_DIR}/ner_conll2003_bert_isotropic_certify.yaml" \
-           "NER Isotropic — Last layer (σ=0.50)" \
-           "ner-iso-Llast"
+    # submit "${CONFIGS_DIR}/ner_conll2003_bert_isotropic_certify.yaml" \
+    #        "NER Isotropic — Last layer (σ=0.50)" \
+    #        "ner-iso-Llast"
     echo ""
 fi
 
