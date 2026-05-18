@@ -30,7 +30,7 @@ smoothing:
   space: input_embeddings
   sigma: 0.10
   layer_index: null
-  knn_k: 64
+  knn_k: 256
   eps_eig: 1.0e-06
   index_backend: torch
   index_metric: euclidean

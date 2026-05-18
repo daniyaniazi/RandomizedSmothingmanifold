@@ -31,7 +31,7 @@ smoothing:
   sigma: 0.25  # default sigma
   sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   n_samples: 100
-  knn_k: 257
+  knn_k: 256
   eps_eig: 1.0e-06
   use_manifold: true  # true = local PCA manifold, false = isotropic
 

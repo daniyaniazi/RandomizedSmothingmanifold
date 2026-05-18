@@ -457,30 +457,65 @@ def _build_debug_examples(batch, out, tokenizer, id2label: dict[int, str], max_s
 def _save_debug_vote_plot(debug_examples: list[dict], out_dir: Path) -> str | None:
     if not debug_examples:
         return None
-    first = debug_examples[0]
-    if not first.get("token_debug"):
-        return None
-    token_row = first["token_debug"][0]
-    vote_rows = token_row.get("vote_top5", [])
-    if not vote_rows:
-        return None
 
     try:
         import matplotlib.pyplot as plt
     except Exception:
         return None
 
-    labels = [r["label"] for r in vote_rows]
-    counts = [int(r["count"]) for r in vote_rows]
+    # Collect interesting tokens: mix of certified, abstained, high/low margin
+    all_tokens = []
+    for ex in debug_examples:
+        for tok in (ex.get("token_debug") or []):
+            vote_rows = tok.get("vote_top5", [])
+            if not vote_rows:
+                continue
+            top_count = int(vote_rows[0]["count"]) if vote_rows else 0
+            second_count = int(vote_rows[1]["count"]) if len(vote_rows) > 1 else 0
+            all_tokens.append({
+                "token": tok["token"],
+                "true_label": tok.get("true_label", "?"),
+                "certified": tok.get("certified", False),
+                "radius": tok.get("radius", 0.0),
+                "votes": vote_rows,
+                "margin": top_count - second_count,
+            })
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(labels, counts)
-    ax.set_title(f"Vote Distribution | token={token_row['token']}")
-    ax.set_ylabel("votes")
+    if not all_tokens:
+        return None
+
+    # Pick up to 12 tokens: 6 certified (highest margin) + 6 abstained (lowest margin)
+    certified = sorted([t for t in all_tokens if t["certified"]], key=lambda x: -x["margin"])
+    abstained = sorted([t for t in all_tokens if not t["certified"]], key=lambda x: x["margin"])
+    selected = certified[:6] + abstained[:6]
+    if not selected:
+        selected = all_tokens[:12]
+
+    n = len(selected)
+    cols = min(4, n)
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False)
+
+    for idx, tok in enumerate(selected):
+        ax = axes[idx // cols][idx % cols]
+        labels = [r["label"] for r in tok["votes"]]
+        counts = [int(r["count"]) for r in tok["votes"]]
+        colors = ['#4daf4a' if tok["certified"] else '#e41a1c'] * len(labels)
+        ax.bar(labels, counts, color=colors, alpha=0.8, edgecolor='k')
+        status = f"✓ r={tok['radius']:.3f}" if tok["certified"] else "✗ ABSTAIN"
+        ax.set_title(f'"{tok["token"]}" [{tok["true_label"]}]\n{status}', fontsize=10)
+        ax.set_ylabel("Votes")
+        ax.tick_params(axis='x', rotation=45, labelsize=8)
+
+    # Hide unused axes
+    for idx in range(n, rows * cols):
+        axes[idx // cols][idx % cols].set_visible(False)
+
+    fig.suptitle("Vote Distributions: Certified (green) vs Abstained (red)", fontsize=13, y=1.01)
     fig.tight_layout()
 
     fig_path = out_dir / "debug_vote_distribution.png"
-    fig.savefig(fig_path, dpi=140)
+    fig.savefig(fig_path, dpi=140, bbox_inches='tight')
     plt.close(fig)
     return str(fig_path)
 
