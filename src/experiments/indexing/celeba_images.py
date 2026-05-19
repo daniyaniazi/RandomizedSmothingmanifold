@@ -110,7 +110,7 @@ Examples:
     )
     
     # Set output directory
-    out_dir = Path(cfg.output.output_dir) / "smile_classification" / cfg.dataset.name.lower() / "index" / args.space
+    out_dir = Path(cfg.output.output_dir) / "smile_classification" / cfg.dataset.name.lower().replace("-", "").replace("_", "") / "index" / args.space
     index_dir = out_dir / args.backend / cfg.index.metric
     index_dir.mkdir(parents=True, exist_ok=True)
     
@@ -188,7 +188,7 @@ Examples:
             n_trees=cfg.index.n_trees if args.backend == "annoy" else 20,
         )
         
-        index_path = str(index_dir / "index")
+        index_path = str(index_dir / "index.ann")
         if args.backend == "annoy":
             save_annoy_index(index, index_path)
         elif args.backend == "faiss":

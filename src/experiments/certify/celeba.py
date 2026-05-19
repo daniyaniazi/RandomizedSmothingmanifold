@@ -49,6 +49,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
@@ -278,33 +279,43 @@ def load_or_build_pixel_index(
 ) -> NeighborIndex:
     """Build or load pixel-space index using generic utilities."""
     index_path = index_dir / "index.ann"
+    lock_path = index_dir / "index.lock"
     
-    # Check if index exists
+    # Check if index already exists (fast path, no lock needed)
     if index_path.exists() and not force_rebuild:
         dim = 3 * image_size * image_size
         _log(f"Loading existing pixel index: {index_path}")
         return load_index(dim=dim, index_path=str(index_path), backend="annoy")
     
-    # Build using generic utilities
+    # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
-    _log(f"Building pixel index from {len(train_samples)} samples...")
-    
-    dataloader = _create_image_dataloader(train_samples, image_size)
-    
-    artifacts = build_or_load_image_index(
-        out_dir=index_dir,
-        dataloader=dataloader,
-        space="pixel",
-        backend="annoy",
-        metric="euclidean",
-        index_path=str(index_path),
-        n_trees=n_trees,
-        rebuild=force_rebuild,
-        metadata={"image_size": image_size, "split": "train", "num_items": len(train_samples)},
-    )
-    
-    _log(f"Pixel index saved: {index_path} ({len(train_samples)} items)")
-    return artifacts.index
+    import filelock
+    lock = filelock.FileLock(str(lock_path), timeout=7200)  # 2h timeout
+    with lock:
+        # Re-check after acquiring lock (another job may have built it)
+        if index_path.exists() and not force_rebuild:
+            dim = 3 * image_size * image_size
+            _log(f"Loading existing pixel index (built by another job): {index_path}")
+            return load_index(dim=dim, index_path=str(index_path), backend="annoy")
+        
+        _log(f"Building pixel index from {len(train_samples)} samples...")
+        
+        dataloader = _create_image_dataloader(train_samples, image_size)
+        
+        artifacts = build_or_load_image_index(
+            out_dir=index_dir,
+            dataloader=dataloader,
+            space="pixel",
+            backend="annoy",
+            metric="euclidean",
+            index_path=str(index_path),
+            n_trees=n_trees,
+            rebuild=force_rebuild,
+            metadata={"image_size": image_size, "split": "train", "num_items": len(train_samples)},
+        )
+        
+        _log(f"Pixel index saved: {index_path} ({len(train_samples)} items)")
+        return artifacts.index
 
 
 def load_or_build_latent_index(
@@ -317,45 +328,54 @@ def load_or_build_latent_index(
 ) -> NeighborIndex:
     """Build or load latent-space index using generic utilities."""
     index_path = index_dir / "index.ann"
+    lock_path = index_dir / "index.lock"
     
-    # Check if index exists
+    # Check if index already exists (fast path, no lock needed)
     if index_path.exists() and not force_rebuild:
         _log(f"Loading existing latent index: {index_path}")
         return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy")
     
-    # Build using generic utilities
+    # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
-    _log(f"Building latent index from {len(train_samples)} samples...")
-    
-    dataloader = _create_image_dataloader(train_samples, vae.image_size)
-    
-    # Create encoder function
-    vae.eval()
-    def vae_encoder(images: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            images = images.to(device)
-            if images.shape[-1] != vae.image_size:
-                images = torch.nn.functional.interpolate(
-                    images, size=vae.image_size, mode="bilinear", align_corners=False
-                )
-            mu, _ = vae.encode(images)
-            return mu.cpu()
-    
-    artifacts = build_or_load_image_index(
-        out_dir=index_dir,
-        dataloader=dataloader,
-        space="latent",
-        encoder=vae_encoder,
-        backend="annoy",
-        metric="euclidean",
-        index_path=str(index_path),
-        n_trees=n_trees,
-        rebuild=force_rebuild,
-        metadata={"latent_dim": vae.latent_dim, "split": "train", "num_items": len(train_samples)},
-    )
-    
-    _log(f"Latent index saved: {index_path} ({len(train_samples)} items)")
-    return artifacts.index
+    import filelock
+    lock = filelock.FileLock(str(lock_path), timeout=7200)  # 2h timeout
+    with lock:
+        # Re-check after acquiring lock
+        if index_path.exists() and not force_rebuild:
+            _log(f"Loading existing latent index (built by another job): {index_path}")
+            return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy")
+        
+        _log(f"Building latent index from {len(train_samples)} samples...")
+        
+        dataloader = _create_image_dataloader(train_samples, vae.image_size)
+        
+        # Create encoder function
+        vae.eval()
+        def vae_encoder(images: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                images = images.to(device)
+                if images.shape[-1] != vae.image_size:
+                    images = torch.nn.functional.interpolate(
+                        images, size=vae.image_size, mode="bilinear", align_corners=False
+                    )
+                mu, _ = vae.encode(images)
+                return mu.cpu()
+        
+        artifacts = build_or_load_image_index(
+            out_dir=index_dir,
+            dataloader=dataloader,
+            space="latent",
+            encoder=vae_encoder,
+            backend="annoy",
+            metric="euclidean",
+            index_path=str(index_path),
+            n_trees=n_trees,
+            rebuild=force_rebuild,
+            metadata={"latent_dim": vae.latent_dim, "split": "train", "num_items": len(train_samples)},
+        )
+        
+        _log(f"Latent index saved: {index_path} ({len(train_samples)} items)")
+        return artifacts.index
 
 
 # ─────────────────────────────────────────────────────────────────────────────
