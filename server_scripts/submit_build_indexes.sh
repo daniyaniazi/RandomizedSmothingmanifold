@@ -42,16 +42,44 @@ submit_index() {
     echo "  ✅ $job_name (mem-per-cpu=$mem)"
 }
 
-echo "Submitting index build jobs..."
+TARGET=${1:-"all"}
+
+echo "Submitting index build jobs: $TARGET"
 echo ""
 
-# CelebA pixel (dim=150528, ~92GB for full train → 32G per cpu)
-submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
-submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent"
-
-# CelebaHQ pixel (dim=786432, ~72GB for Annoy → 32G per cpu)
-submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel" "32G"
-submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent"
+case $TARGET in
+    celeba-pixel)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
+        ;;
+    celeba-latent)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent"
+        ;;
+    celeba)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent"
+        ;;
+    celebahq-pixel)
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel" "32G"
+        ;;
+    celebahq-latent)
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent"
+        ;;
+    celebahq)
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel" "32G"
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent"
+        ;;
+    all)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent"
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel" "32G"
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent"
+        ;;
+    *)
+        echo "Unknown target: $TARGET"
+        echo "Usage: ./submit_build_indexes.sh {all|celeba|celebahq|celeba-pixel|celeba-latent|celebahq-pixel|celebahq-latent}"
+        exit 1
+        ;;
+esac
 
 echo ""
 echo "══════════════════════════════════════════"
