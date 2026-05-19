@@ -412,6 +412,9 @@ def sample_latent(
     """Sample noisy latent-space image using VAE + smoother."""
     with torch.no_grad():
         x = img_tensor.unsqueeze(0).to(device)
+        # Resize to VAE's expected image_size if needed (classifier may use different resolution)
+        if x.shape[-1] != vae.image_size or x.shape[-2] != vae.image_size:
+            x = F.interpolate(x, size=vae.image_size, mode="bilinear", align_corners=False)
         mu, _ = vae.encode(x)
         z = mu.squeeze(0).cpu().numpy().astype(np.float32)
     
@@ -534,6 +537,8 @@ def save_sample_visualization(
     if is_latent:
         with torch.no_grad():
             x = img_tensor.unsqueeze(0).to(device)
+            if x.shape[-1] != vae.image_size or x.shape[-2] != vae.image_size:
+                x = F.interpolate(x, size=vae.image_size, mode="bilinear", align_corners=False)
             mu, _ = vae.encode(x)
             query_vec = mu.squeeze(0).cpu().numpy().astype(np.float32)
     else:
@@ -674,6 +679,8 @@ def save_sample_visualization(
         else:
             with torch.no_grad():
                 x = img_tensor.unsqueeze(0).to(device)
+                if x.shape[-1] != vae.image_size or x.shape[-2] != vae.image_size:
+                    x = F.interpolate(x, size=vae.image_size, mode="bilinear", align_corners=False)
                 mu, _ = vae.encode(x)
                 x_recon = vae.decode(mu).squeeze(0).cpu()
         ax.imshow(_tensor_to_pil(x_recon))
@@ -963,7 +970,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             result["eigenvalues"] = cached.pca.evals.tolist()
         elif isinstance(latent_smoother, ManifoldSmoother) and cfg.smoothing.mode == "latent" and vae is not None:
             with torch.no_grad():
-                mu, _ = vae.encode(img_tensor.unsqueeze(0).to(device))
+                x_vae = img_tensor.unsqueeze(0).to(device)
+                if x_vae.shape[-1] != vae.image_size or x_vae.shape[-2] != vae.image_size:
+                    x_vae = F.interpolate(x_vae, size=vae.image_size, mode="bilinear", align_corners=False)
+                mu, _ = vae.encode(x_vae)
             cached = latent_smoother.compute_pca(mu.cpu().numpy().reshape(-1))
             result["eigenvalues"] = cached.pca.evals.tolist()
 
