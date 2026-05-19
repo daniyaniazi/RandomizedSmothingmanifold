@@ -8,11 +8,15 @@
 # This ensures manifold runs can load companion iso_radii for Qty 1,2,3.
 #
 # Usage:
-#   ./submit_chained.sh ner-sigma   [--dry-run]   # Chain 1: NER sigma sweep (last layer)
-#   ./submit_chained.sh ner-layer   [--dry-run]   # Chain 2: NER layer sweep (L=0,3,6,9)
-#   ./submit_chained.sh celeba      [--dry-run]   # Chain 3: CelebA pixel+latent
-#   ./submit_chained.sh celebahq    [--dry-run]   # Chain 4: CelebaHQ pixel+latent
-#   ./submit_chained.sh all         [--dry-run]   # All 4 chains (independent/parallel)
+#   ./submit_chained.sh ner-sigma       [--dry-run]  # NER sigma sweep (last layer)
+#   ./submit_chained.sh ner-layer       [--dry-run]  # NER layer sweep (L=0,3,6,9)
+#   ./submit_chained.sh celeba          [--dry-run]  # CelebA pixel+latent
+#   ./submit_chained.sh celeba-pixel    [--dry-run]  # CelebA pixel only
+#   ./submit_chained.sh celeba-latent   [--dry-run]  # CelebA latent only
+#   ./submit_chained.sh celebahq        [--dry-run]  # CelebaHQ pixel+latent
+#   ./submit_chained.sh celebahq-pixel  [--dry-run]  # CelebaHQ pixel only
+#   ./submit_chained.sh celebahq-latent [--dry-run]  # CelebaHQ latent only
+#   ./submit_chained.sh all             [--dry-run]  # All chains (independent/parallel)
 # =============================================================================
 
 set -euo pipefail
@@ -36,12 +40,12 @@ TARGET=""
 for arg in "$@"; do
     case $arg in
         --dry-run)  DRY_RUN=true ;;
-        ner-sigma|ner-layer|celeba|celebahq|all) TARGET=$arg ;;
+        ner-sigma|ner-layer|celeba|celeba-pixel|celeba-latent|celebahq|celebahq-pixel|celebahq-latent|all) TARGET=$arg ;;
     esac
 done
 
 if [ -z "$TARGET" ]; then
-    echo "Usage: ./submit_chained.sh {ner-sigma|ner-layer|celeba|celebahq|all} [--dry-run]"
+    echo "Usage: ./submit_chained.sh {ner-sigma|ner-layer|celeba|celeba-pixel|celeba-latent|celebahq|celebahq-pixel|celebahq-latent|all} [--dry-run]"
     exit 1
 fi
 
@@ -197,21 +201,24 @@ submit_ner_layer() {
 # ═════════════════════════════════════════════════════════════════════════════
 # CHAIN 3: CELEBA (pixel + latent)
 # ═════════════════════════════════════════════════════════════════════════════
-submit_celeba() {
+submit_celeba_pixel() {
     echo ""
     echo "╔══════════════════════════════════════════╗"
-    echo "║   CHAIN 3: CELEBA (pixel + latent)       ║"
+    echo "║   CHAIN 3a: CELEBA PIXEL                 ║"
     echo "╚══════════════════════════════════════════╝"
-
-    # Pixel
     submit_sigma_sweep_chained \
         "${CONFIGS_DIR}/certify_celeba_isotropic_pixel.yaml" \
         "${CONFIGS_DIR}/certify_celeba_pixel.yaml" \
         "celeba-pix-iso" \
         "celeba-pix-mani" \
         false
+}
 
-    # Latent
+submit_celeba_latent() {
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   CHAIN 3b: CELEBA LATENT                ║"
+    echo "╚══════════════════════════════════════════╝"
     submit_sigma_sweep_chained \
         "${CONFIGS_DIR}/certify_celeba_isotropic_latent_128.yaml" \
         "${CONFIGS_DIR}/certify_celeba_latent_128.yaml" \
@@ -220,24 +227,29 @@ submit_celeba() {
         false
 }
 
+submit_celeba() { submit_celeba_pixel; submit_celeba_latent; }
+
 # ═════════════════════════════════════════════════════════════════════════════
 # CHAIN 4: CELEBAHQ (pixel + latent)
 # ═════════════════════════════════════════════════════════════════════════════
-submit_celebahq() {
+submit_celebahq_pixel() {
     echo ""
     echo "╔══════════════════════════════════════════╗"
-    echo "║   CHAIN 4: CELEBAHQ (pixel + latent)     ║"
+    echo "║   CHAIN 4a: CELEBAHQ PIXEL               ║"
     echo "╚══════════════════════════════════════════╝"
-
-    # Pixel
     submit_sigma_sweep_chained \
         "${CONFIGS_DIR}/certify_celebahq_isotropic_pixel.yaml" \
         "${CONFIGS_DIR}/certify_celebahq_pixel.yaml" \
         "celebahq-pix-iso" \
         "celebahq-pix-mani" \
         false
+}
 
-    # Latent
+submit_celebahq_latent() {
+    echo ""
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   CHAIN 4b: CELEBAHQ LATENT              ║"
+    echo "╚══════════════════════════════════════════╝"
     submit_sigma_sweep_chained \
         "${CONFIGS_DIR}/certify_celebahq_isotropic_latent.yaml" \
         "${CONFIGS_DIR}/certify_celebahq_latent.yaml" \
@@ -245,6 +257,8 @@ submit_celebahq() {
         "celebahq-lat-mani" \
         false
 }
+
+submit_celebahq() { submit_celebahq_pixel; submit_celebahq_latent; }
 
 # ═════════════════════════════════════════════════════════════════════════════
 # DISPATCH
@@ -257,11 +271,15 @@ if $DRY_RUN; then
 fi
 
 case $TARGET in
-    ner-sigma) submit_ner_sigma ;;
-    ner-layer) submit_ner_layer ;;
-    celeba)    submit_celeba ;;
-    celebahq)  submit_celebahq ;;
-    all)       submit_ner_sigma; submit_ner_layer; submit_celeba; submit_celebahq ;;
+    ner-sigma)       submit_ner_sigma ;;
+    ner-layer)       submit_ner_layer ;;
+    celeba)          submit_celeba ;;
+    celeba-pixel)    submit_celeba_pixel ;;
+    celeba-latent)   submit_celeba_latent ;;
+    celebahq)        submit_celebahq ;;
+    celebahq-pixel)  submit_celebahq_pixel ;;
+    celebahq-latent) submit_celebahq_latent ;;
+    all)             submit_ner_sigma; submit_ner_layer; submit_celeba; submit_celebahq ;;
 esac
 
 echo ""
