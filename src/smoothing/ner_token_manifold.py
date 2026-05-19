@@ -341,12 +341,12 @@ def sample_smoothed_token_predictions(
     alpha_conf: float,
     abstain_label: int,
     collect_debug: bool = False,
+    smoothing_mode: str = "manifold",
 ) -> SmoothedBatchOutput:
     """Sample smoothed predictions with OPTIMIZED PCA caching.
     
-    Uses ManifoldSmoother internally - PCA is computed ONCE per token,
-    then reused for all num_samples iterations.
-    This gives ~100x speedup for the PCA/neighbor lookup phase.
+    Uses ManifoldSmoother for manifold mode (PCA computed ONCE per token),
+    or simple isotropic Gaussian noise for isotropic mode.
     
     Args:
         model: NER model with hidden state output
@@ -363,6 +363,7 @@ def sample_smoothed_token_predictions(
         alpha_conf: Confidence level for certification
         abstain_label: Label ID for abstention
         collect_debug: Whether to collect debug info
+        smoothing_mode: "manifold" or "isotropic"
         
     Returns:
         SmoothedBatchOutput with predictions, vote counts, and certificates
@@ -389,43 +390,51 @@ def sample_smoothed_token_predictions(
 
     target_layer = model.num_layers() - 1 if layer_index is None else layer_index
 
-    # Create ManifoldSmoother instance (used for all tokens)
-    smoother = ManifoldSmoother(
-        sigma=sigma,
-        index=neighbor_index,
-        knn_k=knn_k,
-        eps_eig=eps_eig,
-    )
+    use_isotropic = smoothing_mode.strip().lower() == "isotropic"
 
-    # OPTIMIZATION: Precompute PCA for all tokens ONCE using smoother
-    cached_pcas = precompute_token_pcas(
-        hidden=clean_hidden,
-        valid_mask=valid_mask,
-        smoother=smoother,
-    )
-    
-    # Collect debug info once (using first sample)
-    if collect_debug:
-        debug_output = _collect_debug_info(
-            cached_pcas=cached_pcas,
+    # For manifold mode: cache PCA once per token
+    cached_pcas: list[CachedTokenPCA] = []
+    smoother: ManifoldSmoother | None = None
+    if not use_isotropic:
+        smoother = ManifoldSmoother(
+            sigma=sigma,
+            index=neighbor_index,
+            knn_k=knn_k,
+            eps_eig=eps_eig,
+        )
+        cached_pcas = precompute_token_pcas(
             hidden=clean_hidden,
-            input_ids=input_ids,
-            labels=labels,
             valid_mask=valid_mask,
             smoother=smoother,
-            token_texts=token_texts,
-            label_ids=label_ids,
-            tokenizer=tokenizer,
         )
+        if collect_debug:
+            debug_output = _collect_debug_info(
+                cached_pcas=cached_pcas,
+                hidden=clean_hidden,
+                input_ids=input_ids,
+                labels=labels,
+                valid_mask=valid_mask,
+                smoother=smoother,
+                token_texts=token_texts,
+                label_ids=label_ids,
+                tokenizer=tokenizer,
+            )
 
-    # Sample loop - now only samples noise, no PCA recomputation
+    # Sample loop
     for sample_idx in range(num_samples):
-        # Use cached PCAs to generate smoothed hidden states (FAST)
-        smoothed_hidden = smooth_token_tensor_with_cache(
-            hidden=clean_hidden,
-            cached_pcas=cached_pcas,
-            smoother=smoother,
-        )
+        if use_isotropic:
+            # Isotropic: add N(0, σ²I) noise to all valid tokens
+            noise = torch.randn_like(clean_hidden) * sigma
+            # Zero out noise for invalid tokens
+            noise = noise * valid_mask.unsqueeze(-1).float()
+            smoothed_hidden = clean_hidden + noise
+        else:
+            # Manifold: use cached PCAs (FAST - no PCA recomputation)
+            smoothed_hidden = smooth_token_tensor_with_cache(
+                hidden=clean_hidden,
+                cached_pcas=cached_pcas,
+                smoother=smoother,
+            )
 
         delta = smoothed_hidden - clean_hidden
 
@@ -471,8 +480,9 @@ def sample_smoothed_token_predictions(
     token_eigenvalues: list[list[np.ndarray | None]] = [
         [None] * seq_len for _ in range(batch_size)
     ]
-    for cpca in cached_pcas:
-        token_eigenvalues[cpca.batch_idx][cpca.token_idx] = cpca.cached_pca.pca.evals
+    if not use_isotropic:
+        for cpca in cached_pcas:
+            token_eigenvalues[cpca.batch_idx][cpca.token_idx] = cpca.cached_pca.pca.evals
 
     return SmoothedBatchOutput(
         pred_ids=pred_tensor,

@@ -30,6 +30,7 @@ smoothing:
   sigma: 0.20  # default sigma
   sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
   layer_index: null        # use last hidden layer
+  knn_k: 256              # not used in isotropic mode, but needed for config schema
 
 certification:
   enabled: true

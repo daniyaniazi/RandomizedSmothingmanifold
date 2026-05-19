@@ -664,6 +664,7 @@ def evaluate_smoothed(
             alpha_conf=cfg.certification.alpha,
             abstain_label=cfg.certification.abstain_label,
             collect_debug=True,
+            smoothing_mode=str(getattr(cfg.smoothing, "mode", "manifold")),
         )
 
         pred_ids = out.pred_ids.detach().cpu().numpy()
@@ -1046,11 +1047,13 @@ def run(
         hidden_dim = model.config.hidden_size if hasattr(model, 'config') else 768
 
         # Qty 4: actual manifold certified volume
+        # radii and token_eigenvalues_list are both per-valid-token, same order.
+        # Only compute volume for tokens that were certified (r > 0) and have eigenvalues.
         certified_radii = [r for r in radii if r > 0]
         lv_mani_actuals = []
-        for i, r in enumerate(certified_radii):
-            evals = token_eigenvalues_list[i] if i < len(token_eigenvalues_list) else mean_evals
-            lv_mani_actuals.append(log_volume_manifold(r, evals))
+        for r, evals in zip(radii, token_eigenvalues_list):
+            if r > 0:
+                lv_mani_actuals.append(log_volume_manifold(r, evals))
 
         # Geometry factor: 0.5 * Σ log(λ_i) — r-independent
         per_token_geom = []
