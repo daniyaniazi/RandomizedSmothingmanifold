@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# PRE-BUILD ALL INDEXES using src.experiments.indexing.celeba_images
-# Run this ONCE before any certification sweep jobs.
+# PRE-BUILD INDEXES using src.experiments.indexing.celeba_images
+# Usage:
+#   ./submit_build_indexes.sh all               # all 4 indexes
+#   ./submit_build_indexes.sh celeba             # CelebA pixel + latent
+#   ./submit_build_indexes.sh celebahq           # CelebaHQ pixel + latent
+#   ./submit_build_indexes.sh celeba-pixel       # CelebA pixel only
+#   ./submit_build_indexes.sh celeba-latent      # CelebA latent only
+#   ./submit_build_indexes.sh celebahq-pixel     # CelebaHQ pixel only
+#   ./submit_build_indexes.sh celebahq-latent    # CelebaHQ latent only
 # =============================================================================
 
 set -euo pipefail
