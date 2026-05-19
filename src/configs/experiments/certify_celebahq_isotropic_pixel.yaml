@@ -38,7 +38,7 @@ smoothing:
 index:
   backend: annoy
   metric: euclidean
-  n_trees: 10
+  n_trees: 50
   pixel_index_path: null
   latent_index_path: null
   build_if_missing: true
