@@ -423,6 +423,31 @@ def sample_pixel(
     return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
 
 
+def make_pixel_sample_fn(
+    img_tensor: torch.Tensor,
+    smoother: IsotropicSmoother | ManifoldSmoother,
+) -> Callable[[], torch.Tensor]:
+    """Create a sample function with cached PCA (avoids recomputing kNN+PCA per sample).
+    
+    For ManifoldSmoother: computes PCA once, returns closure that samples from cached PCA.
+    For IsotropicSmoother: just wraps sample() (already fast, no PCA).
+    """
+    flat = img_tensor.numpy().flatten().astype(np.float32)
+    shape = img_tensor.shape
+    
+    if isinstance(smoother, ManifoldSmoother):
+        cached = smoother.compute_pca(flat)
+        def _sample():
+            noisy_flat = smoother.sample_from_cached(cached)
+            return torch.from_numpy(noisy_flat.reshape(shape)).float()
+        return _sample
+    else:
+        def _sample():
+            noisy_flat = smoother.sample(flat)
+            return torch.from_numpy(noisy_flat.reshape(shape)).float()
+        return _sample
+
+
 def sample_latent(
     img_tensor: torch.Tensor,
     vae: ConvVAE,
@@ -444,6 +469,39 @@ def sample_latent(
         z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
         x_hat = vae.decode(z_t)
     return x_hat.squeeze(0).cpu()
+
+
+def make_latent_sample_fn(
+    img_tensor: torch.Tensor,
+    vae: ConvVAE,
+    smoother: IsotropicSmoother | ManifoldSmoother,
+    device: torch.device,
+) -> Callable[[], torch.Tensor]:
+    """Create a sample function with cached PCA for latent space."""
+    with torch.no_grad():
+        x = img_tensor.unsqueeze(0).to(device)
+        if x.shape[-1] != vae.image_size or x.shape[-2] != vae.image_size:
+            x = F.interpolate(x, size=vae.image_size, mode="bilinear", align_corners=False)
+        mu, _ = vae.encode(x)
+        z = mu.squeeze(0).cpu().numpy().astype(np.float32)
+    
+    if isinstance(smoother, ManifoldSmoother):
+        cached = smoother.compute_pca(z)
+        def _sample():
+            z_noised = smoother.sample_from_cached(cached)
+            with torch.no_grad():
+                z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
+                x_hat = vae.decode(z_t)
+            return x_hat.squeeze(0).cpu()
+        return _sample
+    else:
+        def _sample():
+            z_noised = smoother.sample(z)
+            with torch.no_grad():
+                z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
+                x_hat = vae.decode(z_t)
+            return x_hat.squeeze(0).cpu()
+        return _sample
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -952,14 +1010,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         img = Image.open(img_path).convert("RGB")
         img_tensor = smooth_transform(img)
         
-        # Create sample function using generic smoothers
+        # Create sample function with cached PCA (kNN+SVD computed once per image)
         if cfg.smoothing.mode == "pixel":
-            sample_fn = lambda t=img_tensor, s=pixel_smoother: sample_pixel(t, s)
+            sample_fn = make_pixel_sample_fn(img_tensor, pixel_smoother)
         elif cfg.smoothing.mode == "latent" and vae is not None:
-            sample_fn = lambda t=img_tensor, s=latent_smoother, v=vae, d=device: sample_latent(t, v, s, d)
+            sample_fn = make_latent_sample_fn(img_tensor, vae, latent_smoother, device)
         else:
             # Default to pixel isotropic
-            sample_fn = lambda t=img_tensor, s=pixel_smoother: sample_pixel(t, s)
+            sample_fn = make_pixel_sample_fn(img_tensor, pixel_smoother)
         
         cert = certify_single_sample(
             classifier=classifier,
