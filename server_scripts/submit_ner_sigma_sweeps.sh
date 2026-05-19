@@ -11,7 +11,7 @@
 #   4. NER + Context Masking Manifold
 #
 # Usage:
-#   ./submit_ner_sigma_sweeps.sh [--dry-run]
+#   ./submit_ner_sigma_sweeps.sh [--dry-run] [--isotropic-only | --manifold-only]
 # =============================================================================
 
 set -euo pipefail
@@ -20,8 +20,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 DRY_RUN=""
-if [ "${1:-}" = "--dry-run" ]; then
-    DRY_RUN="--dry-run"
+ISOTROPIC=true
+MANIFOLD=true
+for arg in "$@"; do
+    case $arg in
+        --dry-run)         DRY_RUN="--dry-run" ;;
+        --isotropic-only)  MANIFOLD=false ;;
+        --manifold-only)   ISOTROPIC=false ;;
+    esac
+done
+
+if [ -n "$DRY_RUN" ]; then
     echo "=============================================="
     echo "DRY RUN MODE - No jobs will be submitted"
     echo "=============================================="
@@ -56,16 +65,20 @@ submit_sweep() {
 # =============================================================================
 # 1. NER Isotropic (Gaussian)
 # =============================================================================
+if [ "$ISOTROPIC" = true ]; then
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml" \
     "NER ISOTROPIC (Gaussian baseline)"
+fi
 
 # =============================================================================
 # 2. NER Manifold
 # =============================================================================
+if [ "$MANIFOLD" = true ]; then
 submit_sweep \
     "src/configs/experiments/ner_conll2003_bert_certify.yaml" \
     "NER MANIFOLD"
+fi
 
 # =============================================================================
 # # 3. NER + Context Masking Isotropic
