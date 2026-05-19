@@ -59,6 +59,7 @@ submit_one() {
     local job_name=$2
     local dep=$3  # empty string or "--dependency=afterok:id1:id2:..."
     local is_ner=$4
+    local mem=${5:-$MEM_PER_CPU}  # optional memory override
 
     if $is_ner; then
         local run_cmd="python -m src.experiments.certify.ner --config $config --checkpoint $CHECKPOINT --split test --resume --save-every-batches 5"
@@ -67,7 +68,7 @@ submit_one() {
     fi
 
     local sbatch_args="--partition=$PARTITION --time=$TIME --gres=gpu:$GPUS \
-        --cpus-per-task=$CPUS --mem-per-cpu=$MEM_PER_CPU \
+        --cpus-per-task=$CPUS --mem-per-cpu=$mem \
         --job-name=$job_name \
         --output=$PROJECT_ROOT/output/slurm/${job_name}-%j.out \
         --error=$PROJECT_ROOT/output/slurm/${job_name}-%j.err"
@@ -121,6 +122,7 @@ submit_sigma_sweep_chained() {
     local iso_prefix=$3
     local mani_prefix=$4
     local is_ner=$5
+    local mem=${6:-$MEM_PER_CPU}  # optional memory override
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -133,7 +135,7 @@ submit_sigma_sweep_chained() {
         local sigma_tag=$(echo "$sigma" | tr '.' '_')
         local cfg=$(make_sigma_config "$iso_config" "$sigma" "$iso_prefix")
         local job_name="${iso_prefix}_s${sigma_tag}"
-        local jid=$(submit_one "$cfg" "$job_name" "" "$is_ner")
+        local jid=$(submit_one "$cfg" "$job_name" "" "$is_ner" "$mem")
         iso_job_ids+=("$jid")
         echo "  ✅ ISO  σ=$sigma  →  job $jid"
     done
@@ -147,7 +149,7 @@ submit_sigma_sweep_chained() {
         local sigma_tag=$(echo "$sigma" | tr '.' '_')
         local cfg=$(make_sigma_config "$mani_config" "$sigma" "$mani_prefix")
         local job_name="${mani_prefix}_s${sigma_tag}"
-        local jid=$(submit_one "$cfg" "$job_name" "$dep_flag" "$is_ner")
+        local jid=$(submit_one "$cfg" "$job_name" "$dep_flag" "$is_ner" "$mem")
         echo "  ⏳ MANI σ=$sigma  →  job $jid  (after iso)"
     done
 }
@@ -211,7 +213,8 @@ submit_celeba_pixel() {
         "${CONFIGS_DIR}/certify_celeba_pixel.yaml" \
         "celeba-pix-iso" \
         "celeba-pix-mani" \
-        false
+        false \
+        "32G"
 }
 
 submit_celeba_latent() {
@@ -242,7 +245,8 @@ submit_celebahq_pixel() {
         "${CONFIGS_DIR}/certify_celebahq_pixel.yaml" \
         "celebahq-pix-iso" \
         "celebahq-pix-mani" \
-        false
+        false \
+        "32G"
 }
 
 submit_celebahq_latent() {
