@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from src.certify import TokenCertificate, certify_token_from_counts
+from src.certify import TokenCertificate, certify_token_from_counts_two_stage_paper
 from src.certify.voting import BatchVoter
 from src.indexing.base import NeighborIndex, load_index
 from src.smoothing import create_smoother, Smoother, ManifoldSmoother
@@ -37,6 +37,7 @@ class TokenCertificationConfig:
         index_path: Path to token embedding index
     """
     sigma: float = 0.25
+    n0_samples: int = 64
     n_samples: int = 100
     alpha: float = 0.001
     smoothing_mode: str = "manifold"
@@ -88,13 +89,19 @@ class TokenCertifier:
         space: TokenHiddenStateSpace,
         smoother: Smoother,
         model: Any,
+        n0_samples: int = 64,
         n_samples: int = 100,
         alpha: float = 0.001,
         num_classes: int = 9,
     ):
+        if int(n0_samples) <= 0:
+            raise ValueError("Paper-aligned CERTIFY requires n0_samples > 0.")
+        if int(n_samples) <= 0:
+            raise ValueError("Paper-aligned CERTIFY requires n_samples > 0.")
         self._space = space
         self._smoother = smoother
         self._model = model
+        self._n0_samples = n0_samples
         self._n_samples = n_samples
         self._alpha = alpha
         self._num_classes = num_classes
@@ -134,6 +141,7 @@ class TokenCertifier:
             space=space,
             smoother=smoother,
             model=model,
+            n0_samples=config.n0_samples,
             n_samples=config.n_samples,
             alpha=config.alpha,
             num_classes=num_classes,
@@ -201,14 +209,16 @@ class TokenCertifier:
                 cached = self._smoother.compute_pca(vec)
                 cached_pcas.append(cached)
         
-        # Initialize vote counts
-        vote_counts = np.zeros((len(positions), self._num_classes), dtype=np.int64)
+        # Initialize two-stage vote counts (paper CERTIFY)
+        vote_counts_n0 = np.zeros((len(positions), self._num_classes), dtype=np.int64)
+        vote_counts_n = np.zeros((len(positions), self._num_classes), dtype=np.int64)
         
         # Get target layer for injection
         target_layer = self._model.num_layers() - 1 if self._space.layer_index is None else self._space.layer_index
         
-        # Sampling loop
-        for sample_idx in range(self._n_samples):
+        # Sampling loop (first n0 for class selection, then n for certification)
+        total_samples = int(max(0, self._n0_samples) + max(0, self._n_samples))
+        for sample_idx in range(total_samples):
             # Generate smoothed vectors
             if cached_pcas:
                 smoothed_vectors = np.stack([
@@ -242,17 +252,24 @@ class TokenCertifier:
             
             # Get predictions and accumulate votes
             pred_ids = torch.argmax(out.logits, dim=-1).cpu().numpy()
+            stage_n0 = sample_idx < int(max(0, self._n0_samples))
             
             for i, (b, t) in enumerate(positions):
                 pred = pred_ids[b, t]
                 if 0 <= pred < self._num_classes:
-                    vote_counts[i, pred] += 1
+                    if stage_n0:
+                        vote_counts_n0[i, pred] += 1
+                    else:
+                        vote_counts_n[i, pred] += 1
         
         # Compute certificates
         token_results = []
         for i, (b, t) in enumerate(positions):
-            certificate = certify_token_from_counts(
-                class_counts=vote_counts[i],
+            counts_n = vote_counts_n[i]
+            counts_n0 = vote_counts_n0[i]
+            certificate = certify_token_from_counts_two_stage_paper(
+                class_counts_n0=counts_n0,
+                class_counts_n=counts_n,
                 alpha_noise=self.sigma,
                 alpha_conf=self._alpha,
             )
@@ -269,7 +286,7 @@ class TokenCertifier:
                 token_idx=t,
                 pred=certificate.pred,
                 certificate=certificate,
-                vote_counts=vote_counts[i],
+                vote_counts=counts_n,
                 clean_pred=clean_pred,
                 token_text=token_text,
                 true_label=int(labels[b, t].item()),

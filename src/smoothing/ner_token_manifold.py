@@ -26,7 +26,10 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.certify.randomized import TokenCertificate, certify_token_from_counts
+from src.certify.randomized import (
+    TokenCertificate,
+    certify_token_from_counts_two_stage_paper,
+)
 from src.indexing import hidden_state_for_layer
 from src.indexing.base import NeighborIndex, query_index
 from .manifold import ManifoldSmoother, CachedPCA
@@ -334,6 +337,7 @@ def sample_smoothed_token_predictions(
     label_ids: list[int],
     tokenizer,
     num_samples: int,
+    n0_samples: int,
     sigma: float,
     knn_k: int,
     eps_eig: float,
@@ -355,7 +359,8 @@ def sample_smoothed_token_predictions(
         token_texts: Token texts from training index
         label_ids: Label IDs from training index
         tokenizer: Tokenizer for debug info
-        num_samples: Number of smoothing samples
+        num_samples: Number of certification samples (stage n)
+        n0_samples: Number of pilot samples for class selection (stage n0)
         sigma: Noise standard deviation
         knn_k: Number of neighbors for local PCA
         eps_eig: Eigenvalue floor for PCA
@@ -378,6 +383,7 @@ def sample_smoothed_token_predictions(
 
     valid_mask = (labels != -100) & attention_mask.bool()
     vote_counts = np.zeros((batch_size, seq_len, num_labels), dtype=np.int64)
+    vote_counts_n0 = np.zeros((batch_size, seq_len, num_labels), dtype=np.int64)
     debug_output: list[list[TokenDebugRecord | None]] | None = None
 
     # Get clean hidden states
@@ -420,8 +426,10 @@ def sample_smoothed_token_predictions(
                 tokenizer=tokenizer,
             )
 
-    # Sample loop
-    for sample_idx in range(num_samples):
+    total_samples = int(max(0, n0_samples) + max(0, num_samples))
+
+    # Sample loop (exact Cohen two-stage: first n0 for selection, then n for certification)
+    for sample_idx in range(total_samples):
         if use_isotropic:
             # Isotropic: add N(0, σ²I) noise to all valid tokens
             noise = torch.randn_like(clean_hidden) * sigma
@@ -451,13 +459,22 @@ def sample_smoothed_token_predictions(
         )
         pred_ids = torch.argmax(out.logits, dim=-1).detach().cpu().numpy()
 
+        stage_n0 = sample_idx < int(max(0, n0_samples))
+
         for batch_idx in range(batch_size):
             for token_idx in range(seq_len):
                 if not valid_mask[batch_idx, token_idx]:
                     continue
-                vote_counts[batch_idx, token_idx, pred_ids[batch_idx, token_idx]] += 1
+                lbl = pred_ids[batch_idx, token_idx]
+                if stage_n0:
+                    vote_counts_n0[batch_idx, token_idx, lbl] += 1
+                else:
+                    vote_counts[batch_idx, token_idx, lbl] += 1
 
-    majority_pred = vote_counts.argmax(axis=-1)
+    # g(x): selected class from stage-n0 votes (exact Cohen).
+    # Fallback to stage-n if n0=0.
+    majority_source = vote_counts_n0 if int(max(0, n0_samples)) > 0 else vote_counts
+    majority_pred = majority_source.argmax(axis=-1)
     pred_tensor = torch.as_tensor(majority_pred, device=input_ids.device)
 
     certificates: list[list[TokenCertificate | None]] = []
@@ -467,8 +484,11 @@ def sample_smoothed_token_predictions(
             if not bool(valid_mask[batch_idx, token_idx]):
                 row.append(None)
                 continue
-            cert = certify_token_from_counts(
-                class_counts=vote_counts[batch_idx, token_idx],
+            counts_n = vote_counts[batch_idx, token_idx]
+            counts_n0 = vote_counts_n0[batch_idx, token_idx] if int(max(0, n0_samples)) > 0 else counts_n
+            cert = certify_token_from_counts_two_stage_paper(
+                class_counts_n0=counts_n0,
+                class_counts_n=counts_n,
                 alpha_noise=sigma,
                 alpha_conf=alpha_conf,
                 abstain_label=abstain_label,

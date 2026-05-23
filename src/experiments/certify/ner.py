@@ -586,9 +586,16 @@ def evaluate_smoothed(
     save_every_batches: int = 5,
     log_every_batches: int = 1,
 ):
+    n0_samples = int(cfg.certification.n0)
+    n_samples = int(cfg.certification.n)
+    if n0_samples <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires cfg.certification.n0 > 0.")
+    if n_samples <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires cfg.certification.n > 0.")
+    total_samples = n0_samples + n_samples
     _log(
         "Starting smoothed evaluation "
-        f"(max_batches={max_batches}, n={cfg.certification.n}, knn_k={cfg.smoothing.knn_k}, "
+        f"(max_batches={max_batches}, n0={n0_samples}, n={n_samples}, total={total_samples}, knn_k={cfg.smoothing.knn_k}, "
         f"sigma={cfg.smoothing.sigma}, resume={resume})"
     )
     y_true_all = []
@@ -656,7 +663,8 @@ def evaluate_smoothed(
             token_texts=token_index_artifacts.token_texts,
             label_ids=token_index_artifacts.label_ids,
             tokenizer=tokenizer,
-            num_samples=cfg.certification.n,
+            num_samples=n_samples,
+            n0_samples=n0_samples,
             sigma=cfg.smoothing.sigma,
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
@@ -741,7 +749,7 @@ def evaluate_smoothed(
                 certified_correct=certified_correct,
                 sentence_count=sentence_count,
                 sentence_token_counts=sentence_token_counts,
-                num_samples=cfg.certification.n,
+                num_samples=total_samples,
             )
 
             _save_partial_state(
@@ -780,7 +788,7 @@ def evaluate_smoothed(
                 certified_correct=certified_correct,
                 sentence_count=sentence_count,
                 sentence_token_counts=sentence_token_counts,
-                num_samples=cfg.certification.n,
+                num_samples=total_samples,
             )
             if out_dir is not None:
                 _write_running_artifacts(out_dir=out_dir, batch_idx=batch_idx, metrics=running_metrics, debug_payload=debug_payload)
@@ -801,7 +809,7 @@ def evaluate_smoothed(
         certified_correct=certified_correct,
         sentence_count=sentence_count,
         sentence_token_counts=sentence_token_counts,
-        num_samples=cfg.certification.n,
+        num_samples=total_samples,
     )
     metrics["masked_tokens"] = int(total_masked_tokens)
     metrics["masked_sentences"] = int(total_masked_sentences)
@@ -992,7 +1000,9 @@ def run(
             "sigma": cfg.smoothing.sigma,
             "knn_k": cfg.smoothing.knn_k,
             "layer_index": cfg.smoothing.layer_index,
-            "num_samples": cfg.certification.n,
+            "n0_samples": int(cfg.certification.n0),
+            "num_samples": int(cfg.certification.n),
+            "total_samples": int(cfg.certification.n0) + int(cfg.certification.n),
             "refresh_index": effective_rebuild_index,
         },
         "masking": {
@@ -1040,6 +1050,12 @@ def run(
             log_volume_isotropic,
             log_volume_manifold,
             eigenvalue_diagnostics,
+            normalize_eigenvalues,
+            log_volume_geo_iso,
+            log_volume_geo_mani,
+            axis_lengths,
+            anisotropy_ratio,
+            cumulative_stretch_energy,
         )
         all_evals = np.array([e for e in token_eigenvalues_list], dtype=np.float64)
         mean_evals = all_evals.mean(axis=0)
@@ -1090,11 +1106,87 @@ def run(
             mean_log_vol_mani_pred = float(np.mean(lv_mani_preds))
 
         diag = eigenvalue_diagnostics(mean_evals)
+
+        # ── Supervisor geometry-first metrics (same sigma, pure shape) ──────────
+        # V_iso,geo  = C_k · σ^k           (iso in k-dim space at same sigma)
+        # V_mani,geo = C_k · σ^k · √det(Λ̃) (mani shape, normalized eigenvalues)
+        # Ratio      = √det(Λ̃)             — PURE geometry gain, no radius bias
+        # Axis a_i   = σ · √λ̃_i            — TRUE stretch per PCA direction
+        # Anisotropy = a_1 / a_k            — ellipsoid elongation
+        # Cum energy = fraction of stretch energy in top-m axes
+        lv_geo_iso = log_volume_geo_iso(sigma, k_pca)
+        per_token_geo_mani_max = []   # per-token, max-normalized
+        per_token_geo_mani_mean = []  # per-token, mean-normalized
+        per_token_log_det_half_norm = []
+        per_token_anisotropy = []
+        per_token_axis_lengths = []   # top-10 or all
+        per_token_cum_energy = []     # cumulative stretch energy
+        per_token_effective_rank = []
+
+        for evals in token_eigenvalues_list:
+            evals_arr = np.array(evals, dtype=np.float64)
+            # max-normalization: shape only, λ̃_1 = 1
+            evals_norm_max = normalize_eigenvalues(evals_arr, mode="max")
+            # mean-normalization: unit energy, for log-volume comparison
+            evals_norm_mean = normalize_eigenvalues(evals_arr, mode="mean")
+
+            lv_gm_max = log_volume_geo_mani(sigma, evals_norm_max)
+            lv_gm_mean = log_volume_geo_mani(sigma, evals_norm_mean)
+            log_det_half_norm = 0.5 * np.sum(np.log(np.maximum(evals_norm_max, 1e-30)))
+
+            per_token_geo_mani_max.append(lv_gm_max)
+            per_token_geo_mani_mean.append(lv_gm_mean)
+            per_token_log_det_half_norm.append(log_det_half_norm)
+
+            ani = anisotropy_ratio(evals_norm_max)
+            per_token_anisotropy.append(ani)
+
+            ax = axis_lengths(sigma, evals_norm_max)
+            per_token_axis_lengths.append(ax[:10].tolist())  # save top-10 axes
+
+            cum = cumulative_stretch_energy(evals_norm_max)
+            per_token_cum_energy.append(cum.tolist())
+
+            p = evals_arr / np.maximum(evals_arr.sum(), 1e-30)
+            ent = -np.sum(p * np.log(p + 1e-30))
+            per_token_effective_rank.append(float(np.exp(ent)))
+
+        mean_axis_lengths_top10 = np.mean(
+            [a for a in per_token_axis_lengths if a], axis=0
+        ).tolist() if per_token_axis_lengths else []
+
+        geometry_stats = {
+            # ── Supervisor primary quantities ──
+            "sigma": sigma,
+            "k_pca": k_pca,
+            "ambient_D": hidden_dim,
+            # V_iso,geo = C_k·σ^k  (same for all tokens — depends only on k and σ)
+            "log_v_iso_geo": float(lv_geo_iso),
+            # V_mani,geo = C_k·σ^k·√det(Λ̃)  per-token, then averaged
+            "mean_log_v_mani_geo_max_norm": float(np.mean(per_token_geo_mani_max)),
+            "mean_log_v_mani_geo_mean_norm": float(np.mean(per_token_geo_mani_mean)),
+            # Geometry gain = log(V_mani,geo) - log(V_iso,geo) = 0.5·Σlog(λ̃_i)
+            "mean_log_geo_ratio": float(np.mean(per_token_log_det_half_norm)),
+            "median_log_geo_ratio": float(np.median(per_token_log_det_half_norm)),
+            "std_log_geo_ratio": float(np.std(per_token_log_det_half_norm)),
+            # Axis lengths a_i = σ·√λ̃_i  (top-10 averaged across tokens)
+            "mean_axis_lengths_top10": mean_axis_lengths_top10,
+            # Anisotropy = a_1/a_k = √(λ̃_max/λ̃_min)
+            "mean_anisotropy_ratio": float(np.mean(per_token_anisotropy)),
+            "median_anisotropy_ratio": float(np.median(per_token_anisotropy)),
+            "std_anisotropy_ratio": float(np.std(per_token_anisotropy)),
+            # Effective rank (entropy-based)
+            "mean_effective_rank": float(np.mean(per_token_effective_rank)),
+            # ── Distribution arrays for histogram plots in thesis ──
+            # (saved to eigenvalues.npz, not metrics.json, for size)
+        }
+
         volume_stats = {
             "k_pca": k_pca,
             "ambient_D": hidden_dim,
             "n_certified_tokens": len(certified_radii),
             "n_tokens_with_eigenvalues": len(token_eigenvalues_list),
+            # ── Legacy 4-quantity framework (radius-based) — kept for reference ──
             # Qty 1: V_iso,D = C_D · r_iso^D
             "mean_log_vol_iso_D": mean_log_vol_iso_D,
             # Qty 2: V_iso,k = C_k · r_iso^k
@@ -1103,13 +1195,15 @@ def run(
             "mean_log_vol_mani_pred": mean_log_vol_mani_pred,
             # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ)
             "mean_log_vol_mani_actual": float(np.mean(lv_mani_actuals)),
-            # Geometry factor (r-independent): 0.5·Σlog(λ_i)
+            # Geometry factor (r-independent): 0.5·Σlog(λ_i) raw eigenvalues
             "mean_geometry_factor": mean_geometry_factor,
             "median_geometry_factor": float(np.median(per_token_geom)),
             # Diagnostics
             "mean_effective_rank": float(diag.effective_rank),
             "mean_condition_number": float(diag.condition_number),
             "eigen_diagnostics": diag.to_dict(),
+            # ── NEW: supervisor geometry-first metrics (sigma-based, normalized) ──
+            "geometry": geometry_stats,
         }
         summary["volume"] = volume_stats
         concise_summary["volume"] = volume_stats
@@ -1120,12 +1214,40 @@ def run(
 
         # Save eigenvalue spectra + per-token radii
         if out_dir is not None:
+            # Build axis-length and cumulative-energy arrays (pad to max length)
+            max_k = k_pca
+            ax_arr = np.full((len(token_eigenvalues_list), min(10, max_k)), np.nan)
+            for i, ax in enumerate(per_token_axis_lengths):
+                ax_arr[i, :len(ax)] = ax
+            # cumulative energy: variable length → store as object array or pad
+            cum_max_len = max((len(c) for c in per_token_cum_energy), default=0)
+            cum_arr = np.full((len(token_eigenvalues_list), cum_max_len), np.nan)
+            for i, c in enumerate(per_token_cum_energy):
+                cum_arr[i, :len(c)] = c
             np.savez_compressed(
                 out_dir / "eigenvalues.npz",
+                # ── Original arrays (kept for backward compat) ──
                 eigenvalues=all_evals,
                 mean_eigenvalues=mean_evals,
                 certified_radii=np.array(certified_radii, dtype=np.float64),
                 per_token_geometry_factor=np.array(per_token_geom, dtype=np.float64),
+                # ── NEW: supervisor geometry arrays ──
+                # Normalized eigenvalues (max-norm) per token
+                eigenvalues_norm_max=np.array(
+                    [normalize_eigenvalues(e, "max") for e in token_eigenvalues_list], dtype=np.float64
+                ),
+                # Axis lengths a_i = σ·√λ̃_i (top-10 per token)
+                axis_lengths_top10=ax_arr,
+                # Anisotropy ratio per token
+                anisotropy_ratios=np.array(per_token_anisotropy, dtype=np.float64),
+                # Cumulative stretch energy per token
+                cumulative_stretch_energy=cum_arr,
+                # Geometry gain per token (log V_mani,geo - log V_iso,geo)
+                log_geo_ratio_per_token=np.array(per_token_log_det_half_norm, dtype=np.float64),
+                # Effective rank per token
+                effective_rank_per_token=np.array(per_token_effective_rank, dtype=np.float64),
+                # Sigma used
+                sigma=np.float64(sigma),
             )
     elif radii:
         # Isotropic run: store Qty 1 (V_iso,D) + raw radii for notebook cross-ref

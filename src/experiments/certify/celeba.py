@@ -57,7 +57,7 @@ from tqdm import tqdm
 from src.configs.certify_celeba_io import load_certify_config, save_certify_config
 from src.configs.certify_celeba_schema import CertifyConfig
 from src.configs.train_smile_schema import SmileDataloaderConfig, SmileDatasetConfig, SmileModelConfig
-from src.certify.randomized import certify_token_from_counts, TokenCertificate
+from src.certify.randomized import certify_token_from_counts_two_stage_paper, TokenCertificate
 from src.dataloaders.celeba_smile import build_smile_dataloaders
 from src.indexing.base import load_index, NeighborIndex
 from src.indexing.image_index import build_or_load_image_index, ImageIndexArtifacts
@@ -824,15 +824,22 @@ def certify_single_sample(
     classifier: torch.nn.Module,
     sample_fn: Callable[[], torch.Tensor],
     n_samples: int,
+    n0_samples: int,
     classifier_transform: transforms.Compose,
     device: torch.device,
     alpha_conf: float = 0.001,
     sigma: float = 0.25,
 ) -> TokenCertificate:
     classifier.eval()
-    class_counts = np.zeros(2, dtype=np.int64)
-    
-    for _ in range(n_samples):
+    if int(n0_samples) <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires n0_samples > 0.")
+    if int(n_samples) <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires n_samples > 0.")
+    class_counts_n0 = np.zeros(2, dtype=np.int64)
+    class_counts_n = np.zeros(2, dtype=np.int64)
+
+    total_samples = int(max(0, n0_samples) + max(0, n_samples))
+    for sample_idx in range(total_samples):
         noised_img = sample_fn()
         noised_clipped = noised_img.clamp(-1, 1) * 0.5 + 0.5
         noised_pil = transforms.ToPILImage()(noised_clipped)
@@ -840,10 +847,14 @@ def certify_single_sample(
         
         logit = classifier(x).squeeze()
         pred = 1 if torch.sigmoid(logit).item() > 0.5 else 0
-        class_counts[pred] += 1
-    
-    return certify_token_from_counts(
-        class_counts,
+        if sample_idx < int(max(0, n0_samples)):
+            class_counts_n0[pred] += 1
+        else:
+            class_counts_n[pred] += 1
+
+    return certify_token_from_counts_two_stage_paper(
+        class_counts_n0=class_counts_n0,
+        class_counts_n=class_counts_n,
         alpha_noise=sigma,
         alpha_conf=alpha_conf,
         abstain_label=-1,
@@ -855,6 +866,11 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
+
+    if int(cfg.smoothing.n0_samples) <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires smoothing.n0_samples > 0 in config.")
+    if int(cfg.smoothing.n_samples) <= 0:
+        raise ValueError("Paper-aligned CERTIFY requires smoothing.n_samples > 0 in config.")
     
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     _log(f"Device: {device}")
@@ -1023,6 +1039,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             classifier=classifier,
             sample_fn=sample_fn,
             n_samples=cfg.smoothing.n_samples,
+            n0_samples=int(cfg.smoothing.n0_samples),
             classifier_transform=classifier_transform,
             device=device,
             alpha_conf=cfg.alpha_conf,
@@ -1111,7 +1128,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         "smoothing_mode": cfg.smoothing.mode,
         "use_manifold": cfg.smoothing.use_manifold,
         "sigma": cfg.smoothing.sigma,
+        "n0_samples": int(cfg.smoothing.n0_samples),
         "n_samples": cfg.smoothing.n_samples,
+        "total_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
         "knn_k": cfg.smoothing.knn_k,
         "index_split": "train",
         "certify_split": "test",
@@ -1148,6 +1167,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     _log(f"Certify split:      TEST ({total} samples)")
     _log(f"Smoothing:          {cfg.smoothing.mode} ({'manifold' if cfg.smoothing.use_manifold else 'isotropic'})")
     _log(f"Sigma:              {cfg.smoothing.sigma}")
+    _log(f"Sampling:           n0={metrics['n0_samples']}, n={metrics['n_samples']}, total={metrics['total_samples']}")
     _log(f"Certified accuracy: {100*metrics['certified_accuracy']:.2f}%")
     _log(f"Abstain rate:       {100*metrics['abstain_rate']:.2f}%")
     _log(f"Mean radius:        {metrics['mean_radius']:.4f}")
@@ -1174,6 +1194,12 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         log_volume_isotropic,
         log_volume_manifold,
         eigenvalue_diagnostics,
+        normalize_eigenvalues,
+        log_volume_geo_iso,
+        log_volume_geo_mani,
+        axis_lengths,
+        anisotropy_ratio,
+        cumulative_stretch_energy,
     )
 
     k_pca = None
@@ -1202,13 +1228,20 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     geometry_factors = []
     lv_mani_actuals = []
     lv_iso_Ds = []
+    # Supervisor geometry-first per-sample lists
+    per_sample_log_geo_ratio = []
+    per_sample_anisotropy = []
+    per_sample_axis_lengths = []
+    per_sample_cum_energy = []
+    per_sample_effective_rank = []
+    sigma_val = float(cfg.smoothing.sigma)
 
     for r in results:
         if r["radius"] <= 0:
             continue
         evals = r.get("eigenvalues")
         if evals is not None:
-            # Manifold run → Qty 4 + geometry_factor
+            # Manifold run → Qty 4 + geometry_factor (legacy) + NEW geo metrics
             evals_arr = np.array(evals, dtype=np.float64)
             k_pca = len(evals_arr)
             lv_mani = log_volume_manifold(r["radius"], evals_arr)       # Qty 4
@@ -1223,6 +1256,25 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             r["eigen_sum"] = diag.eigenvalue_sum
             lv_mani_actuals.append(lv_mani)
             geometry_factors.append(geom)
+            # ── NEW: supervisor geometry metrics per sample ──
+            evals_norm_max = normalize_eigenvalues(evals_arr, mode="max")
+            lv_gm = log_volume_geo_mani(sigma_val, evals_norm_max)
+            lv_gi = log_volume_geo_iso(sigma_val, k_pca)
+            log_geo_ratio = lv_gm - lv_gi   # = 0.5·Σlog(λ̃_i) normalized
+            ani = anisotropy_ratio(evals_norm_max)
+            ax = axis_lengths(sigma_val, evals_norm_max)
+            cum = cumulative_stretch_energy(evals_norm_max)
+            p = evals_arr / np.maximum(evals_arr.sum(), 1e-30)
+            eff_rank = float(np.exp(-np.sum(p * np.log(p + 1e-30))))
+            per_sample_log_geo_ratio.append(log_geo_ratio)
+            per_sample_anisotropy.append(ani)
+            per_sample_axis_lengths.append(ax[:10].tolist())
+            per_sample_cum_energy.append(cum.tolist())
+            per_sample_effective_rank.append(eff_rank)
+            r["log_v_geo_iso"] = lv_gi
+            r["log_v_geo_mani"] = lv_gm
+            r["log_geo_ratio"] = log_geo_ratio
+            r["anisotropy_ratio"] = ani
         else:
             # Isotropic run → Qty 1: V_iso,D = C_D · r_iso^D
             lv_iso_D = log_volume_isotropic(r["radius"], ambient_dim)
@@ -1251,9 +1303,37 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             # This IS the isotropic run — Qty 1 directly
             mean_log_vol_iso_D = float(np.mean(lv_iso_Ds))
 
+        # ── Supervisor geometry-first summary ──
+        geo_summary = None
+        if per_sample_log_geo_ratio:
+            k_for_geo = k_pca  # from last manifold sample
+            ax_arr_np = np.array(per_sample_axis_lengths)
+            geo_summary = {
+                "sigma": sigma_val,
+                "k_pca": k_for_geo,
+                "ambient_D": ambient_dim,
+                # V_iso,geo = C_k·σ^k  (scalar — same for all samples)
+                "log_v_iso_geo": float(log_volume_geo_iso(sigma_val, k_for_geo)) if k_for_geo else None,
+                # V_mani,geo = C_k·σ^k·√det(Λ̃)  per-sample averaged
+                "mean_log_v_mani_geo": float(np.mean([r["log_v_geo_mani"] for r in results if r.get("log_v_geo_mani") is not None])),
+                # Geometry gain = log(V_mani,geo) - log(V_iso,geo) — pure shape
+                "mean_log_geo_ratio": float(np.mean(per_sample_log_geo_ratio)),
+                "median_log_geo_ratio": float(np.median(per_sample_log_geo_ratio)),
+                "std_log_geo_ratio": float(np.std(per_sample_log_geo_ratio)),
+                # Axis lengths a_i = σ·√λ̃_i averaged across samples (top-10)
+                "mean_axis_lengths_top10": np.nanmean(ax_arr_np, axis=0).tolist() if ax_arr_np.size else [],
+                # Anisotropy = a_1/a_k
+                "mean_anisotropy_ratio": float(np.mean(per_sample_anisotropy)),
+                "median_anisotropy_ratio": float(np.median(per_sample_anisotropy)),
+                "std_anisotropy_ratio": float(np.std(per_sample_anisotropy)),
+                # Effective rank
+                "mean_effective_rank": float(np.mean(per_sample_effective_rank)),
+            }
+
         metrics["volume"] = {
             "k_pca": k_pca,
             "ambient_D": ambient_dim,
+            # ── Legacy 4-quantity framework (radius-based) — kept for reference ──
             # Qty 1: V_iso,D = C_D · r_iso^D
             "mean_log_vol_iso_D": mean_log_vol_iso_D,
             # Qty 2: V_iso,k = C_k · r_iso^k
@@ -1262,12 +1342,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "mean_log_vol_mani_pred": mean_log_vol_mani_pred,
             # Qty 4: V_mani,actual = C_k · r_mani^k · √det(Λ)
             "mean_log_vol_mani_actual": float(np.mean(lv_mani_actuals)) if lv_mani_actuals else None,
-            # Geometry factor (r-independent): 0.5·Σlog(λ_i)
+            # Geometry factor (r-independent): 0.5·Σlog(λ_i) raw eigenvalues
             "mean_geometry_factor": float(np.mean(geometry_factors)) if geometry_factors else None,
             "median_geometry_factor": float(np.median(geometry_factors)) if geometry_factors else None,
             # Diagnostics
             "mean_effective_rank": float(np.mean([r["eigen_effective_rank"] for r in results if r.get("eigen_effective_rank")])) if any(r.get("eigen_effective_rank") for r in results) else None,
             "mean_condition_number": float(np.mean([r["eigen_condition_number"] for r in results if r.get("eigen_condition_number")])) if any(r.get("eigen_condition_number") for r in results) else None,
+            # ── NEW: supervisor geometry-first metrics (sigma-based, normalized) ──
+            "geometry": geo_summary,
         }
         vol = metrics["volume"]
         if vol["mean_log_vol_mani_actual"] is not None:

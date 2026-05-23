@@ -17,7 +17,7 @@ import numpy as np
 from src.smoothing.base import Smoother
 from src.spaces.base import Space
 
-from .randomized import TokenCertificate, certify_token_from_counts
+from .randomized import TokenCertificate, certify_token_from_counts_two_stage_paper
 
 
 T = TypeVar("T")  # Input type (image, token embedding, etc.)
@@ -107,14 +107,20 @@ class Certifier(ABC, Generic[T]):
         space: Space[T],
         classifier: Callable[[T], int],
         n_samples: int = 100,
+        n0_samples: int = 64,
         alpha: float = 0.001,
         abstain_label: int = -1,
         num_classes: Optional[int] = None,
     ):
+        if int(n0_samples) <= 0:
+            raise ValueError("Paper-aligned CERTIFY requires n0_samples > 0.")
+        if int(n_samples) <= 0:
+            raise ValueError("Paper-aligned CERTIFY requires n_samples > 0.")
         self._smoother = smoother
         self._space = space
         self._classifier = classifier
         self._n_samples = n_samples
+        self._n0_samples = n0_samples
         self._alpha = alpha
         self._abstain_label = abstain_label
         self._num_classes = num_classes
@@ -130,6 +136,10 @@ class Certifier(ABC, Generic[T]):
     @property
     def n_samples(self) -> int:
         return self._n_samples
+
+    @property
+    def n0_samples(self) -> int:
+        return self._n0_samples
     
     @property
     def sigma(self) -> float:
@@ -157,18 +167,24 @@ class Certifier(ABC, Generic[T]):
         else:
             num_classes = self._num_classes
         
-        vote_counts = np.zeros(num_classes, dtype=np.int64)
+        vote_counts_n0 = np.zeros(num_classes, dtype=np.int64)
+        vote_counts_n = np.zeros(num_classes, dtype=np.int64)
         
-        for _ in range(self._n_samples):
+        total_samples = int(max(0, self._n0_samples) + max(0, self._n_samples))
+        for sample_idx in range(total_samples):
             noisy = self._smoother.sample(anchor)
             x_noisy = self._space.decode(noisy)
             pred = self._classifier(x_noisy)
             if 0 <= pred < num_classes:
-                vote_counts[pred] += 1
-        
+                if sample_idx < int(max(0, self._n0_samples)):
+                    vote_counts_n0[pred] += 1
+                else:
+                    vote_counts_n[pred] += 1
+
         # Compute certificate
-        certificate = certify_token_from_counts(
-            class_counts=vote_counts,
+        certificate = certify_token_from_counts_two_stage_paper(
+            class_counts_n0=vote_counts_n0,
+            class_counts_n=vote_counts_n,
             alpha_noise=self._smoother.sigma,
             alpha_conf=self._alpha,
             abstain_label=self._abstain_label,
@@ -177,7 +193,7 @@ class Certifier(ABC, Generic[T]):
         return CertificationResult(
             pred=certificate.pred,
             certificate=certificate,
-            vote_counts=vote_counts,
+            vote_counts=vote_counts_n,
             clean_pred=clean_pred,
             abstained=certificate.abstained,
         )

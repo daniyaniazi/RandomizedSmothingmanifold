@@ -39,10 +39,11 @@ from .voting import (
 )
 from .randomized import (
     TokenCertificate,
-    certify_token_from_counts,
-    certified_radius,
+    certify_token_from_counts_two_stage_paper,
+    predict_from_counts_paper,
+    binom_pvalue_two_sided,
+    certified_radius_paper,
     clopper_pearson_lower,
-    clopper_pearson_upper,
 )
 
 __all__ = [
@@ -60,7 +61,8 @@ __all__ = [
     # Certification math
     "TokenCertificate",
     "clopper_pearson_lower",
-    "clopper_pearson_upper",
-    "certified_radius",
-    "certify_token_from_counts",
+    "certified_radius_paper",
+    "certify_token_from_counts_two_stage_paper",
+    "predict_from_counts_paper",
+    "binom_pvalue_two_sided",
 ]

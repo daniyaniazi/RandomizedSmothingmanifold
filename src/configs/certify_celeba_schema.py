@@ -42,6 +42,7 @@ class CertifyVAEConfig:
 class CertifySmoothingConfig:
     mode: str = "pixel"  # pixel | latent | both
     sigma: float = 0.25
+    n0_samples: int = 64  # pilot samples for class selection (paper CERTIFY stage-1)
     n_samples: int = 100  # Monte Carlo samples for certification
     knn_k: int = 64
     eps_eig: float = 1e-6
