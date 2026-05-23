@@ -35,8 +35,8 @@ smoothing:
 certification:
   enabled: true
   alpha: 0.001             # Clopper-Pearson confidence level
-  n0: 64                   # pilot samples for label selection
-  n: 100                   # samples for certification per token
+  n0: 100                  # pilot samples for label selection
+  n: 250                   # samples for certification per token
   abstain_label: -1
 
 train:

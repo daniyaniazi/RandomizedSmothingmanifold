@@ -34,7 +34,8 @@ smoothing:
   mode: latent
   sigma: 0.5  # default sigma
   sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
-  n_samples: 100
+  n0_samples: 100
+  n_samples: 250
   knn_k: 500         # ignored when use_manifold=false
   eps_eig: 1.0e-06   # ignored when use_manifold=false
   use_manifold: false  # KEY: isotropic Gaussian noise in latent space

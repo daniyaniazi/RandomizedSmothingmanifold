@@ -41,8 +41,8 @@ smoothing:
 certification:
   enabled: true
   alpha: 0.001
-  n0: 64
-  n: 100
+  n0: 100
+  n: 250
   abstain_label: -1
 
 eval:
