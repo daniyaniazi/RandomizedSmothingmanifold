@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# SUBMIT SIGMA SWEEP AS ONE SLURM ARRAY (4 experiment types per sigma)
+# SUBMIT SIGMA SWEEP AS ONE SLURM ARRAY (mixed sigma lists per experiment)
 # =============================================================================
-# Runs, per sigma:
-#   1) NER Isotropic
-#   2) NER Manifold
-#   3) CelebA Pixel Isotropic
-#   4) CelebA Pixel Manifold
-#
-# Total tasks = (#sigmas) * 4
+# Runs all four experiment configs in one Slurm array, each with its own
+# sigma_values list. The array queues unfinished tasks in file order.
+# Total tasks = sum of per-config sigma_values lengths
 # Concurrency is capped with Slurm array limit: --array=1-N%MAX_CONCURRENT
 #
 # Usage:
@@ -30,7 +26,7 @@ MEM_PER_CPU="8G"
 MAX_CONCURRENT=4
 DRY_RUN=false
 
-# Fixed config set (your requested 4 jobs per sigma)
+# Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
 NER_MANI_CFG="src/configs/experiments/ner_conll2003_bert_certify.yaml"
 CELEBA_ISO_CFG="src/configs/experiments/certify_celeba_isotropic_pixel.yaml"
@@ -50,12 +46,9 @@ Options:
   --help                  Show this help
 
 Behavior:
-  - Reads sigma_values from the NER isotropic config.
-  - Requires all four configs to have identical sigma_values.
-  - Creates one Slurm array with tasks ordered by sigma:
-      sigma_1: ner_iso, ner_mani, celeb_iso, celeb_mani
-      sigma_2: ner_iso, ner_mani, celeb_iso, celeb_mani
-      ...
+    - Reads sigma_values from each config independently.
+    - Skips tasks whose `metrics.json` already exists.
+    - Creates one Slurm array over all unfinished tasks.
 EOF
 }
 
@@ -173,23 +166,17 @@ def ner_output_dir(cfg: dict, sigma: float, resolved_index_path: str | None = No
         return cfg_root / "masked_certify" / layer / metric / backend / index_name / masking_mode / sigma_tag(sigma)
     return cfg_root / "certify" / layer / metric / backend / index_name / sigma_tag(sigma)
 
-sigmas_ref = sigma_list(entries[0][1])
-if not sigmas_ref:
-    raise SystemExit("No sigma_values found in reference config")
-
-for name, cfg, _kind in entries[1:]:
-    vals = sigma_list(cfg)
-    if vals != sigmas_ref:
-        raise SystemExit(
-            f"Sigma mismatch: {cfg} has {vals}, expected {sigmas_ref}. "
-            "Please align sigma_values across all four configs."
-        )
-
 lines = []
 skipped = []
-for sigma in sigmas_ref:
-    sig_tag = sigma_tag(sigma)
-    for short_name, cfg_path, kind in entries:
+config_sigma_counts = {}
+for short_name, cfg_path, kind in entries:
+    sigma_values = sigma_list(cfg_path)
+    if not sigma_values:
+        raise SystemExit(f"No sigma_values found in {cfg_path}")
+    config_sigma_counts[short_name] = len(sigma_values)
+
+    for sigma in sigma_values:
+        sig_tag = sigma_tag(sigma)
         with cfg_path.open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         base_exp = cfg.get("experiment_name", short_name)
@@ -227,12 +214,12 @@ if not lines:
 with task_file.open("w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 
-print(f"SIGMA_COUNT={len(sigmas_ref)}")
+for name, count in config_sigma_counts.items():
+    print(f"SIGMA_COUNT_{name.upper()}={count}")
 print(f"TASK_COUNT={len(lines)}")
-print("SIGMAS=" + ", ".join(str(s) for s in sigmas_ref))
+print("TASKS_PER_CONFIG=" + ", ".join(f"{name}:{count}" for name, count in config_sigma_counts.items()))
 PY
 
-SIGMA_COUNT=$(( $(wc -l < "$TASK_FILE" | awk '{print $1}') / 4 ))
 TASK_COUNT=$(wc -l < "$TASK_FILE" | awk '{print $1}')
 ARRAY_SPEC="1-${TASK_COUNT}%${MAX_CONCURRENT}"
 
@@ -240,8 +227,7 @@ echo "=============================================="
 echo "SUBMITTING SIGMA QUAD ARRAY"
 echo "=============================================="
 echo "Task file:       $TASK_FILE"
-echo "Total sigmas:    $SIGMA_COUNT"
-echo "Total tasks:     $TASK_COUNT (4 per sigma)"
+echo "Total tasks:     $TASK_COUNT"
 echo "Concurrency cap: $MAX_CONCURRENT"
 echo "Array spec:      $ARRAY_SPEC"
 echo "Partition:       $PARTITION"
