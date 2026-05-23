@@ -49,7 +49,7 @@ train:
 
 eval:
   max_batches: null     # using test_subset instead
-  test_subset: 0.7         # fraction of test set to use
+  test_subset: 0.5         # fraction of test set to use
 
 wandb:
   enabled: true
