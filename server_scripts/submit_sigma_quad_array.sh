@@ -169,11 +169,17 @@ def ner_output_dir(cfg: dict, sigma: float, resolved_index_path: str | None = No
 lines = []
 skipped = []
 config_sigma_counts = {}
+
+# Build per-config candidate task lists first, then interleave by sigma index
+# so the array order is: ner_iso[0], ner_mani[0], celeb_iso[0], celeb_mani[0],
+#                        ner_iso[1], ner_mani[1], celeb_iso[1], celeb_mani[1], ...
+per_config_tasks = {}  # short_name -> list of formatted task strings
 for short_name, cfg_path, kind in entries:
     sigma_values = sigma_list(cfg_path)
     if not sigma_values:
         raise SystemExit(f"No sigma_values found in {cfg_path}")
     config_sigma_counts[short_name] = len(sigma_values)
+    per_config_tasks[short_name] = []
 
     for sigma in sigma_values:
         sig_tag = sigma_tag(sigma)
@@ -200,7 +206,15 @@ for short_name, cfg_path, kind in entries:
         with out_cfg.open("w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
 
-        lines.append(f"{job_exp_name}|{out_cfg}|{kind}|{sigma}")
+        per_config_tasks[short_name].append(f"{job_exp_name}|{out_cfg}|{kind}|{sigma}")
+
+# Interleave: for each sigma index, emit one task per config (if it exists)
+max_len = max(len(v) for v in per_config_tasks.values())
+for i in range(max_len):
+    for short_name, _, _ in entries:
+        task_list = per_config_tasks[short_name]
+        if i < len(task_list):
+            lines.append(task_list[i])
 
 if skipped:
     print("SKIPPED_EXISTING=")
