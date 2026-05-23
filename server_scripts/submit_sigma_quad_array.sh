@@ -234,22 +234,29 @@ echo "Partition:       $PARTITION"
 echo "Time:            $TIME"
 echo "=============================================="
 
-WRAP_CMD="
+JOB_SCRIPT="$PROJECT_ROOT/output/slurm/sigma_quad_runner_${RUN_ID}.sh"
+cat > "$JOB_SCRIPT" << 'JOBEOF'
+#!/usr/bin/env bash
 set -euo pipefail
-TASK_LINE=\$(sed -n \"\${SLURM_ARRAY_TASK_ID}p\" '$TASK_FILE')
-IFS='|' read -r TASK_NAME TASK_CFG TASK_KIND TASK_SIGMA <<< \"\$TASK_LINE\"
-echo \"[Task \${SLURM_ARRAY_TASK_ID}] \$TASK_NAME (kind=\$TASK_KIND, sigma=\$TASK_SIGMA)\"
-cd '$PROJECT_ROOT'
-export PYTHONPATH='$PROJECT_ROOT':\$PYTHONPATH
+TASK_LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "TASK_FILE_PLACEHOLDER")
+IFS='|' read -r TASK_NAME TASK_CFG TASK_KIND TASK_SIGMA <<< "$TASK_LINE"
+echo "[Task ${SLURM_ARRAY_TASK_ID}] $TASK_NAME (kind=$TASK_KIND, sigma=$TASK_SIGMA)"
+cd PROJECT_ROOT_PLACEHOLDER
+export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:$PYTHONPATH
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh
 conda activate smoothing
-if [ \"\$TASK_KIND\" = \"ner\" ]; then
-  CHECKPOINT='$PROJECT_ROOT/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt'
-  python -m src.experiments.certify.ner --config \"\$TASK_CFG\" --checkpoint \"\$CHECKPOINT\" --split test --resume --save-every-batches 5
+if [ "$TASK_KIND" = "ner" ]; then
+  CHECKPOINT=PROJECT_ROOT_PLACEHOLDER/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
+  python -m src.experiments.certify.ner --config "$TASK_CFG" --checkpoint "$CHECKPOINT" --split test --resume --save-every-batches 5
 else
-  python -m src.experiments.certify.celeba --config \"\$TASK_CFG\"
+  python -m src.experiments.certify.celeba --config "$TASK_CFG"
 fi
-"
+JOBEOF
+
+# Substitute placeholders with real paths
+sed -i "s|TASK_FILE_PLACEHOLDER|${TASK_FILE}|g" "$JOB_SCRIPT"
+sed -i "s|PROJECT_ROOT_PLACEHOLDER|${PROJECT_ROOT}|g" "$JOB_SCRIPT"
+chmod +x "$JOB_SCRIPT"
 
 SBATCH_CMD="sbatch \
   --partition=$PARTITION \
@@ -261,10 +268,11 @@ SBATCH_CMD="sbatch \
   --job-name=sigma-quad \
   --output=$PROJECT_ROOT/output/slurm/sigma-quad-%A_%a.out \
   --error=$PROJECT_ROOT/output/slurm/sigma-quad-%A_%a.err \
-  --wrap '$WRAP_CMD'"
+  $JOB_SCRIPT"
 
 if $DRY_RUN; then
     echo ""
+    echo "[DRY-RUN] Job script: $JOB_SCRIPT"
     echo "[DRY-RUN] Command:"
     echo "$SBATCH_CMD"
 else
