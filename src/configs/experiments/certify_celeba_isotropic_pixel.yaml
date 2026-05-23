@@ -28,8 +28,8 @@ vae:
 
 smoothing:
   mode: pixel
-  sigma: 0.01  # default sigma
-  sigma_values: [0.01, 0.03, 0.05, 0.07, 0.09, 0.11, 0.13, 0.15, 0.17, 0.19, 0.21, 0.23, 0.25]  # odd hundredths up to 0.25
+  sigma: 0.10  # default sigma
+  sigma_values: [0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.24]  # start from 0.10
   n0_samples: 100
   n_samples: 200
   knn_k: 500         # ignored when use_manifold=false
