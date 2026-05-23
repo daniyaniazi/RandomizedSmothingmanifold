@@ -24,7 +24,7 @@ __all__ = [
     "ImageCertifier",
     "run_image_certification",
     "visualize_certification_samples",
-    # Jonas-style visualization
+    # Visualization helpers
     "create_jonas_grid",
     "generate_image_sample_data",
     "visualize_certification_batch",

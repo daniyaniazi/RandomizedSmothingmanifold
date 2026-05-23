@@ -1,6 +1,6 @@
 # Manifold-aware KNN-PCA smoothing preset
 # Fits a local PCA basis from k nearest neighbours in the index, then adds
-# noise in the whitened principal-component space (supervisor-defined logic).
+# noise in the whitened principal-component space (geometry-defined logic).
 
 smoothing:
   enabled: true

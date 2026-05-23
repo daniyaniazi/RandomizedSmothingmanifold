@@ -581,7 +581,7 @@ def save_sample_visualization(
         Row 2: Isotropic noise in latent space (decoded)
         Row 3: Same samples shown as if isotropic noise were in pixel space
 
-    **Pixel Manifold** (mode=pixel, use_manifold=True) — 4 rows (Jonas-style):
+    **Pixel Manifold** (mode=pixel, use_manifold=True) — 4 rows (reference-style):
         Row 1: Original | PCA Reconstruction
         Row 2: Samples with noise in whitened space
         Row 3: Samples with Gaussian noise in original pixel space
@@ -678,7 +678,7 @@ def save_sample_visualization(
                          lambda: sample_pixel(img_tensor, iso_pixel))
 
     # ------------------------------------------------------------------
-    # PIXEL MANIFOLD  (Jonas-style: PCA whitened + Gaussian + neighbors)
+    # PIXEL MANIFOLD  (reference-style: PCA whitened + Gaussian + neighbors)
     # ------------------------------------------------------------------
     elif not is_latent and is_manifold:
         manifold_sm = pixel_smoother if pixel_smoother is not None else iso_pixel
@@ -728,7 +728,7 @@ def save_sample_visualization(
                 ax.set_title("Neighbors", fontsize=10)
 
     # ------------------------------------------------------------------
-    # LATENT MANIFOLD  (Jonas-style in latent + pixel comparison rows)
+    # LATENT MANIFOLD  (reference-style in latent + pixel comparison rows)
     # ------------------------------------------------------------------
     else:  # is_latent and is_manifold
         manifold_sm_latent = latent_smoother if latent_smoother is not None else iso_latent
@@ -1228,7 +1228,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     geometry_factors = []
     lv_mani_actuals = []
     lv_iso_Ds = []
-    # Supervisor geometry-first per-sample lists
+    # Geometry-first per-sample lists
     per_sample_log_geo_ratio = []
     per_sample_anisotropy = []
     per_sample_axis_lengths = []
@@ -1256,7 +1256,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             r["eigen_sum"] = diag.eigenvalue_sum
             lv_mani_actuals.append(lv_mani)
             geometry_factors.append(geom)
-            # ── NEW: supervisor geometry metrics per sample ──
+            # ── NEW: geometry metrics per sample ──
             evals_norm_max = normalize_eigenvalues(evals_arr, mode="max")
             lv_gm = log_volume_geo_mani(sigma_val, evals_norm_max)
             lv_gi = log_volume_geo_iso(sigma_val, k_pca)
@@ -1268,7 +1268,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             eff_rank = float(np.exp(-np.sum(p * np.log(p + 1e-30))))
             per_sample_log_geo_ratio.append(log_geo_ratio)
             per_sample_anisotropy.append(ani)
-            per_sample_axis_lengths.append(ax[:10].tolist())
+            per_sample_axis_lengths.append(ax.tolist())  # save ALL axes
             per_sample_cum_energy.append(cum.tolist())
             per_sample_effective_rank.append(eff_rank)
             r["log_v_geo_iso"] = lv_gi
@@ -1303,7 +1303,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             # This IS the isotropic run — Qty 1 directly
             mean_log_vol_iso_D = float(np.mean(lv_iso_Ds))
 
-        # ── Supervisor geometry-first summary ──
+        # ── Geometry-first summary ──
         geo_summary = None
         if per_sample_log_geo_ratio:
             k_for_geo = k_pca  # from last manifold sample
@@ -1321,7 +1321,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 "median_log_geo_ratio": float(np.median(per_sample_log_geo_ratio)),
                 "std_log_geo_ratio": float(np.std(per_sample_log_geo_ratio)),
                 # Axis lengths a_i = σ·√λ̃_i averaged across samples (top-10)
-                "mean_axis_lengths_top10": np.nanmean(ax_arr_np, axis=0).tolist() if ax_arr_np.size else [],
+                # Axis lengths a_i = σ·√λ̃_i averaged across samples (full spectrum)
+                "mean_axis_lengths": np.nanmean(ax_arr_np, axis=0).tolist() if ax_arr_np.size else [],
                 # Anisotropy = a_1/a_k
                 "mean_anisotropy_ratio": float(np.mean(per_sample_anisotropy)),
                 "median_anisotropy_ratio": float(np.median(per_sample_anisotropy)),
@@ -1348,7 +1349,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             # Diagnostics
             "mean_effective_rank": float(np.mean([r["eigen_effective_rank"] for r in results if r.get("eigen_effective_rank")])) if any(r.get("eigen_effective_rank") for r in results) else None,
             "mean_condition_number": float(np.mean([r["eigen_condition_number"] for r in results if r.get("eigen_condition_number")])) if any(r.get("eigen_condition_number") for r in results) else None,
-            # ── NEW: supervisor geometry-first metrics (sigma-based, normalized) ──
+            # ── NEW: geometry-first metrics (sigma-based, normalized) ──
             "geometry": geo_summary,
         }
         vol = metrics["volume"]
@@ -1375,14 +1376,57 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                     writer.writerow(r)
             _log(f"Results: {csv_path}")
 
-            # Save eigenvalue spectra for all samples (for spectrum plots)
-            eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if "eigenvalues" in r]
+            # Save eigenvalue spectra + geometry arrays for all samples
+            eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if r.get("eigenvalues") is not None]
             if eigen_samples:
                 eigen_path = paths.experiment_dir / "eigenvalues.npz"
+                raw_evals_list = [np.array(e[1], dtype=np.float64) for e in eigen_samples]
+                # Build geometry arrays (mirrors NER eigenvalues.npz format)
+                _ax_max_len = max((len(e) for e in raw_evals_list), default=0)
+                _ax_arr = np.full((len(raw_evals_list), _ax_max_len), np.nan)
+                _cum_rows = []
+                _geo_ratios = []
+                _aniso_arr = []
+                _eff_rank_arr = []
+                _norm_evals_list = []
+                k_geo = len(raw_evals_list[0]) if raw_evals_list else 0
+                for i, ev in enumerate(raw_evals_list):
+                    ev_norm = normalize_eigenvalues(ev, mode="max")
+                    _norm_evals_list.append(ev_norm)
+                    ax = axis_lengths(sigma_val, ev_norm)
+                    _ax_arr[i, :len(ax)] = ax  # save ALL axes
+                    cum = cumulative_stretch_energy(ev_norm)
+                    _cum_rows.append(cum.tolist())
+                    lv_gm = log_volume_geo_mani(sigma_val, ev_norm)
+                    lv_gi = log_volume_geo_iso(sigma_val, len(ev_norm))
+                    _geo_ratios.append(lv_gm - lv_gi)
+                    _aniso_arr.append(anisotropy_ratio(ev_norm))
+                    p = ev / np.maximum(ev.sum(), 1e-30)
+                    _eff_rank_arr.append(float(np.exp(-np.sum(p * np.log(p + 1e-30)))))
+                cum_max_len = max((len(c) for c in _cum_rows), default=0)
+                _cum_arr = np.full((len(_cum_rows), cum_max_len), np.nan)
+                for i, c in enumerate(_cum_rows):
+                    _cum_arr[i, :len(c)] = c
                 np.savez_compressed(
                     eigen_path,
+                    # ── Original arrays ──
                     indices=np.array([e[0] for e in eigen_samples]),
-                    eigenvalues=np.array([e[1] for e in eigen_samples], dtype=np.float32),
+                    eigenvalues=np.array(raw_evals_list, dtype=np.float64),
+                    # ── Geometry arrays (match NER eigenvalues.npz format) ──
+                    eigenvalues_norm_max=np.array(_norm_evals_list, dtype=np.float64),
+                    # a_i = σ·√λ̃_i  (top-10 per sample)
+                    # a_i = σ·√λ̃_i  (full spectrum per sample)
+                    axis_lengths_all=_ax_arr,
+                    # Anisotropy = a_1/a_k
+                    anisotropy_ratios=np.array(_aniso_arr, dtype=np.float64),
+                    # Cumulative stretch energy
+                    cumulative_stretch_energy=_cum_arr,
+                    # Geometry gain = log(V_mani,geo) - log(V_iso,geo) = 0.5·Σlog(λ̃_i)
+                    log_geo_ratio_per_sample=np.array(_geo_ratios, dtype=np.float64),
+                    # Effective rank (entropy-based)
+                    effective_rank_per_sample=np.array(_eff_rank_arr, dtype=np.float64),
+                    # Sigma used
+                    sigma=np.float64(sigma_val),
                 )
                 _log(f"Eigenvalues: {eigen_path}")
         

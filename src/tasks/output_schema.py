@@ -13,7 +13,7 @@ Output Structure:
     │       ├── certification_results.json     # Full certification results
     │       ├── per_class_metrics.json         # Breakdown by class/entity
     │       ├── samples/                       # Sample visualizations
-    │       │   ├── sample_0000.png           # Jonas-style grid per sample
+    │       │   ├── sample_0000.png           # visualization grid per sample
     │       │   ├── sample_0000.npz           # Stored embeddings for PCA
     │       │   └── ...
     │       └── comparisons/                   # Cross-experiment comparisons
@@ -228,7 +228,7 @@ class PerClassMetricsCollection:
 class ImageSampleData:
     """Data for a single image sample visualization.
     
-    Stores everything needed for Jonas-style visualization:
+    Stores everything needed for the visualization:
     - Original image
     - PCA reconstruction
     - Samples with noise in whitened space

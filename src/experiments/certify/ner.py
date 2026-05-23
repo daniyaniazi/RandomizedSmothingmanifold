@@ -1107,7 +1107,7 @@ def run(
 
         diag = eigenvalue_diagnostics(mean_evals)
 
-        # ── Supervisor geometry-first metrics (same sigma, pure shape) ──────────
+        # ── Geometry-first metrics (same sigma, pure shape) ──────────
         # V_iso,geo  = C_k · σ^k           (iso in k-dim space at same sigma)
         # V_mani,geo = C_k · σ^k · √det(Λ̃) (mani shape, normalized eigenvalues)
         # Ratio      = √det(Λ̃)             — PURE geometry gain, no radius bias
@@ -1119,7 +1119,7 @@ def run(
         per_token_geo_mani_mean = []  # per-token, mean-normalized
         per_token_log_det_half_norm = []
         per_token_anisotropy = []
-        per_token_axis_lengths = []   # top-10 or all
+        per_token_axis_lengths = []   # all axes (full k_pca length)
         per_token_cum_energy = []     # cumulative stretch energy
         per_token_effective_rank = []
 
@@ -1142,7 +1142,7 @@ def run(
             per_token_anisotropy.append(ani)
 
             ax = axis_lengths(sigma, evals_norm_max)
-            per_token_axis_lengths.append(ax[:10].tolist())  # save top-10 axes
+            per_token_axis_lengths.append(ax.tolist())  # save ALL axes
 
             cum = cumulative_stretch_energy(evals_norm_max)
             per_token_cum_energy.append(cum.tolist())
@@ -1151,12 +1151,12 @@ def run(
             ent = -np.sum(p * np.log(p + 1e-30))
             per_token_effective_rank.append(float(np.exp(ent)))
 
-        mean_axis_lengths_top10 = np.mean(
+        mean_axis_lengths_all = np.mean(
             [a for a in per_token_axis_lengths if a], axis=0
         ).tolist() if per_token_axis_lengths else []
 
         geometry_stats = {
-            # ── Supervisor primary quantities ──
+            # ── Primary quantities ──
             "sigma": sigma,
             "k_pca": k_pca,
             "ambient_D": hidden_dim,
@@ -1170,7 +1170,8 @@ def run(
             "median_log_geo_ratio": float(np.median(per_token_log_det_half_norm)),
             "std_log_geo_ratio": float(np.std(per_token_log_det_half_norm)),
             # Axis lengths a_i = σ·√λ̃_i  (top-10 averaged across tokens)
-            "mean_axis_lengths_top10": mean_axis_lengths_top10,
+            # Axis lengths a_i = σ·√λ̃_i averaged across tokens (full spectrum)
+            "mean_axis_lengths": mean_axis_lengths_all,
             # Anisotropy = a_1/a_k = √(λ̃_max/λ̃_min)
             "mean_anisotropy_ratio": float(np.mean(per_token_anisotropy)),
             "median_anisotropy_ratio": float(np.median(per_token_anisotropy)),
@@ -1202,7 +1203,7 @@ def run(
             "mean_effective_rank": float(diag.effective_rank),
             "mean_condition_number": float(diag.condition_number),
             "eigen_diagnostics": diag.to_dict(),
-            # ── NEW: supervisor geometry-first metrics (sigma-based, normalized) ──
+            # ── NEW: geometry-first metrics (sigma-based, normalized) ──
             "geometry": geometry_stats,
         }
         summary["volume"] = volume_stats
@@ -1215,8 +1216,8 @@ def run(
         # Save eigenvalue spectra + per-token radii
         if out_dir is not None:
             # Build axis-length and cumulative-energy arrays (pad to max length)
-            max_k = k_pca
-            ax_arr = np.full((len(token_eigenvalues_list), min(10, max_k)), np.nan)
+            ax_max_len = max((len(a) for a in per_token_axis_lengths), default=0)
+            ax_arr = np.full((len(token_eigenvalues_list), ax_max_len), np.nan)
             for i, ax in enumerate(per_token_axis_lengths):
                 ax_arr[i, :len(ax)] = ax
             # cumulative energy: variable length → store as object array or pad
@@ -1231,13 +1232,14 @@ def run(
                 mean_eigenvalues=mean_evals,
                 certified_radii=np.array(certified_radii, dtype=np.float64),
                 per_token_geometry_factor=np.array(per_token_geom, dtype=np.float64),
-                # ── NEW: supervisor geometry arrays ──
+                # ── NEW: geometry arrays ──
                 # Normalized eigenvalues (max-norm) per token
                 eigenvalues_norm_max=np.array(
                     [normalize_eigenvalues(e, "max") for e in token_eigenvalues_list], dtype=np.float64
                 ),
                 # Axis lengths a_i = σ·√λ̃_i (top-10 per token)
-                axis_lengths_top10=ax_arr,
+                # Axis lengths a_i = σ·√λ̃_i (full spectrum per token)
+                axis_lengths_all=ax_arr,
                 # Anisotropy ratio per token
                 anisotropy_ratios=np.array(per_token_anisotropy, dtype=np.float64),
                 # Cumulative stretch energy per token

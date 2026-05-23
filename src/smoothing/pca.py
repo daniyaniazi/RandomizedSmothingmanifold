@@ -39,7 +39,7 @@ def fit_local_pca(
     neighbors: np.ndarray,
     eps_eig: float = 1e-6,
 ) -> LocalPCA:
-    """Fit local PCA on a set of neighbor vectors (Jonas-style).
+    """Fit local PCA on a set of neighbor vectors (reference-style).
     
     Uses sklearn PCA like the notebook: centers the data, fits PCA with
     n_components = K (number of neighbors), returns eigenvalues and
@@ -64,7 +64,7 @@ def fit_local_pca(
     mean = neighbors.mean(axis=0)
     centered = neighbors - mean
     
-    # Fit PCA (same as Jonas's notebook)
+    # Fit PCA (same as reference notebook workflow)
     n_components = min(K, D)
     pca = PCA(n_components=n_components)
     pca.fit(centered)

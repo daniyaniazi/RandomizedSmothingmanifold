@@ -283,7 +283,7 @@ class VolumeResult:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Geometry-first volume metrics (supervisor's formula — sigma-based, not radius-based)
+# Geometry-first volume metrics (sigma-based, not radius-based)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -309,7 +309,7 @@ def normalize_eigenvalues(eigenvalues: np.ndarray, mode: str = "max") -> np.ndar
 
 
 def log_volume_geo_iso(sigma: float, k: int) -> float:
-    """Supervisor geometry-first iso volume: V_iso,geo = C_k · σ^k.
+    """Geometry-first iso volume: V_iso,geo = C_k · σ^k.
 
     Uses sigma directly — NOT the certified radius from voting.
     This is the k-ball of radius σ: the isotropic perturbation region.
@@ -318,7 +318,7 @@ def log_volume_geo_iso(sigma: float, k: int) -> float:
 
 
 def log_volume_geo_mani(sigma: float, eigenvalues_norm: np.ndarray) -> float:
-    """Supervisor geometry-first manifold volume: V_mani,geo = C_k · σ^k · √det(Λ̃).
+    """Geometry-first manifold volume: V_mani,geo = C_k · σ^k · √det(Λ̃).
 
     Λ̃ is the NORMALIZED eigenvalue matrix (pass output of normalize_eigenvalues).
     Uses sigma directly — NOT the certified radius from voting.

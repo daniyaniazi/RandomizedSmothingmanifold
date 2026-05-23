@@ -1,4 +1,4 @@
-"""Jonas-style visualization for image certification.
+"""Visualization utilities for image certification.
 
 Creates a standardized grid showing:
     Row 0: Original | PCA Reconstruction
@@ -40,7 +40,7 @@ def create_jonas_grid(
     title: Optional[str] = None,
     figsize: Tuple[int, int] = (20, 16),
 ) -> None:
-    """Create Jonas-style visualization grid for a single image.
+    """Create visualization grid for a single image.
     
     Args:
         sample_data: ImageSampleData with all vectors
@@ -144,7 +144,7 @@ def generate_image_sample_data(
     n_isotropic_samples: int = 20,
     eps_eig: float = 1e-6,
 ) -> ImageSampleData:
-    """Generate all data needed for Jonas-style visualization.
+    """Generate all data needed for visualization.
     
     Args:
         original_vector: Flattened image vector
