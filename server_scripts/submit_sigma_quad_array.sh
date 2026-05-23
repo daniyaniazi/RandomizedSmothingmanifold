@@ -242,7 +242,7 @@ TASK_LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "TASK_FILE_PLACEHOLDER")
 IFS='|' read -r TASK_NAME TASK_CFG TASK_KIND TASK_SIGMA <<< "$TASK_LINE"
 echo "[Task ${SLURM_ARRAY_TASK_ID}] $TASK_NAME (kind=$TASK_KIND, sigma=$TASK_SIGMA)"
 cd PROJECT_ROOT_PLACEHOLDER
-export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:$PYTHONPATH
+export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:${PYTHONPATH:-}
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh
 conda activate smoothing
 if [ "$TASK_KIND" = "ner" ]; then
