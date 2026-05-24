@@ -55,7 +55,7 @@ train:
 
 eval:
   max_batches: null     # using test_subset instead
-  test_subset: 0.5       # fraction of test set to use (0.1 = 10%), null for full test set
+  test_subset: 0.7       # fraction of test set to use (0.1 = 10%), null for full test set
 
 wandb:
   enabled: true
