@@ -1115,8 +1115,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 num_test_samples=len(test_samples),
             )
     
-    # Remove partial state after successful completion
-    _remove_partial_state(paths.experiment_dir)
+    # Keep the latest partial state on disk for inspection / manual recovery.
+    # It is overwritten on future checkpoints and safely ignored unless
+    # cfg.checkpoint.resume is enabled.
     
     # ─────────────────────────────────────────────────────────────────────────
     # Compute metrics

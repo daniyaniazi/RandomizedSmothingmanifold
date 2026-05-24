@@ -87,9 +87,17 @@ class ManifoldSmoother(Smoother):
         Returns:
             Neighbor vectors (k, D)
         """
-        # Request k+1 and drop index 0 (self-match)
+        # Request k+1 and drop self-match only when it is actually present.
+        # For certification, the index is often built on TRAIN while anchors come
+        # from TEST, so there is typically no exact self in the index.
         neighbors = neighbor_vectors(self._index, k=self._knn_k + 1, vector=anchor)
-        return neighbors[1:]  # Skip self-match
+        if neighbors.shape[0] == 0:
+            raise ValueError("Neighbor lookup returned no neighbors.")
+
+        first_is_self = np.allclose(neighbors[0], anchor, rtol=1e-5, atol=1e-7)
+        if first_is_self and neighbors.shape[0] > 1:
+            return neighbors[1 : self._knn_k + 1]
+        return neighbors[: self._knn_k]
     
     def _fit_pca(self, neighbors: np.ndarray) -> LocalPCA:
         """Fit local PCA on neighbors.

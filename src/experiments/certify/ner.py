@@ -603,6 +603,7 @@ def evaluate_smoothed(
     radii = []
     token_eigenvalues_list: list[np.ndarray] = []
     abstentions = 0
+    per_token_rows: list[dict] = []   # for results.csv
     total_tokens = 0
     certified_correct = 0
     sentence_count = 0
@@ -694,6 +695,31 @@ def evaluate_smoothed(
                     radii.append(float(cert.radius))
                     abstentions += int(cert.abstained)
                     total_tokens += 1
+
+                    # ── Per-token row for results.csv ──
+                    _evals_tok = None
+                    if out.eigenvalues is not None:
+                        _e = out.eigenvalues[row_idx][token_idx]
+                        if _e is not None:
+                            _evals_tok = _e
+                    per_token_rows.append({
+                        "sentence_idx": sentence_count,
+                        "token_position": int(token_idx),
+                        "token": None,   # filled below if debug available
+                        "true_label": true_label,
+                        "pred_label": id2label[int(p)],
+                        "certified": not cert.abstained,
+                        "abstained": cert.abstained,
+                        "radius": float(cert.radius),
+                        "p_a_lower": float(cert.p_a_lower),
+                        "correct": (not cert.abstained) and int(p) == int(l),
+                        "certified_correct": (not cert.abstained) and int(p) == int(l),
+                        "eigen_k": int(len(_evals_tok)) if _evals_tok is not None else None,
+                        "log_vol_mani_actual": None,   # filled after volume block
+                        "log_vol_iso_D": None,
+                        "geometry_factor": None,
+                    })
+
                     by_label["total_tokens"] += 1
                     by_entity["total_tokens"] += 1
 
@@ -846,7 +872,7 @@ def evaluate_smoothed(
         f"abstain_rate={(abstentions / total_tokens) if total_tokens else 0.0:.4f}"
     )
 
-    return metrics, debug_payload, radii, token_eigenvalues_list
+    return metrics, debug_payload, radii, token_eigenvalues_list, per_token_rows
 
 
 def run(
@@ -965,7 +991,7 @@ def run(
         tokenizer=tokenizer,
         masking_cfg=cfg.masking,
     )
-    smooth_metrics, debug_payload, radii, token_eigenvalues_list = evaluate_smoothed(
+    smooth_metrics, debug_payload, radii, token_eigenvalues_list, per_token_rows = evaluate_smoothed(
         model=model,
         loader=target_loader,
         device=device,
@@ -1282,6 +1308,46 @@ def run(
 
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
     (out_dir / "results_summary.json").write_text(json.dumps(concise_summary, indent=2))
+
+    # ── Write results.csv (per-token, matching CelebA format for cross-experiment analysis) ──
+    import csv as _csv
+    if per_token_rows:
+        # Backfill volume fields from volume computation if available
+        _sigma_val = float(getattr(cfg.smoothing, "sigma", 0.0))
+        _has_evals = bool(token_eigenvalues_list and radii)
+        _lv_mani_map: dict[int, float] = {}   # row index → log_vol_mani_actual
+        _geom_map: dict[int, float] = {}       # row index → geometry_factor
+        _lv_iso_D_map: dict[int, float] = {}   # row index → log_vol_iso_D
+        if _has_evals:
+            _hd = model.config.hidden_size if hasattr(model, "config") else 768
+            from src.certify.randomized import log_volume_manifold, log_volume_isotropic
+            _eval_idx = 0
+            for _row_idx, _row in enumerate(per_token_rows):
+                if _eval_idx < len(token_eigenvalues_list):
+                    _ev = token_eigenvalues_list[_eval_idx]
+                    _r = _row["radius"]
+                    _lv_mani_map[_row_idx] = log_volume_manifold(_r, _ev) if _r > 0 else -float("inf")
+                    _geom_map[_row_idx] = float(0.5 * np.sum(np.log(np.maximum(_ev, 1e-30))))
+                    _lv_iso_D_map[_row_idx] = log_volume_isotropic(_r, _hd) if _r > 0 else -float("inf")
+                    _eval_idx += 1
+        for _row_idx, _row in enumerate(per_token_rows):
+            _row["sigma"] = _sigma_val
+            _row["log_vol_mani_actual"] = _lv_mani_map.get(_row_idx)
+            _row["geometry_factor"] = _geom_map.get(_row_idx)
+            _row["log_vol_iso_D"] = _lv_iso_D_map.get(_row_idx)
+        _csv_path = out_dir / "results.csv"
+        _csv_fields = [
+            "sentence_idx", "token_position", "token", "true_label", "pred_label",
+            "certified", "abstained", "radius", "p_a_lower", "correct", "certified_correct",
+            "sigma", "eigen_k",
+            "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
+        ]
+        with open(_csv_path, "w", newline="") as _f:
+            _writer = _csv.DictWriter(_f, fieldnames=_csv_fields, extrasaction="ignore")
+            _writer.writeheader()
+            _writer.writerows(per_token_rows)
+        _log(f"Results CSV: {_csv_path} ({len(per_token_rows)} token rows)")
+
     raw_by_entity = smooth_metrics.get("certification_by_entity", {})
     raw_by_label = smooth_metrics.get("certification_by_label", {})
     ordered_by_entity = {k: raw_by_entity[k] for k in ENTITY_ORDER if k in raw_by_entity}

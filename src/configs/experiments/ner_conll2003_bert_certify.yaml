@@ -28,7 +28,7 @@ smoothing:
   mode: manifold
   target: hidden_states
   sigma: 0.75  # default sigma
-  sigma_values: [0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20, 1.25, 1.35, 1.50]  # dense sweep + high-sigma tail
+  sigma_values: [2.00, 2.25, 2.50, 2.75, 3.00, 3.25, 3.50, 3.75, 4.00, 4.25] # dense sweep + high-sigma tail
   layer_index: null        # use last hidden layer
   knn_k: 64
   eps_eig: 1.0e-06
