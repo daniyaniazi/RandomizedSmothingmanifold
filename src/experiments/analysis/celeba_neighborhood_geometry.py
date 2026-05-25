@@ -192,40 +192,87 @@ def compute_sample_data(
 
 
 def make_geometry_figure_single(sample_id: int, data: dict[str, np.ndarray | int], sigmas: list[float], space: str, output_path: Path) -> None:
-    fig, ax = plt.subplots(1, 1, figsize=(5.0, 4.5), facecolor="white")
-    anchor_2d = data["anchor_2d"]
-    neighbors_2d = data["nb_2d"]
-    evals_norm_2d = data["evals_norm_2d"]
+    """Save a 3-panel geometry figure for one sample.
 
-    ax.scatter(neighbors_2d[:, 0], neighbors_2d[:, 1], c=SCATTER_COLOR, s=8, alpha=0.45, linewidths=0, zorder=1)
+    Panel A – full cloud   : matplotlib auto-fits to all neighbors.
+                             Circle will be a dot if sigma << pc1_std — physically correct.
+    Panel B – mid-zoom     : ±10 % of the PC1 cloud range.
+                             Shows circle in context of nearest neighbors.
+    Panel C – tight zoom   : ±3 × max_sigma.
+                             Circle and ellipse always fill the frame.
+    """
+    anchor_2d = np.asarray(data["anchor_2d"], dtype=np.float64)
+    neighbors_2d = np.asarray(data["nb_2d"], dtype=np.float64)
+    evals_norm_2d = np.asarray(data["evals_norm_2d"], dtype=np.float64)
 
-    for sigma_index, sigma in enumerate(sigmas):
-        color = SIGMA_PALETTE[sigma_index % len(SIGMA_PALETTE)]
-        alpha = SIGMA_ALPHA[sigma_index % len(SIGMA_ALPHA)]
-        axis_lengths_2d = axis_lengths(sigma, evals_norm_2d)
-        if len(axis_lengths_2d) < 2:
-            continue
+    pc1_std = float(np.std(neighbors_2d[:, 0]))
+    pc2_std = float(np.std(neighbors_2d[:, 1]))
+    pc1_range = float(np.max(neighbors_2d[:, 0]) - np.min(neighbors_2d[:, 0]))
 
-        ax.add_patch(plt.Circle((float(anchor_2d[0]), float(anchor_2d[1])), sigma, fill=False, edgecolor=color, linewidth=SIGMA_LW, linestyle=(0, (4, 2)), alpha=alpha, zorder=3))
-        ax.add_patch(Ellipse((float(anchor_2d[0]), float(anchor_2d[1])), width=float(2 * axis_lengths_2d[0]), height=float(2 * axis_lengths_2d[1]), fill=False, edgecolor=color, linewidth=SIGMA_LW, linestyle="solid", alpha=alpha, zorder=3))
+    max_sigma = float(max(sigmas)) if sigmas else 1.0
+    zoom_mid   = 0.10 * pc1_range
+    zoom_tight = 3.0 * max_sigma
 
-    ax.scatter(anchor_2d[0], anchor_2d[1], c=ANCHOR_COLOR, s=150, marker="*", edgecolors="#444444", linewidths=0.7, zorder=5)
-    ax.set_aspect("equal")
-    ax.set_title(f"Sample {sample_id}  (kNN={data['n_neighbors']})", fontsize=10, fontweight="semibold", pad=5)
-    ax.set_xlabel("PC 1")
-    ax.set_ylabel("PC 2")
-    ax.grid(alpha=0.3)
+    zoom_configs = [
+        (None,       f"[A] Full cloud\nPC1 std={pc1_std:.2f},  max σ={max_sigma}\nσ/std={max_sigma/(pc1_std+1e-12):.5f}"),
+        (zoom_mid,   f"[B] Mid-zoom  ±{zoom_mid:.2f}  (10% of cloud)\nPC1 std={pc1_std:.2f},  PC2 std={pc2_std:.2f}"),
+        (zoom_tight, f"[C] Tight zoom  ±{zoom_tight:.4f}  (=3×max σ)\nShapes always fill the frame"),
+    ]
 
+    fig, axes = plt.subplots(1, 3, figsize=(16.0, 5.2), facecolor="white")
+    fig.suptitle(
+        f"CelebA {space.title()} Space — Sample {sample_id}  (kNN={data['n_neighbors']})\n"
+        f"PC1 std={pc1_std:.2f}  |  PC2 std={pc2_std:.2f}  |  sigmas={sigmas}",
+        fontsize=11, fontweight="bold", y=1.03,
+    )
+
+    for ax, (zr, panel_title) in zip(axes, zoom_configs):
+        ax.scatter(neighbors_2d[:, 0], neighbors_2d[:, 1], c=SCATTER_COLOR, s=6, alpha=0.30, linewidths=0, zorder=1)
+
+        for sigma_index, sigma in enumerate(sigmas):
+            color = SIGMA_PALETTE[sigma_index % len(SIGMA_PALETTE)]
+            alpha = SIGMA_ALPHA[sigma_index % len(SIGMA_ALPHA)]
+            axis_lengths_2d = axis_lengths(sigma, evals_norm_2d)
+            if len(axis_lengths_2d) < 2:
+                continue
+            ax.add_patch(plt.Circle(
+                (float(anchor_2d[0]), float(anchor_2d[1])), sigma,
+                fill=False, edgecolor=color, linewidth=SIGMA_LW,
+                linestyle=(0, (4, 2)), alpha=alpha, zorder=3,
+            ))
+            ax.add_patch(Ellipse(
+                (float(anchor_2d[0]), float(anchor_2d[1])),
+                width=float(2 * axis_lengths_2d[0]), height=float(2 * axis_lengths_2d[1]),
+                fill=False, edgecolor=color, linewidth=SIGMA_LW,
+                linestyle="solid", alpha=alpha, zorder=3,
+            ))
+
+        ax.scatter(float(anchor_2d[0]), float(anchor_2d[1]),
+                   c=ANCHOR_COLOR, s=150, marker="*", edgecolors="#444444", linewidths=0.7, zorder=5)
+
+        if zr is not None:
+            ax.set_xlim(float(anchor_2d[0]) - zr, float(anchor_2d[0]) + zr)
+            ax.set_ylim(float(anchor_2d[1]) - zr, float(anchor_2d[1]) + zr)
+        # else: auto-fit to full cloud
+
+        ax.set_aspect("equal")
+        ax.set_title(panel_title, fontsize=8.5)
+        ax.set_xlabel("PC 1")
+        ax.set_ylabel("PC 2")
+        ax.grid(alpha=0.3)
+
+    # shared legend
     legend_handles = []
     for sigma_index, sigma in enumerate(sigmas):
         color = SIGMA_PALETTE[sigma_index % len(SIGMA_PALETTE)]
-        legend_handles.append(plt.Line2D([0], [0], color=color, lw=1.8, linestyle=(0, (4, 2)), label=f"σ = {sigma} isotropic"))
-        legend_handles.append(plt.Line2D([0], [0], color=color, lw=1.8, linestyle="solid", label=f"σ = {sigma} manifold"))
-    legend_handles.append(plt.Line2D([0], [0], marker="*", color="w", markerfacecolor=ANCHOR_COLOR, markeredgecolor="#444", markersize=10, label="Anchor"))
+        legend_handles.append(plt.Line2D([0], [0], color=color, lw=1.8, linestyle=(0, (4, 2)), label=f"σ={sigma} iso circle"))
+        legend_handles.append(plt.Line2D([0], [0], color=color, lw=1.8, linestyle="solid", label=f"σ={sigma} mani ellipse"))
+    legend_handles.append(plt.Line2D([0], [0], marker="*", color="w", markerfacecolor=ANCHOR_COLOR,
+                                      markeredgecolor="#444", markersize=10, label="Anchor"))
 
-    fig.legend(handles=legend_handles, loc="lower center", ncol=len(sigmas) * 2 + 1, fontsize=8, frameon=True, framealpha=0.95, edgecolor="#cccccc", bbox_to_anchor=(0.5, -0.03))
-    fig.suptitle(f"CelebA {space.title()} Space — Sample {sample_id} Geometry", fontsize=12, fontweight="bold", y=1.01)
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    fig.legend(handles=legend_handles, loc="lower center", ncol=min(len(sigmas) * 2 + 1, 6),
+               fontsize=7.5, frameon=True, framealpha=0.95, edgecolor="#cccccc", bbox_to_anchor=(0.5, -0.04))
+    plt.tight_layout(rect=[0, 0.10, 1, 1])
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
