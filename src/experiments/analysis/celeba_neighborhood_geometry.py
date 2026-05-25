@@ -57,12 +57,42 @@ def infer_dimension(index_dir: Path, manual_dim: int | None) -> int:
     if manual_dim:
         return int(manual_dim)
 
-    for meta_name in ["metadata.json", "image_metadata.json"]:
-        meta_path = index_dir / meta_name
-        if meta_path.exists():
+    def find_positive_int(value: object) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            int_value = int(value)
+            return int_value if int_value > 0 else 0
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.isdigit():
+                int_value = int(stripped)
+                return int_value if int_value > 0 else 0
+            return 0
+        if isinstance(value, dict):
+            preferred_keys = ["embedding_dim", "dim", "vector_dim", "n_features", "feature_dim"]
+            for key in preferred_keys:
+                if key in value:
+                    found = find_positive_int(value[key])
+                    if found > 0:
+                        return found
+            for nested_value in value.values():
+                found = find_positive_int(nested_value)
+                if found > 0:
+                    return found
+        return 0
+
+    candidate_dirs = [index_dir, index_dir.parent, index_dir.parent.parent]
+    candidate_meta_names = ["metadata.json", "image_metadata.json", "index_metadata.json"]
+
+    for directory in candidate_dirs:
+        for meta_name in candidate_meta_names:
+            meta_path = directory / meta_name
+            if not meta_path.exists():
+                continue
             with open(meta_path, "r", encoding="utf-8") as handle:
                 metadata = json.load(handle)
-            dim = int(metadata.get("dim", metadata.get("vector_dim", 0)) or 0)
+            dim = find_positive_int(metadata)
             if dim > 0:
                 return dim
 
