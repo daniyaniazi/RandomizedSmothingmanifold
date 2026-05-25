@@ -8,7 +8,7 @@
 # Concurrency is capped with Slurm array limit: --array=1-N%MAX_CONCURRENT
 #
 # Usage:
-#   ./submit_sigma_quad_array.sh [--dry-run] [--max-concurrent 4]
+#   ./submit_sigma_quad_array.sh [--dry-run] [--max-concurrent 4] [--celeba-only|--ner-only]
 # =============================================================================
 
 set -euo pipefail
@@ -25,6 +25,8 @@ CPUS=8
 MEM_PER_CPU="8G"
 MAX_CONCURRENT=4
 DRY_RUN=false
+CELEBA_ONLY=false
+NER_ONLY=false
 
 # Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
@@ -43,6 +45,8 @@ Options:
   --mem-per-cpu MEM       Memory per CPU (default: 8G)
   --max-concurrent N      Array concurrency cap (default: 4)
   --dry-run               Print generated array command only
+    --celeba-only           Submit only CelebA configs as the array
+    --ner-only              Submit only NER configs as the array
   --help                  Show this help
 
 Behavior:
@@ -78,6 +82,14 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --celeba-only)
+            CELEBA_ONLY=true
+            shift
+            ;;
+        --ner-only)
+            NER_ONLY=true
+            shift
+            ;;
         --help|-h)
             print_help
             exit 0
@@ -95,7 +107,20 @@ if ! [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] || [[ "$MAX_CONCURRENT" -lt 1 ]]; then
     exit 1
 fi
 
-for cfg in "$NER_ISO_CFG" "$NER_MANI_CFG" "$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG"; do
+if $CELEBA_ONLY && $NER_ONLY; then
+    echo "Error: choose only one of --celeba-only or --ner-only"
+    exit 1
+fi
+
+if $CELEBA_ONLY; then
+    CONFIGS_TO_CHECK=("$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG")
+elif $NER_ONLY; then
+    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG")
+else
+    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG" "$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG")
+fi
+
+for cfg in "${CONFIGS_TO_CHECK[@]}"; do
     if [[ ! -f "$cfg" ]]; then
         echo "Error: config not found: $cfg"
         exit 1
@@ -109,7 +134,8 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-python3 - <<PY
+CELEBA_ONLY="$CELEBA_ONLY" NER_ONLY="$NER_ONLY" python3 - <<PY
+import os
 import yaml
 from pathlib import Path
 
@@ -117,12 +143,23 @@ project_root = Path(r"$PROJECT_ROOT")
 sweep_dir = Path(r"$SWEEP_CONFIG_DIR")
 task_file = Path(r"$TASK_FILE")
 
+celeba_only = os.environ.get("CELEBA_ONLY", "false").lower() == "true"
+ner_only = os.environ.get("NER_ONLY", "false").lower() == "true"
+
 entries = [
     ("ner_iso", Path(r"$NER_ISO_CFG"), "ner"),
     ("ner_mani", Path(r"$NER_MANI_CFG"), "ner"),
     ("celeb_iso", Path(r"$CELEBA_ISO_CFG"), "celeba"),
     ("celeb_mani", Path(r"$CELEBA_MANI_CFG"), "celeba"),
 ]
+
+if celeba_only:
+    entries = [item for item in entries if item[2] == "celeba"]
+elif ner_only:
+    entries = [item for item in entries if item[2] == "ner"]
+
+if not entries:
+    raise SystemExit("No configs selected for submission.")
 
 def sigma_list(cfg_path: Path):
     with cfg_path.open("r", encoding="utf-8") as f:

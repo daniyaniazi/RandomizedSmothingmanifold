@@ -1367,7 +1367,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         
         if cfg.output.save_per_sample:
             csv_path = paths.experiment_dir / "results.csv"
-            fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "correct", "certified_correct",
+            fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "p_a_lower", "p_b_upper", "correct", "certified_correct",
                           "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
                           "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
             with open(csv_path, "w", newline="") as f:
