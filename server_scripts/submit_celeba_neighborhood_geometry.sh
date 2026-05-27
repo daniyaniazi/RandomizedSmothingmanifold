@@ -25,4 +25,10 @@ export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 echo "Running on: $(hostname)"
 echo "GPU: ${CUDA_VISIBLE_DEVICES:-unset}"
 
-python -m src.experiments.analysis.celeba_neighborhood_geometry --pca-backend gpu "$@"
+python -m src.experiments.analysis.celeba_neighborhood_geometry \
+    --pca-backend gpu \
+    --sigmas 0.10 0.20 0.50 1.00 \
+    --knn-k 500 \
+    --n-samples 5 \
+    --pca-components 20 \
+    "$@"
