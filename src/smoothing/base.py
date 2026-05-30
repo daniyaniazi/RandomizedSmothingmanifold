@@ -97,6 +97,15 @@ class Smoother(ABC):
         )
 
 
+def gaussian_noise(shape: int | tuple[int, ...], std: float, dtype=np.float32) -> np.ndarray:
+    """Sample zero-mean Gaussian noise with notebook-style API.
+
+    Equivalent to np.random.normal(0.0, std, size=shape), returned in the
+    requested dtype.
+    """
+    return np.random.normal(loc=0.0, scale=float(std), size=shape).astype(dtype, copy=False)
+
+
 def create_smoother(
     mode: str,
     sigma: float,

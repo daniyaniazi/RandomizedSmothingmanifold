@@ -747,16 +747,28 @@ def save_sample_visualization(
         axes[0, 1].set_title("PCA Reconstruction", fontsize=9)
 
         # Row 1: Manifold noise α = σ/√λ_max  (correct final — used for certification)
-        for i in range(n_noisy_samples):
-            axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, manifold_sm)))
-            if i == 0:
-                axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
+        if isinstance(manifold_sm, ManifoldSmoother):
+            def _sample_scaled_pixel():
+                w_anchor = whiten(query_vec, _cached_pca.pca)
+                noise = np.random.normal(0.0, alpha_display, size=len(w_anchor)).astype(np.float32)
+                noisy_flat = unwhiten(w_anchor + noise, _cached_pca.pca)
+                return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
+
+            for i in range(n_noisy_samples):
+                axes[1, i].imshow(_tensor_to_pil(_sample_scaled_pixel()))
+                if i == 0:
+                    axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
+        else:
+            for i in range(n_noisy_samples):
+                axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, manifold_sm)))
+                if i == 0:
+                    axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
 
         # Row 2: Manifold noise σ unscaled (reference — add noise with raw σ in whitened space)
         if isinstance(manifold_sm, ManifoldSmoother):
             def _sample_unscaled_pixel():
                 w_anchor = whiten(query_vec, _cached_pca.pca)
-                noise = np.random.randn(len(w_anchor)).astype(np.float32) * sigma
+                noise = np.random.normal(0.0, sigma, size=len(w_anchor)).astype(np.float32)
                 noisy_flat = unwhiten(w_anchor + noise, _cached_pca.pca)
                 return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
             for i in range(n_noisy_samples):
@@ -935,7 +947,7 @@ def save_sample_visualization(
         if isinstance(manifold_sm_latent, ManifoldSmoother) and _cached_latent_pca is not None:
             def _sample_latent_unscaled():
                 w_anch = whiten(query_vec, _cached_latent_pca.pca)
-                noise = np.random.randn(len(w_anch)).astype(np.float32) * sigma
+                noise = np.random.normal(0.0, sigma, size=len(w_anch)).astype(np.float32)
                 z_noised = unwhiten(w_anch + noise, _cached_latent_pca.pca)
                 with torch.no_grad():
                     z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)

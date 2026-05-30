@@ -13,7 +13,7 @@ import numpy as np
 
 from src.indexing.base import NeighborIndex, neighbor_vectors
 
-from .base import Smoother, SmoothingResult
+from .base import Smoother, SmoothingResult, gaussian_noise
 from .pca import LocalPCA, fit_local_pca, whiten, unwhiten
 
 
@@ -168,7 +168,7 @@ class ManifoldSmoother(Smoother):
         # This is alpha = sigma / sqrt(lambda_max) from the notebook Way-2 convention.
         lambda_max = float(pca.evals[0])
         alpha = self._sigma / np.sqrt(max(lambda_max, 1e-12))
-        noise = np.random.randn(len(w)).astype(np.float32) * alpha
+        noise = gaussian_noise(shape=len(w), std=alpha)
         w_noisy = w + noise
         # Unwhiten back
         return unwhiten(w_noisy, pca)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import Smoother, SmoothingResult
+from .base import Smoother, SmoothingResult, gaussian_noise
 
 
 class IsotropicSmoother(Smoother):
@@ -37,7 +37,7 @@ class IsotropicSmoother(Smoother):
             Noisy vector (D,) = anchor + N(0, σ²I)
         """
         anchor = np.asarray(anchor, dtype=np.float32).reshape(-1)
-        noise = np.random.randn(len(anchor)).astype(np.float32) * self._sigma
+        noise = gaussian_noise(shape=len(anchor), std=self._sigma)
         return anchor + noise
     
     def sample_n(self, anchor: np.ndarray, n: int) -> np.ndarray:
@@ -51,7 +51,7 @@ class IsotropicSmoother(Smoother):
             Noisy vectors (n, D)
         """
         anchor = np.asarray(anchor, dtype=np.float32).reshape(-1)
-        noise = np.random.randn(n, len(anchor)).astype(np.float32) * self._sigma
+        noise = gaussian_noise(shape=(n, len(anchor)), std=self._sigma)
         return anchor + noise
     
     def sample_with_details(self, anchor: np.ndarray) -> SmoothingResult:
@@ -64,7 +64,7 @@ class IsotropicSmoother(Smoother):
             SmoothingResult with noise in original space
         """
         anchor = np.asarray(anchor, dtype=np.float32).reshape(-1)
-        noise = np.random.randn(len(anchor)).astype(np.float32) * self._sigma
+        noise = gaussian_noise(shape=len(anchor), std=self._sigma)
         noisy = anchor + noise
         
         return SmoothingResult(
