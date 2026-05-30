@@ -23,10 +23,15 @@ class CertifyDatasetConfig:
 @dataclass
 class CertifyModelConfig:
     name: str = "resnet18"
-    checkpoint_path: str = ""
+    checkpoint_path: str = ""  # explicit path — used when use_smoothed_classifier=False
     input_size: int = 224  # CelebA: 224, CelebA-HQ: 512 — used for ALL transforms
     num_classes: int = 1  # binary for smile
     dropout: float = 0.5  # must match training config to load weights correctly
+    # ── Smoothed-classifier lookup ──────────────────────────────────────────
+    # When True, checkpoint_path is IGNORED and the path is auto-resolved:
+    #   {smoothed_classifier_base_dir}/{iso|manifold}/smile_resnet_{dataset}_sigma_{s}/best.pt
+    use_smoothed_classifier: bool = False
+    smoothed_classifier_base_dir: str = "output/pretrained_model"
 
 
 @dataclass

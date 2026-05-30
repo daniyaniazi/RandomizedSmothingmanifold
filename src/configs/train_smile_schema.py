@@ -69,6 +69,27 @@ class SmileCheckpointConfig:
 
 
 @dataclass
+class SmileSmoothingAugConfig:
+    """Smoothing augmentation applied to each training image.
+
+    Mirrors the Cohen et al. training scheme: for every (x, y) pair the model
+    sees x + noise drawn once per forward pass, so the classifier learns the
+    noisy distribution it will be certified against.
+
+    mode = "isotropic"  -> x' = x + N(0, sigma^2 I)   (no index needed)
+    mode = "manifold"   -> x' = x + manifold noise     (requires pixel index)
+    """
+    enabled: bool = False
+    mode: str = "isotropic"   # isotropic | manifold
+    sigma: float = 0.25
+    knn_k: int = 500
+    eps_eig: float = 1e-6
+    # Pre-built Annoy index path (required for manifold mode).
+    # If None and mode=manifold the index is built on the fly from the train set.
+    index_path: Optional[str] = None
+
+
+@dataclass
 class SmileTrainingConfig:
     experiment_name: str = "smile_resnet_train"
     output_dir: str = "output"
@@ -79,3 +100,4 @@ class SmileTrainingConfig:
     logging: SmileLoggingConfig = field(default_factory=SmileLoggingConfig)
     wandb: SmileWandbConfig = field(default_factory=SmileWandbConfig)
     checkpoint: SmileCheckpointConfig = field(default_factory=SmileCheckpointConfig)
+    smoothing_aug: SmileSmoothingAugConfig = field(default_factory=SmileSmoothingAugConfig)

@@ -1,8 +1,24 @@
 """Training entry point for ResNet smile classifier on CelebA / CelebA-HQ.
 
+Supports optional smoothing augmentation (isotropic or manifold) so that
+the trained classifier matches the noise distribution used at certification
+time — following the Cohen et al. (2019) randomized smoothing training scheme.
+
 Usage:
+    # Plain training (no augmentation):
     python -m src.experiments.training.resnet_smile.main \\
         --config src/configs/training/smile_resnet_celeba.yaml
+
+    # With isotropic augmentation at sigma=0.25:
+    python -m src.experiments.training.resnet_smile.main \\
+        --config src/configs/training/smile_resnet_celeba.yaml \\
+        --sigma 0.25 --aug_mode isotropic
+
+    # With manifold augmentation (requires pre-built index):
+    python -m src.experiments.training.resnet_smile.main \\
+        --config src/configs/training/smile_resnet_celeba.yaml \\
+        --sigma 0.25 --aug_mode manifold \\
+        --index_path output/smile_classification/celeba/index/pixel/annoy/euclidean/index.ann
 """
 
 from __future__ import annotations
@@ -11,6 +27,7 @@ import argparse
 import json
 import random
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -22,6 +39,8 @@ from src.configs.train_smile_io import load_smile_training_config, save_smile_re
 from src.configs.train_smile_schema import SmileTrainingConfig
 from src.dataloaders.celeba_smile import build_smile_dataloaders
 from src.models.resnet import build_resnet_classifier
+from src.smoothing.isotropic import IsotropicSmoother
+from src.smoothing.manifold import ManifoldSmoother
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +67,64 @@ def compute_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
     return (preds == targets).float().mean().item()
 
 
+def build_smoother(cfg: SmileTrainingConfig) -> Optional[IsotropicSmoother | ManifoldSmoother]:
+    """Build the training-time smoother (None if augmentation is disabled)."""
+    aug = cfg.smoothing_aug
+    if not aug.enabled:
+        return None
+
+    if aug.mode == "isotropic":
+        print(f"Smoothing aug: ISOTROPIC  σ={aug.sigma}")
+        return IsotropicSmoother(sigma=aug.sigma)
+
+    elif aug.mode == "manifold":
+        from src.indexing.base import load_index
+        if aug.index_path is None:
+            raise ValueError(
+                "smoothing_aug.mode='manifold' requires smoothing_aug.index_path to be set. "
+                "Build the pixel index first (certify run builds it automatically)."
+            )
+        index_path = Path(aug.index_path)
+        if not index_path.exists():
+            raise FileNotFoundError(f"Pixel index not found: {index_path}")
+        # Infer dimension from config
+        dim = cfg.model.input_size * cfg.model.input_size * 3
+        index = load_index(dim=dim, index_path=str(index_path), backend="annoy")
+        print(f"Smoothing aug: MANIFOLD  σ={aug.sigma}  knn_k={aug.knn_k}  index={index_path}")
+        return ManifoldSmoother(sigma=aug.sigma, index=index, knn_k=aug.knn_k, eps_eig=aug.eps_eig)
+
+    else:
+        raise ValueError(f"Unknown smoothing_aug.mode: '{aug.mode}'. Choose 'isotropic' or 'manifold'.")
+
+
+def apply_smoother_to_batch(
+    images: torch.Tensor,
+    smoother: IsotropicSmoother | ManifoldSmoother,
+) -> torch.Tensor:
+    """Apply smoother to each image in a batch (CPU, numpy round-trip).
+
+    One noise sample per image per training step — this is the standard
+    Gaussian data augmentation from Cohen et al. (2019).
+    """
+    B, C, H, W = images.shape
+    noisy = []
+    imgs_np = images.cpu().numpy()  # (B, C, H, W)
+    for i in range(B):
+        flat = imgs_np[i].flatten().astype("float32")
+        noisy_flat = smoother.sample(flat)
+        noisy.append(noisy_flat.reshape(C, H, W))
+    noisy_np = np.stack(noisy, axis=0)  # (B, C, H, W)
+    return torch.from_numpy(noisy_np).to(images.device)
+
+
 # ---------------------------------------------------------------------------
 # Train / eval loops
 # ---------------------------------------------------------------------------
 
-def run_epoch(model, loader, optimizer, criterion, device, train: bool, log_every: int):
+def run_epoch(
+    model, loader, optimizer, criterion, device, train: bool, log_every: int,
+    smoother: Optional[IsotropicSmoother | ManifoldSmoother] = None,
+):
     model.train(train)
     total_loss, total_acc, n_batches = 0.0, 0.0, 0
 
@@ -60,6 +132,12 @@ def run_epoch(model, loader, optimizer, criterion, device, train: bool, log_ever
         for step, (images, labels) in enumerate(tqdm(loader, leave=False)):
             images = images.to(device)
             labels = labels.to(device)
+
+            # ── Smoothing augmentation (train only) ───────────────────────
+            # Apply one noise sample per image, matching the certification
+            # distribution.  Eval always runs on clean images.
+            if train and smoother is not None:
+                images = apply_smoother_to_batch(images.cpu(), smoother).to(device)
 
             logits = model(images).squeeze(-1)
             loss = criterion(logits, labels)
@@ -93,6 +171,13 @@ def train(cfg: SmileTrainingConfig) -> None:
 
     # Save resolved config
     save_smile_resolved_config(cfg, output_dir / "resolved_config.yaml")
+
+    # ── Smoother (optional training-time augmentation) ────────────────────
+    smoother = build_smoother(cfg)
+    if smoother is not None:
+        print(f"Training WITH smoothing augmentation: mode={cfg.smoothing_aug.mode}  σ={cfg.smoothing_aug.sigma}")
+    else:
+        print("Training WITHOUT smoothing augmentation (clean images only).")
 
     # Data
     data = build_smile_dataloaders(
@@ -153,10 +238,12 @@ def train(cfg: SmileTrainingConfig) -> None:
         train_loss, train_acc = run_epoch(
             model, data.train_loader, optimizer, criterion, device,
             train=True, log_every=cfg.logging.log_every_n_steps,
+            smoother=smoother,
         )
         val_loss, val_acc = run_epoch(
             model, data.val_loader, optimizer, criterion, device,
             train=False, log_every=999,
+            smoother=None,  # always eval on clean images
         )
 
         print(f"  Train loss={train_loss:.4f}  acc={train_acc:.4f}")
@@ -206,6 +293,7 @@ def train(cfg: SmileTrainingConfig) -> None:
     test_loss, test_acc = run_epoch(
         model, data.test_loader, optimizer, criterion, device,
         train=False, log_every=999,
+        smoother=None,
     )
     print(f"  Test  loss={test_loss:.4f}  acc={test_acc:.4f}")
     history.append({"epoch": "test", "test_loss": test_loss, "test_acc": test_acc})
@@ -222,13 +310,42 @@ def train(cfg: SmileTrainingConfig) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train ResNet smile classifier")
     parser.add_argument("--config", required=True, help="Path to YAML training config")
+    # CLI overrides for sigma sweep (override smoothing_aug fields without editing the YAML)
+    parser.add_argument("--sigma", type=float, default=None,
+                        help="Override smoothing_aug.sigma (also enables augmentation)")
+    parser.add_argument("--aug_mode", type=str, default=None,
+                        choices=["isotropic", "manifold"],
+                        help="Override smoothing_aug.mode")
+    parser.add_argument("--index_path", type=str, default=None,
+                        help="Override smoothing_aug.index_path (manifold mode)")
+    parser.add_argument("--ckpt_dir", type=str, default=None,
+                        help="Override checkpoint.base_dir (used by sweep script)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Override output_dir")
     args = parser.parse_args()
 
     cfg = load_smile_training_config(args.config)
+
+    # Apply CLI overrides
+    if args.sigma is not None:
+        cfg.smoothing_aug.sigma = args.sigma
+        cfg.smoothing_aug.enabled = True
+    if args.aug_mode is not None:
+        cfg.smoothing_aug.mode = args.aug_mode
+        cfg.smoothing_aug.enabled = True
+    if args.index_path is not None:
+        cfg.smoothing_aug.index_path = args.index_path
+    if args.ckpt_dir is not None:
+        cfg.checkpoint.base_dir = args.ckpt_dir
+    if args.output_dir is not None:
+        cfg.output_dir = args.output_dir
+
     print(f"Experiment : {cfg.experiment_name}")
     print(f"Dataset    : {cfg.dataset.name}")
     print(f"Model      : {cfg.model.name}  pretrained={cfg.model.pretrained}")
     print(f"Epochs     : {cfg.train.epochs}  lr={cfg.train.lr}")
+    if cfg.smoothing_aug.enabled:
+        print(f"Aug        : mode={cfg.smoothing_aug.mode}  σ={cfg.smoothing_aug.sigma}")
 
     train(cfg)
 

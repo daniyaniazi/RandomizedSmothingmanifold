@@ -18,7 +18,13 @@ dataset:
 
 model:
   name: resnet18
+  # --- Option A: explicit checkpoint (use_smoothed_classifier: false) ---
   checkpoint_path: output/pretrained_model/smile_resnet_celeba/best.pt
+  # --- Option B: auto-resolve sigma-matched checkpoint ---
+  # Set use_smoothed_classifier: true and the path is built automatically as:
+  #   {smoothed_classifier_base_dir}/{isotropic|manifold}/smile_resnet_celeba_sigma_{s}/best.pt
+  use_smoothed_classifier: false
+  smoothed_classifier_base_dir: output/pretrained_model
   input_size: 224
   num_classes: 1
   dropout: 0.1  # must match training config

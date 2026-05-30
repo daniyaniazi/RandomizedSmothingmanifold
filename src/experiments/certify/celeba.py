@@ -78,6 +78,49 @@ def _log(msg: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint path resolution
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def resolve_classifier_checkpoint(cfg) -> str:
+    """Return the path to the classifier checkpoint.
+
+    If cfg.model.use_smoothed_classifier is True the path is auto-built as:
+        {base_dir}/{mode}/{dataset}/smile_resnet_{dataset}_sigma_{s}/best.pt
+
+    where
+        mode    = "manifold" or "isotropic"  (from cfg.smoothing.use_manifold)
+        dataset = cfg.dataset.name lowercased / cleaned  (e.g. "celeba", "celebahq")
+        s       = cfg.smoothing.sigma formatted as "0_25"
+
+    Otherwise cfg.model.checkpoint_path is returned unchanged.
+    """
+    if not cfg.model.use_smoothed_classifier:
+        return cfg.model.checkpoint_path
+
+    mode = "manifold" if cfg.smoothing.use_manifold else "isotropic"
+    dataset_tag = cfg.dataset.name.lower().replace("-", "").replace("_", "")
+    sigma_tag = f"sigma_{cfg.smoothing.sigma:.2f}".replace(".", "_")
+    model_name = cfg.model.name  # e.g. "resnet18"
+
+    ckpt = (
+        Path(cfg.model.smoothed_classifier_base_dir)
+        / mode
+        / dataset_tag
+        / f"smile_{model_name}_{dataset_tag}_{sigma_tag}"
+        / "best.pt"
+    )
+    _log(f"Auto-resolved classifier checkpoint: {ckpt}")
+    if not ckpt.exists():
+        raise FileNotFoundError(
+            f"Smoothed classifier not found: {ckpt}\n"
+            f"Train it first with:\n"
+            f"  python -m src.experiments.training.resnet_smile.train_smooth_sweep \\\n"
+            f"      --config <training_cfg> --modes {mode} "
+            f"--sigmas {cfg.smoothing.sigma} "
+            f"--base_ckpt_dir {cfg.model.smoothed_classifier_base_dir}"
+        )
+    return str(ckpt)
 # Checkpoint/Resume Support
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1113,8 +1156,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         dropout=cfg.model.dropout,  # must match training config
         num_classes=cfg.model.num_classes,
     ).to(device)
-    
-    ckpt = torch.load(cfg.model.checkpoint_path, map_location=device)
+
+    ckpt_path = resolve_classifier_checkpoint(cfg)
+    ckpt = torch.load(ckpt_path, map_location=device)
     # Handle different checkpoint formats
     if "model_state_dict" in ckpt:
         classifier.load_state_dict(ckpt["model_state_dict"])
@@ -1131,7 +1175,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     else:
         classifier.load_state_dict(ckpt)
     classifier.eval()
-    _log(f"Classifier: {cfg.model.checkpoint_path}")
+    _log(f"Classifier: {ckpt_path}")
     
     classifier_transform = transforms.Compose([
         transforms.Resize((cfg.model.input_size, cfg.model.input_size)),

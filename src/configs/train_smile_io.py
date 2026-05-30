@@ -14,6 +14,7 @@ from .train_smile_schema import (
     SmileDatasetConfig,
     SmileLoggingConfig,
     SmileModelConfig,
+    SmileSmoothingAugConfig,
     SmileTrainConfig,
     SmileTrainingConfig,
     SmileWandbConfig,
@@ -48,6 +49,7 @@ def load_smile_training_config(path: str | Path) -> SmileTrainingConfig:
         logging=SmileLoggingConfig(**merged["logging"]),
         wandb=SmileWandbConfig(**merged["wandb"]),
         checkpoint=SmileCheckpointConfig(**merged["checkpoint"]),
+        smoothing_aug=SmileSmoothingAugConfig(**merged.get("smoothing_aug", {})),
     )
 
 
