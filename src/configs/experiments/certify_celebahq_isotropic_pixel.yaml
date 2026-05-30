@@ -28,10 +28,10 @@ vae:
 
 smoothing:
   mode: pixel
-  sigma: 0.25  # default sigma
-  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
-  n0_samples: 100
-  n_samples: 250
+  sigma: 0.10  # default sigma
+  sigma_values: [0.01, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.17, 0.20, 0.22, 0.25, 0.27, 0.30, 0.32, 0.35, 0.37, 0.40, 0.42, 0.45, 0.47, 0.50, 0.55]  # 22 values 0.01–0.55
+  n0_samples: 30
+  n_samples: 100
   knn_k: 500
   eps_eig: 1.0e-06
   use_manifold: false  # KEY: isotropic Gaussian noise

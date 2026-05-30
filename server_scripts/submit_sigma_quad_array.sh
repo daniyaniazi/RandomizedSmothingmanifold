@@ -27,12 +27,15 @@ MAX_CONCURRENT=4
 DRY_RUN=false
 CELEBA_ONLY=false
 NER_ONLY=false
+CELEBAHQ_ONLY=false
 
 # Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
 NER_MANI_CFG="src/configs/experiments/ner_conll2003_bert_certify.yaml"
 CELEBA_ISO_CFG="src/configs/experiments/certify_celeba_isotropic_pixel.yaml"
 CELEBA_MANI_CFG="src/configs/experiments/certify_celeba_pixel.yaml"
+CELEBAHQ_ISO_CFG="src/configs/experiments/certify_celebahq_isotropic_pixel.yaml"
+CELEBAHQ_MANI_CFG="src/configs/experiments/certify_celebahq_pixel.yaml"
 
 print_help() {
     cat << 'EOF'
@@ -46,6 +49,7 @@ Options:
   --max-concurrent N      Array concurrency cap (default: 4)
   --dry-run               Print generated array command only
     --celeba-only           Submit only CelebA configs as the array
+    --celebahq-only         Submit only CelebA-HQ configs as the array
     --ner-only              Submit only NER configs as the array
   --help                  Show this help
 
@@ -86,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             CELEBA_ONLY=true
             shift
             ;;
+        --celebahq-only)
+            CELEBAHQ_ONLY=true
+            shift
+            ;;
         --ner-only)
             NER_ONLY=true
             shift
@@ -108,16 +116,26 @@ if ! [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] || [[ "$MAX_CONCURRENT" -lt 1 ]]; then
 fi
 
 if $CELEBA_ONLY && $NER_ONLY; then
-    echo "Error: choose only one of --celeba-only or --ner-only"
+    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
+    exit 1
+fi
+if $CELEBA_ONLY && $CELEBAHQ_ONLY; then
+    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
+    exit 1
+fi
+if $NER_ONLY && $CELEBAHQ_ONLY; then
+    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
     exit 1
 fi
 
 if $CELEBA_ONLY; then
     CONFIGS_TO_CHECK=("$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG")
+elif $CELEBAHQ_ONLY; then
+    CONFIGS_TO_CHECK=("$CELEBAHQ_ISO_CFG" "$CELEBAHQ_MANI_CFG")
 elif $NER_ONLY; then
     CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG")
 else
-    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG" "$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG")
+    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG" "$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG" "$CELEBAHQ_ISO_CFG" "$CELEBAHQ_MANI_CFG")
 fi
 
 for cfg in "${CONFIGS_TO_CHECK[@]}"; do
@@ -134,7 +152,7 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-CELEBA_ONLY="$CELEBA_ONLY" NER_ONLY="$NER_ONLY" python3 - <<PY
+CELEBA_ONLY="$CELEBA_ONLY" NER_ONLY="$NER_ONLY" CELEBAHQ_ONLY="$CELEBAHQ_ONLY" python3 - <<PY
 import os
 import yaml
 from pathlib import Path
@@ -145,16 +163,21 @@ task_file = Path(r"$TASK_FILE")
 
 celeba_only = os.environ.get("CELEBA_ONLY", "false").lower() == "true"
 ner_only = os.environ.get("NER_ONLY", "false").lower() == "true"
+celebahq_only = os.environ.get("CELEBAHQ_ONLY", "false").lower() == "true"
 
 entries = [
-    ("ner_iso", Path(r"$NER_ISO_CFG"), "ner"),
-    ("ner_mani", Path(r"$NER_MANI_CFG"), "ner"),
-    ("celeb_iso", Path(r"$CELEBA_ISO_CFG"), "celeba"),
-    ("celeb_mani", Path(r"$CELEBA_MANI_CFG"), "celeba"),
+    ("ner_iso",      Path(r"$NER_ISO_CFG"),      "ner"),
+    ("ner_mani",     Path(r"$NER_MANI_CFG"),     "ner"),
+    ("celeb_iso",    Path(r"$CELEBA_ISO_CFG"),    "celeba"),
+    ("celeb_mani",   Path(r"$CELEBA_MANI_CFG"),   "celeba"),
+    ("celebahq_iso", Path(r"$CELEBAHQ_ISO_CFG"), "celebahq"),
+    ("celebahq_mani",Path(r"$CELEBAHQ_MANI_CFG"),"celebahq"),
 ]
 
 if celeba_only:
     entries = [item for item in entries if item[2] == "celeba"]
+elif celebahq_only:
+    entries = [item for item in entries if item[2] == "celebahq"]
 elif ner_only:
     entries = [item for item in entries if item[2] == "ner"]
 
@@ -231,7 +254,7 @@ for short_name, cfg_path, kind in entries:
         if kind == "ner":
             resolved_index_path = cfg.get("smoothing", {}).get("index_path")
             out_dir = ner_output_dir(cfg, sigma, resolved_index_path)
-        else:
+        else:  # celeba or celebahq
             out_dir = celeb_output_dir(cfg, sigma)
 
         metrics_path = out_dir / "metrics.json"
