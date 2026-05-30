@@ -808,12 +808,16 @@ def save_sample_visualization(
                 _ev = np.asarray(_pca_obj.evals, dtype=np.float64)
                 _Vt = _pca_obj.evecs.T  # (n_comp, D)
                 _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
+                _lambda_max = float(_ev[0])
+                _sqrt_lambda_max = float(np.sqrt(_lambda_max))
                 _anchor_2d = (query_vec - np.asarray(_pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
                 _neigh_2d = _nbrs.astype(np.float64) @ _Vt[:2].T
 
                 _a1 = float(sigma * np.sqrt(_ev_norm[0]))
                 _a2 = float(sigma * np.sqrt(_ev_norm[1]))
-                _a_last = float(sigma * np.sqrt(_ev_norm[min(130, len(_ev_norm) - 1)]))
+                _mid_idx = len(_ev_norm) // 2
+                _a_mid  = float(sigma * np.sqrt(_ev_norm[_mid_idx]))  # median component
+                _a_last = float(sigma * np.sqrt(_ev_norm[-1]))         # true last component
                 _pc1_std = float(np.std(_neigh_2d[:, 0]))
                 _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
                 _zoom_mid = 0.10 * _pc1_range
@@ -823,10 +827,11 @@ def save_sample_visualization(
                     (None, f"[A] Full cloud  σ/std={sigma / (_pc1_std + 1e-12):.4f}", _a1, _a2),
                     (_zoom_mid, f"[B] Mid-zoom  ±{_zoom_mid:.2f}", _a1, _a2),
                     (_zoom_tight, f"[C] Tight ±σ={_zoom_tight:.4f}  a2={_a2:.4f}", _a1, _a2),
-                    (_zoom_tight, f"[D] Last PC  a_last={_a_last:.4f}", _a1, _a_last),
+                    (_zoom_tight, f"[D] Mid PC (k={_mid_idx})  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/_a1:.4f}", _a1, _a_mid),
+                    (_zoom_tight, f"[E] Last PC (k={len(_ev_norm)-1})  a_last={_a_last:.6f}\na_last/a1={_a_last/_a1:.6f}", _a1, _a_last),
                 ]
 
-                _gfig, _gaxes = _plt_geom.subplots(1, 4, figsize=(18, 5.5), facecolor="white")
+                _gfig, _gaxes = _plt_geom.subplots(1, 5, figsize=(22, 5.5), facecolor="white")
                 _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
                 _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
                 _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
@@ -871,7 +876,9 @@ def save_sample_visualization(
                     _gax.legend(fontsize=7, loc="upper right")
 
                 _gfig.suptitle(
-                    f"Sample {sample_idx}  PCA-2D geometry  σ={sigma}  α={alpha_display:.4f}",
+                    f"Sample {sample_idx}  PCA-2D geometry  "
+                    f"σ={sigma}  |  λ_max={_lambda_max:.4f}  √λ_max={_sqrt_lambda_max:.4f}  "
+                    f"|  α=σ/√λ_max={alpha_display:.4f}  (α/σ={alpha_display/sigma:.4f})",
                     fontsize=11, y=1.02,
                 )
                 _plt_geom.tight_layout()
