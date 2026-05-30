@@ -278,6 +278,122 @@ def make_geometry_figure_single(sample_id: int, data: dict[str, np.ndarray | int
 
 
 
+def make_sample_grid_figure(
+    sample_id: int,
+    annoy_idx,
+    image_shape_chw: tuple[int, int, int],
+    sigma: float,
+    knn_k: int,
+    output_path: Path,
+    mean: list[float] | None = None,
+    std: list[float] | None = None,
+    n_vis: int = 5,
+) -> None:
+    """Save a 5-row × n_vis-col sample grid for one anchor, with row ID labels.
+
+    Row 0  — Original image + PCA reconstruction
+    Row 1  — Manifold noise samples  (noise std = α = σ/√λ_max  in whitened space)
+    Row 2  — Manifold noise / scaled (same α, labelled separately for clarity)
+    Row 3  — Isotropic pixel-space noise  (std = σ)
+    Row 4  — Nearest neighbours from the index
+
+    Args:
+        sample_id:        Anchor index in the Annoy index.
+        annoy_idx:        Loaded AnnoyIndex wrapper (`.index` attribute).
+        image_shape_chw:  (C, H, W) shape for reshaping flat vectors.
+        sigma:            Smoothing standard deviation (scale_weight).
+        knn_k:            Number of neighbours for local PCA.
+        output_path:      Where to write the PNG.
+        mean / std:       Per-channel normalisation values for display.
+        n_vis:            Number of sample columns (default 5).
+    """
+    mean_arr = np.array(mean if mean else [0.5, 0.5, 0.5], dtype=np.float32)
+    std_arr  = np.array(std  if std  else [0.5, 0.5, 0.5], dtype=np.float32)
+
+    def _unnorm(flat_chw: np.ndarray) -> np.ndarray:
+        """CHW flat → HWC [0,1]."""
+        img = np.transpose(np.reshape(flat_chw, image_shape_chw), (1, 2, 0))
+        return np.clip(img * std_arr + mean_arr, 0.0, 1.0)
+
+    # ── Load anchor & neighbours ───────────────────────────────────────────
+    X_orig = np.asarray(annoy_idx.index.get_item_vector(sample_id), dtype=np.float64)
+    nn_ids = annoy_idx.index.get_nns_by_item(sample_id, knn_k + 1, include_distances=False)
+    nn_ids = [i for i in nn_ids if i != sample_id][:knn_k]
+    X_nn   = np.asarray([annoy_idx.index.get_item_vector(i) for i in nn_ids], dtype=np.float64)
+
+    # ── Local PCA ─────────────────────────────────────────────────────────
+    mean_nn = X_nn.mean(axis=0)
+    X_centered = X_nn - mean_nn
+
+    n_comp = min(knn_k, X_centered.shape[0], X_centered.shape[1])
+    pca_sk = PCA(n_components=n_comp)
+    pca_sk.fit(X_centered)
+    ev  = pca_sk.explained_variance_       # (n_comp,)
+    Vt  = pca_sk.components_               # (n_comp, D)
+
+    lambda_max = float(ev[0])
+    # Supervisor changes: mean-subtracted whitening, noise scale = σ/√λ_max
+    X_whitened = (X_orig - mean_nn) @ ((1.0 / np.sqrt(ev)) * Vt.T)  # (n_comp,)
+    alpha = sigma / np.sqrt(max(lambda_max, 1e-12))
+
+    # PCA reconstruction
+    X_recon = (X_whitened @ (np.sqrt(ev) * Vt.T).T) + mean_nn      # unwhiten
+
+    # ── Figure ────────────────────────────────────────────────────────────
+    row_labels = [
+        f'Row 0\nOriginal &\nPCA Recon',
+        f'Row 1\nManifold noise\nα=σ/√λ_max={alpha:.4f}\n(correct final)',
+        f'Row 2\nManifold noise\nσ={sigma} unscaled\n(comparison)',
+        f'Row 3\nIsotropic\npixel noise σ={sigma}',
+        f'Row 4\nNeighbours',
+    ]
+
+    fig, axes = plt.subplots(5, n_vis, figsize=(4 * n_vis, 22))
+    for ax in axes.flat:
+        ax.axis('off')
+
+    # Row ID labels on leftmost column
+    for row_i, label in enumerate(row_labels):
+        axes[row_i, 0].text(
+            -0.22, 0.5, label,
+            transform=axes[row_i, 0].transAxes,
+            fontsize=8.5, fontweight='bold', va='center', ha='right',
+            rotation=0, clip_on=False,
+        )
+
+    # Row 0: original + PCA reconstruction
+    axes[0, 0].imshow(_unnorm(X_orig));     axes[0, 0].set_title('Original',         fontsize=8)
+    axes[0, 1].imshow(_unnorm(X_recon));    axes[0, 1].set_title('PCA Reconstruction', fontsize=8)
+
+    # Rows 1 & 2: manifold noise
+    for i in range(n_vis):
+        # Row 1 — correct/final: α = σ/√λ_max
+        noise = np.random.normal(0.0, alpha, size=n_comp)
+        X_noised_r1 = (X_whitened + noise) @ (np.sqrt(ev) * Vt.T).T + mean_nn
+        axes[1, i].imshow(_unnorm(X_noised_r1))
+        # Row 2 — unscaled: std = σ (kept for comparison)
+        noise_unscaled = np.random.normal(0.0, sigma, size=n_comp)
+        X_noised_r2 = (X_whitened + noise_unscaled) @ (np.sqrt(ev) * Vt.T).T + mean_nn
+        axes[2, i].imshow(_unnorm(X_noised_r2))
+
+    # Row 3: isotropic pixel noise
+    for i in range(n_vis):
+        X_noised = X_orig + np.random.normal(0.0, sigma, size=X_orig.shape)
+        axes[3, i].imshow(_unnorm(X_noised))
+
+    # Row 4: neighbours
+    for i, nn_id in enumerate(nn_ids[:n_vis]):
+        axes[4, i].imshow(_unnorm(np.asarray(annoy_idx.index.get_item_vector(nn_id), dtype=np.float64)))
+
+    fig.suptitle(
+        f"CelebA Sample {sample_id}  —  σ={sigma}  λ_max={lambda_max:.4f}  α=σ/√λ_max={alpha:.4f}",
+        fontsize=11, fontweight='bold', y=1.01,
+    )
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=160, bbox_inches='tight')
+    plt.close(fig)
+
+
 def make_eigenvalue_figure_single(sample_id: int, evals_topk: np.ndarray, space: str, output_path: Path) -> dict[str, float | int]:
     fig, ax = plt.subplots(1, 1, figsize=(4.8, 3.8), facecolor="white")
     x = np.arange(1, len(evals_topk) + 1)
@@ -338,8 +454,13 @@ def main() -> None:
     eigen_csv_path = output_dir / f"{prefix}_eigenvalues.csv"
     summary_json_path = output_dir / f"{prefix}_summary.json"
 
+    # Infer image shape from dimension (pixel space) or leave as flat (latent space)
+    side = int(round(np.sqrt(dim / 3)))
+    image_shape_chw = (3, side, side) if side * side * 3 == dim else None
+
     saved_geometry_paths: list[str] = []
     saved_eigen_paths: list[str] = []
+    saved_grid_paths: list[str] = []
     rows: list[dict[str, float | int]] = []
     for sample_id, data in sample_data.items():
         geometry_path = output_dir / f"{prefix}_sample_{sample_id}_geometry.png"
@@ -349,6 +470,22 @@ def main() -> None:
         rows.append(row)
         saved_geometry_paths.append(str(geometry_path))
         saved_eigen_paths.append(str(eigen_plot_path))
+
+        # 10-sample grid with row IDs (pixel space only)
+        if image_shape_chw is not None:
+            grid_path = output_dir / f"{prefix}_sample_{sample_id}_sample_grid.png"
+            sigma_for_grid = float(args.sigmas[0]) if args.sigmas else 0.4
+            make_sample_grid_figure(
+                sample_id=sample_id,
+                annoy_idx=annoy_idx,
+                image_shape_chw=image_shape_chw,
+                sigma=sigma_for_grid,
+                knn_k=args.knn_k,
+                output_path=grid_path,
+                mean=[0.5, 0.5, 0.5],
+                std=[0.5, 0.5, 0.5],
+            )
+            saved_grid_paths.append(str(grid_path))
 
     eigen_df = pd.DataFrame(rows).sort_values("sample").reset_index(drop=True)
     eigen_df.to_csv(eigen_csv_path, index=False)
@@ -367,6 +504,7 @@ def main() -> None:
         "outputs": {
             "geometry_plots": saved_geometry_paths,
             "eigen_plots": saved_eigen_paths,
+            "sample_grid_plots": saved_grid_paths,
             "eigen_csv": str(eigen_csv_path),
         },
     }
@@ -377,6 +515,8 @@ def main() -> None:
     for path in saved_geometry_paths:
         print(" -", path)
     for path in saved_eigen_paths:
+        print(" -", path)
+    for path in saved_grid_paths:
         print(" -", path)
     print(" -", eigen_csv_path)
     print(" -", summary_json_path)

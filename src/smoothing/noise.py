@@ -79,8 +79,10 @@ def smooth_input_embeddings(
                 continue
             
             pca = fit_local_pca(neighbors, eps_eig=eps_eig)
-            whitened = whiten(anchor, pca)
-            noise = np.random.randn(len(whitened)).astype(np.float32) * sigma
+            whitened = whiten(anchor, pca)  # mean-subtracted inside whiten()
+            lambda_max = float(pca.evals[0])
+            alpha = sigma / np.sqrt(max(lambda_max, 1e-12))  # sigma / sqrt(lambda_max)
+            noise = np.random.randn(len(whitened)).astype(np.float32) * alpha
             noisy = unwhiten(whitened + noise, pca)
             
             smoothed[b, t] = torch.as_tensor(noisy, device=device, dtype=embeds.dtype)

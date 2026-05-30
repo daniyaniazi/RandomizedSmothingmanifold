@@ -573,27 +573,29 @@ def save_sample_visualization(
     Layout varies by mode:
 
     **Pixel Isotropic** (mode=pixel, use_manifold=False) — 2 rows:
-        Row 1: Original (+ empty)
-        Row 2: Gaussian noise samples in pixel space
+        Row 0: Original (+ empty)
+        Row 1: Gaussian noise samples in pixel space
 
     **Latent Isotropic** (mode=latent, use_manifold=False) — 3 rows:
-        Row 1: Original (+ empty)
-        Row 2: Isotropic noise in latent space (decoded)
-        Row 3: Same samples shown as if isotropic noise were in pixel space
+        Row 0: Original (+ empty)
+        Row 1: Isotropic noise in latent space (decoded)
+        Row 2: Isotropic noise in pixel space
 
-    **Pixel Manifold** (mode=pixel, use_manifold=True) — 4 rows (reference-style):
-        Row 1: Original | PCA Reconstruction
-        Row 2: Samples with noise in whitened space
-        Row 3: Samples with Gaussian noise in original pixel space
-        Row 4: k-NN Neighbors
+    **Pixel Manifold** (mode=pixel, use_manifold=True) — 5 rows (notebook-style):
+        Row 0: Original | PCA Reconstruction
+        Row 1: Manifold noise  α = σ/√λ_max  (correct/final — used for certification)
+        Row 2: Manifold noise  σ = scale_weight  (unscaled, reference comparison)
+        Row 3: Isotropic pixel noise
+        Row 4: k-NN Neighbours
 
-    **Latent Manifold** (mode=latent, use_manifold=True) — 6 rows:
-        Row 1: Original | PCA Reconstruction (Latent)
-        Row 2: Latent samples with noise in whitened space (decoded)
-        Row 3: Pixel samples with noise in whitened space (for comparison)
-        Row 4: Latent samples with Gaussian noise (decoded)
-        Row 5: Pixel samples with Gaussian noise (for comparison)
-        Row 6: k-NN Neighbors
+    **Latent Manifold** (mode=latent, use_manifold=True) — 7 rows:
+        Row 0: Original | PCA Reconstruction (Latent)
+        Row 1: Latent manifold noise  α = σ/√λ_max  (correct/final — used for certification)
+        Row 2: Latent manifold noise  σ = scale_weight  (unscaled, reference)
+        Row 3: Pixel manifold noise  α = σ/√λ_max  (decoded via pixel smoother)
+        Row 4: Latent Gaussian noise (decoded)
+        Row 5: Pixel Gaussian noise (for comparison)
+        Row 6: k-NN Neighbours
     """
     try:
         import matplotlib.pyplot as plt
@@ -607,9 +609,11 @@ def save_sample_visualization(
     is_latent = cfg.smoothing.mode == "latent" and vae is not None
     is_manifold = cfg.smoothing.use_manifold
 
+    sigma = cfg.smoothing.sigma
+
     # Isotropic smoothers (pixel and latent) for comparison rows
-    iso_pixel = IsotropicSmoother(sigma=cfg.smoothing.sigma)
-    iso_latent = IsotropicSmoother(sigma=cfg.smoothing.sigma) if is_latent else None
+    iso_pixel = IsotropicSmoother(sigma=sigma)
+    iso_latent = IsotropicSmoother(sigma=sigma) if is_latent else None
 
     # Query vector for neighbor lookup
     if is_latent:
@@ -623,134 +627,290 @@ def save_sample_visualization(
         query_vec = img_tensor.numpy().flatten().astype(np.float32)
 
     # ------------------------------------------------------------------
+    # Helper: add a bold row-ID label to the left of axis [row, 0]
+    # ------------------------------------------------------------------
+    def _add_row_label(axes_grid, row, label_text):
+        ax0 = axes_grid[row, 0]
+        ax0.text(
+            -0.18, 0.5, label_text,
+            transform=ax0.transAxes,
+            fontsize=8, fontweight="bold",
+            va="center", ha="right",
+            rotation=0, clip_on=False,
+        )
+
+    # ------------------------------------------------------------------
     # Helper: draw a row of noisy samples
     # ------------------------------------------------------------------
-    def _draw_sample_row(gs, row, title, sample_fn):
+    def _draw_sample_row(axes_grid, row, title, sample_fn):
         for i in range(n_noisy_samples):
-            ax = fig.add_subplot(gs[row, i])
+            ax = axes_grid[row, i]
             ax.imshow(_tensor_to_pil(sample_fn()))
             ax.axis("off")
             if i == 0:
-                ax.set_title(title, fontsize=10)
+                ax.set_title(title, fontsize=9)
 
     # ------------------------------------------------------------------
-    # PIXEL ISOTROPIC  (no PCA, no whitening, no neighbors)
+    # PIXEL ISOTROPIC
     # ------------------------------------------------------------------
     if not is_latent and not is_manifold:
+        row_labels = ["Row 0\nOriginal", "Row 1\nIsotropic\npixel noise σ"]
         n_rows = 2
-        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
-        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+        fig, axes = plt.subplots(n_rows, n_noisy_samples,
+                                 figsize=(3 * n_noisy_samples, 3.2 * n_rows))
+        axes = np.atleast_2d(axes)
+        for ax in axes.flat:
+            ax.axis("off")
 
-        # Row 0: Original
-        ax = fig.add_subplot(gs[0, 0])
-        ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("Original", fontsize=10)
-        ax.axis("off")
-        for i in range(1, n_noisy_samples):
-            fig.add_subplot(gs[0, i]).axis("off")
+        for r, lbl in enumerate(row_labels):
+            _add_row_label(axes, r, lbl)
 
-        # Row 1: Gaussian noise in pixel space
-        _draw_sample_row(gs, 1, "Samples with Gaussian noise in pixel space",
-                         lambda: sample_pixel(img_tensor, iso_pixel))
+        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 0].set_title("Original", fontsize=9)
+
+        for i in range(n_noisy_samples):
+            axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            if i == 0:
+                axes[1, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
 
     # ------------------------------------------------------------------
-    # LATENT ISOTROPIC  (no PCA, no whitening, no neighbors)
+    # LATENT ISOTROPIC
     # ------------------------------------------------------------------
     elif is_latent and not is_manifold:
+        row_labels = [
+            "Row 0\nOriginal",
+            "Row 1\nIsotropic\nlatent noise σ",
+            "Row 2\nIsotropic\npixel noise σ",
+        ]
         n_rows = 3
-        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
-        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
+        fig, axes = plt.subplots(n_rows, n_noisy_samples,
+                                 figsize=(3 * n_noisy_samples, 3.2 * n_rows))
+        axes = np.atleast_2d(axes)
+        for ax in axes.flat:
+            ax.axis("off")
 
-        # Row 0: Original
-        ax = fig.add_subplot(gs[0, 0])
-        ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("Original", fontsize=10)
-        ax.axis("off")
-        for i in range(1, n_noisy_samples):
-            fig.add_subplot(gs[0, i]).axis("off")
+        for r, lbl in enumerate(row_labels):
+            _add_row_label(axes, r, lbl)
 
-        # Row 1: Isotropic noise in latent space (decoded)
-        _draw_sample_row(gs, 1, "Samples with isotropic noise in latent space",
-                         lambda: sample_latent(img_tensor, vae, iso_latent, device))
+        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 0].set_title("Original", fontsize=9)
 
-        # Row 2: Isotropic noise in pixel space (for visual comparison)
-        _draw_sample_row(gs, 2, "Samples with isotropic noise in pixel space",
-                         lambda: sample_pixel(img_tensor, iso_pixel))
+        for i in range(n_noisy_samples):
+            axes[1, i].imshow(_tensor_to_pil(sample_latent(img_tensor, vae, iso_latent, device)))
+            axes[2, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            if i == 0:
+                axes[1, i].set_title(f"Isotropic latent noise  σ={sigma}", fontsize=9)
+                axes[2, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
 
     # ------------------------------------------------------------------
-    # PIXEL MANIFOLD  (reference-style: PCA whitened + Gaussian + neighbors)
+    # PIXEL MANIFOLD  — 5-row notebook-style grid
     # ------------------------------------------------------------------
     elif not is_latent and is_manifold:
         manifold_sm = pixel_smoother if pixel_smoother is not None else iso_pixel
-        n_rows = 4
-        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
-        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
 
-        # Row 0: Original + PCA Reconstruction
-        ax = fig.add_subplot(gs[0, 0])
-        ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("Original", fontsize=10)
-        ax.axis("off")
-
-        ax = fig.add_subplot(gs[0, 1])
-        # Compute actual PCA reconstruction (whiten -> unwhiten round-trip)
+        # Compute alpha = σ/√λ_max for display — the smoother already uses this internally
+        alpha_display = sigma  # fallback
         if isinstance(manifold_sm, ManifoldSmoother):
             from src.smoothing.pca import whiten, unwhiten
-            cached = manifold_sm.compute_pca(query_vec)
-            w = whiten(query_vec, cached.pca)
-            recon_vec = unwhiten(w, cached.pca)
+            _cached_pca = manifold_sm.compute_pca(query_vec)
+            lambda_max = float(_cached_pca.pca.evals[0])
+            alpha_display = sigma / np.sqrt(max(lambda_max, 1e-12))
+
+        row_labels = [
+            "Row 0\nOriginal &\nPCA Recon",
+            f"Row 1\nManifold noise\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
+            f"Row 2\nManifold noise\nσ={sigma} unscaled\n(ref)",
+            f"Row 3\nIsotropic\npixel noise σ={sigma}",
+            "Row 4\nNeighbours",
+        ]
+        n_rows = 5
+        fig, axes = plt.subplots(n_rows, n_noisy_samples,
+                                 figsize=(3 * n_noisy_samples, 3.5 * n_rows))
+        axes = np.atleast_2d(axes)
+        for ax in axes.flat:
+            ax.axis("off")
+
+        for r, lbl in enumerate(row_labels):
+            _add_row_label(axes, r, lbl)
+
+        # Row 0: Original + PCA Reconstruction
+        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 0].set_title("Original", fontsize=9)
+
+        if isinstance(manifold_sm, ManifoldSmoother):
+            w = whiten(query_vec, _cached_pca.pca)
+            recon_vec = unwhiten(w, _cached_pca.pca)
             recon_tensor = torch.from_numpy(recon_vec.reshape(img_tensor.shape)).float()
-            ax.imshow(_tensor_to_pil(recon_tensor))
+            axes[0, 1].imshow(_tensor_to_pil(recon_tensor))
         else:
-            ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("PCA Reconstruction", fontsize=10)
-        ax.axis("off")
-        for i in range(2, n_noisy_samples):
-            fig.add_subplot(gs[0, i]).axis("off")
+            axes[0, 1].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 1].set_title("PCA Reconstruction", fontsize=9)
 
-        # Row 1: Whitened space noise (manifold smoother)
-        _draw_sample_row(gs, 1, "Samples with noise in whitened space",
-                         lambda: sample_pixel(img_tensor, manifold_sm))
+        # Row 1: Manifold noise α = σ/√λ_max  (correct final — used for certification)
+        for i in range(n_noisy_samples):
+            axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, manifold_sm)))
+            if i == 0:
+                axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
 
-        # Row 2: Gaussian noise in original pixel space
-        _draw_sample_row(gs, 2, "Samples with noise in original space",
-                         lambda: sample_pixel(img_tensor, iso_pixel))
+        # Row 2: Manifold noise σ unscaled (reference — add noise with raw σ in whitened space)
+        if isinstance(manifold_sm, ManifoldSmoother):
+            def _sample_unscaled_pixel():
+                w_anchor = whiten(query_vec, _cached_pca.pca)
+                noise = np.random.randn(len(w_anchor)).astype(np.float32) * sigma
+                noisy_flat = unwhiten(w_anchor + noise, _cached_pca.pca)
+                return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
+            for i in range(n_noisy_samples):
+                axes[2, i].imshow(_tensor_to_pil(_sample_unscaled_pixel()))
+                if i == 0:
+                    axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled  (ref)", fontsize=9)
+        else:
+            for i in range(n_noisy_samples):
+                axes[2, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+                if i == 0:
+                    axes[2, i].set_title(f"Isotropic pixel noise  σ={sigma}  (ref)", fontsize=9)
 
-        # Row 3: Neighbors
+        # Row 3: Isotropic pixel noise
+        for i in range(n_noisy_samples):
+            axes[3, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            if i == 0:
+                axes[3, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
+
+        # Row 4: Neighbours
         nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
                                  img_tensor.shape, vae, device, is_latent=False)
         for i in range(n_noisy_samples):
-            ax = fig.add_subplot(gs[3, i])
             if i < len(nn_imgs):
-                ax.imshow(_tensor_to_pil(nn_imgs[i]))
-            ax.axis("off")
+                axes[4, i].imshow(_tensor_to_pil(nn_imgs[i]))
             if i == 0:
-                ax.set_title("Neighbors", fontsize=10)
+                axes[4, i].set_title("Neighbours", fontsize=9)
+
+        # ── Circle/Ellipse geometry figure (like notebook cell 7) ─────────
+        if isinstance(manifold_sm, ManifoldSmoother):
+            try:
+                from matplotlib.patches import Ellipse as _Ellipse
+                import matplotlib.pyplot as _plt_geom
+                from sklearn.decomposition import PCA as _PCA
+
+                _pca_obj = _cached_pca.pca
+                _nbrs = _cached_pca.neighbors  # (k, D) centred
+                _ev = np.asarray(_pca_obj.evals, dtype=np.float64)
+                _Vt = _pca_obj.evecs.T  # (n_comp, D)
+                _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
+                _anchor_2d = (query_vec - np.asarray(_pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
+                _neigh_2d = _nbrs.astype(np.float64) @ _Vt[:2].T
+
+                _a1 = float(sigma * np.sqrt(_ev_norm[0]))
+                _a2 = float(sigma * np.sqrt(_ev_norm[1]))
+                _a_last = float(sigma * np.sqrt(_ev_norm[min(130, len(_ev_norm) - 1)]))
+                _pc1_std = float(np.std(_neigh_2d[:, 0]))
+                _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
+                _zoom_mid = 0.10 * _pc1_range
+                _zoom_tight = _a1
+
+                _zoom_labels = [
+                    (None, f"[A] Full cloud  σ/std={sigma / (_pc1_std + 1e-12):.4f}", _a1, _a2),
+                    (_zoom_mid, f"[B] Mid-zoom  ±{_zoom_mid:.2f}", _a1, _a2),
+                    (_zoom_tight, f"[C] Tight ±σ={_zoom_tight:.4f}  a2={_a2:.4f}", _a1, _a2),
+                    (_zoom_tight, f"[D] Last PC  a_last={_a_last:.4f}", _a1, _a_last),
+                ]
+
+                _gfig, _gaxes = _plt_geom.subplots(1, 4, figsize=(18, 5.5), facecolor="white")
+                _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
+                _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
+                _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
+                                  float(np.max(_y_all) - np.min(_y_all)), 1e-6)
+
+                for _gax, (_zr, _gtitle, _ea1, _ea2) in zip(_gaxes, _zoom_labels):
+                    if _zr is None:
+                        _mask = np.ones(len(_neigh_2d), dtype=bool)
+                    else:
+                        _mask = (
+                            (_neigh_2d[:, 0] >= _anchor_2d[0] - _zr) & (_neigh_2d[:, 0] <= _anchor_2d[0] + _zr) &
+                            (_neigh_2d[:, 1] >= _anchor_2d[1] - _zr) & (_neigh_2d[:, 1] <= _anchor_2d[1] + _zr)
+                        )
+                    _gax.scatter(_neigh_2d[_mask, 0], _neigh_2d[_mask, 1],
+                                 s=5, alpha=0.22, color="#4c78a8", linewidths=0, zorder=1)
+                    _gax.add_patch(_plt_geom.Circle(
+                        (_anchor_2d[0], _anchor_2d[1]), sigma,
+                        fill=False, edgecolor="tab:blue", linewidth=2.5,
+                        linestyle=(0, (4, 2)), alpha=0.95, zorder=3,
+                        label=f"Iso circle r=σ={sigma}",
+                    ))
+                    _gax.add_patch(_Ellipse(
+                        (_anchor_2d[0], _anchor_2d[1]),
+                        width=2.0 * _ea1, height=2.0 * _ea2,
+                        fill=False, edgecolor="tab:orange", linewidth=2.5,
+                        linestyle="solid", alpha=0.95, zorder=3,
+                        label=f"Mani ellipse a1={_ea1:.4f} a2={_ea2:.4f}",
+                    ))
+                    _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
+                                 c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
+                    if _zr is None:
+                        _gax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
+                        _gax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
+                    else:
+                        _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
+                        _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
+                    _gax.set_aspect("equal")
+                    _gax.set_title(_gtitle, fontsize=8.5)
+                    _gax.set_xlabel(f"PC1 (std={_pc1_std:.2f})")
+                    _gax.set_ylabel("PC2")
+                    _gax.grid(alpha=0.25)
+                    _gax.legend(fontsize=7, loc="upper right")
+
+                _gfig.suptitle(
+                    f"Sample {sample_idx}  PCA-2D geometry  σ={sigma}  α={alpha_display:.4f}",
+                    fontsize=11, y=1.02,
+                )
+                _plt_geom.tight_layout()
+                _geom_path = viz_dir / f"sample_{sample_idx:04d}_geometry.png"
+                _gfig.savefig(_geom_path, dpi=150, bbox_inches="tight")
+                _plt_geom.close(_gfig)
+            except Exception as _geom_err:
+                _log(f"Geometry figure skipped for sample {sample_idx}: {_geom_err}")
 
     # ------------------------------------------------------------------
-    # LATENT MANIFOLD  (reference-style in latent + pixel comparison rows)
+    # LATENT MANIFOLD  — 7-row notebook-style grid
     # ------------------------------------------------------------------
     else:  # is_latent and is_manifold
         manifold_sm_latent = latent_smoother if latent_smoother is not None else iso_latent
         manifold_sm_pixel = pixel_smoother if pixel_smoother is not None else iso_pixel
 
-        n_rows = 6
-        fig = plt.figure(figsize=(3 * n_noisy_samples, 3 * n_rows))
-        gs = gridspec.GridSpec(n_rows, n_noisy_samples, figure=fig, hspace=0.3, wspace=0.1)
-
-        # Row 0: Original + PCA Reconstruction (Latent)
-        ax = fig.add_subplot(gs[0, 0])
-        ax.imshow(_tensor_to_pil(img_tensor))
-        ax.set_title("Original", fontsize=10)
-        ax.axis("off")
-
-        ax = fig.add_subplot(gs[0, 1])
-        # Compute actual latent PCA reconstruction (whiten -> unwhiten in latent space, then decode)
+        # Compute alpha for display
+        alpha_display = sigma
+        _cached_latent_pca = None
         if isinstance(manifold_sm_latent, ManifoldSmoother):
             from src.smoothing.pca import whiten, unwhiten
-            cached = manifold_sm_latent.compute_pca(query_vec)
-            w = whiten(query_vec, cached.pca)
-            recon_z = unwhiten(w, cached.pca)
+            _cached_latent_pca = manifold_sm_latent.compute_pca(query_vec)
+            lambda_max_lat = float(_cached_latent_pca.pca.evals[0])
+            alpha_display = sigma / np.sqrt(max(lambda_max_lat, 1e-12))
+
+        row_labels = [
+            "Row 0\nOriginal &\nPCA Recon (Latent)",
+            f"Row 1\nLatent manifold\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
+            f"Row 2\nLatent manifold\nσ={sigma} unscaled\n(ref)",
+            "Row 3\nPixel manifold\nα=σ/√λ_max (decoded)",
+            f"Row 4\nLatent iso\nnoise σ={sigma}",
+            f"Row 5\nPixel iso\nnoise σ={sigma}",
+            "Row 6\nNeighbours",
+        ]
+        n_rows = 7
+        fig, axes = plt.subplots(n_rows, n_noisy_samples,
+                                 figsize=(3 * n_noisy_samples, 3.5 * n_rows))
+        axes = np.atleast_2d(axes)
+        for ax in axes.flat:
+            ax.axis("off")
+
+        for r, lbl in enumerate(row_labels):
+            _add_row_label(axes, r, lbl)
+
+        # Row 0: Original + PCA Reconstruction (Latent)
+        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 0].set_title("Original", fontsize=9)
+
+        if isinstance(manifold_sm_latent, ManifoldSmoother) and _cached_latent_pca is not None:
+            w_lat = whiten(query_vec, _cached_latent_pca.pca)
+            recon_z = unwhiten(w_lat, _cached_latent_pca.pca)
             with torch.no_grad():
                 z_t = torch.from_numpy(recon_z[None, :]).to(device=device, dtype=torch.float32)
                 x_recon = vae.decode(z_t).squeeze(0).cpu()
@@ -761,38 +921,59 @@ def save_sample_visualization(
                     x = F.interpolate(x, size=vae.image_size, mode="bilinear", align_corners=False)
                 mu, _ = vae.encode(x)
                 x_recon = vae.decode(mu).squeeze(0).cpu()
-        ax.imshow(_tensor_to_pil(x_recon))
-        ax.set_title("PCA Reconstruction (Latent)", fontsize=10)
-        ax.axis("off")
-        for i in range(2, n_noisy_samples):
-            fig.add_subplot(gs[0, i]).axis("off")
+        axes[0, 1].imshow(_tensor_to_pil(x_recon))
+        axes[0, 1].set_title("PCA Recon (Latent)", fontsize=9)
 
-        # Row 1: Latent whitened space noise (manifold smoother, decoded)
-        _draw_sample_row(gs, 1, "Samples with noise in whitened latent space",
-                         lambda: sample_latent(img_tensor, vae, manifold_sm_latent, device))
+        # Row 1: Latent manifold noise α = σ/√λ_max  (certified samples)
+        _latent_sample_fn = make_latent_sample_fn(img_tensor, vae, manifold_sm_latent, device)
+        for i in range(n_noisy_samples):
+            axes[1, i].imshow(_tensor_to_pil(_latent_sample_fn()))
+            if i == 0:
+                axes[1, i].set_title(f"Latent manifold  α={alpha_display:.4f}  (certified)", fontsize=9)
 
-        # Row 2: Pixel whitened space noise (for comparison)
-        _draw_sample_row(gs, 2, "Samples with noise in whitened pixel space",
-                         lambda: sample_pixel(img_tensor, manifold_sm_pixel))
+        # Row 2: Latent manifold noise σ unscaled (reference)
+        if isinstance(manifold_sm_latent, ManifoldSmoother) and _cached_latent_pca is not None:
+            def _sample_latent_unscaled():
+                w_anch = whiten(query_vec, _cached_latent_pca.pca)
+                noise = np.random.randn(len(w_anch)).astype(np.float32) * sigma
+                z_noised = unwhiten(w_anch + noise, _cached_latent_pca.pca)
+                with torch.no_grad():
+                    z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
+                    return vae.decode(z_t).squeeze(0).cpu()
+            for i in range(n_noisy_samples):
+                axes[2, i].imshow(_tensor_to_pil(_sample_latent_unscaled()))
+                if i == 0:
+                    axes[2, i].set_title(f"Latent manifold  σ={sigma} unscaled  (ref)", fontsize=9)
+        else:
+            for i in range(n_noisy_samples):
+                axes[2, i].imshow(_tensor_to_pil(sample_latent(img_tensor, vae, iso_latent, device)))
 
-        # Row 3: Latent Gaussian noise (decoded)
-        _draw_sample_row(gs, 3, "Samples with Gaussian noise in latent space",
-                         lambda: sample_latent(img_tensor, vae, iso_latent, device))
+        # Row 3: Pixel manifold noise α = σ/√λ_max  (decoded)
+        for i in range(n_noisy_samples):
+            axes[3, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, manifold_sm_pixel)))
+            if i == 0:
+                axes[3, i].set_title("Pixel manifold  α=σ/√λ_max  (decoded)", fontsize=9)
 
-        # Row 4: Pixel Gaussian noise (for comparison)
-        _draw_sample_row(gs, 4, "Samples with Gaussian noise in pixel space",
-                         lambda: sample_pixel(img_tensor, iso_pixel))
+        # Row 4: Latent Gaussian noise
+        for i in range(n_noisy_samples):
+            axes[4, i].imshow(_tensor_to_pil(sample_latent(img_tensor, vae, iso_latent, device)))
+            if i == 0:
+                axes[4, i].set_title(f"Latent iso noise  σ={sigma}", fontsize=9)
 
-        # Row 5: Neighbors
+        # Row 5: Pixel Gaussian noise
+        for i in range(n_noisy_samples):
+            axes[5, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            if i == 0:
+                axes[5, i].set_title(f"Pixel iso noise  σ={sigma}", fontsize=9)
+
+        # Row 6: Neighbours
         nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
                                  img_tensor.shape, vae, device, is_latent=True)
         for i in range(n_noisy_samples):
-            ax = fig.add_subplot(gs[5, i])
             if i < len(nn_imgs):
-                ax.imshow(_tensor_to_pil(nn_imgs[i]))
-            ax.axis("off")
+                axes[6, i].imshow(_tensor_to_pil(nn_imgs[i]))
             if i == 0:
-                ax.set_title("Neighbors", fontsize=10)
+                axes[6, i].set_title("Neighbours", fontsize=9)
 
     # ------------------------------------------------------------------
     # Title with certification result
@@ -803,7 +984,7 @@ def save_sample_visualization(
     smoothing_type = "Manifold" if cfg.smoothing.use_manifold else "Isotropic"
     fig.suptitle(
         f"Sample {sample_idx} | {cfg.smoothing.mode.capitalize()} {smoothing_type} | "
-        f"σ={cfg.smoothing.sigma} | True: {true_label} | Pred: {pred_label} | "
+        f"σ={sigma} | True: {true_label} | Pred: {pred_label} | "
         f"Radius: {radius:.4f} | {cert_status}",
         fontsize=11, fontweight="bold",
     )
@@ -1059,10 +1240,13 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "certified_correct": (cert.pred == label and not cert.abstained),
         }
 
-        # Volume computation: extract eigenvalues from manifold smoother
+        # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
         if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
             cached = pixel_smoother.compute_pca(img_tensor.numpy().reshape(-1))
+            _lmax = float(cached.pca.evals[0])
             result["eigenvalues"] = cached.pca.evals.tolist()
+            result["lambda_max"] = _lmax
+            result["alpha"] = float(cfg.smoothing.sigma) / float(np.sqrt(max(_lmax, 1e-12)))
         elif isinstance(latent_smoother, ManifoldSmoother) and cfg.smoothing.mode == "latent" and vae is not None:
             with torch.no_grad():
                 x_vae = img_tensor.unsqueeze(0).to(device)
@@ -1070,7 +1254,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                     x_vae = F.interpolate(x_vae, size=vae.image_size, mode="bilinear", align_corners=False)
                 mu, _ = vae.encode(x_vae)
             cached = latent_smoother.compute_pca(mu.cpu().numpy().reshape(-1))
+            _lmax = float(cached.pca.evals[0])
             result["eigenvalues"] = cached.pca.evals.tolist()
+            result["lambda_max"] = _lmax
+            result["alpha"] = float(cfg.smoothing.sigma) / float(np.sqrt(max(_lmax, 1e-12)))
 
         results.append(result)
         
@@ -1368,6 +1555,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         if cfg.output.save_per_sample:
             csv_path = paths.experiment_dir / "results.csv"
             fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "p_a_lower", "p_b_upper", "correct", "certified_correct",
+                          "lambda_max", "alpha",
                           "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
                           "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
             with open(csv_path, "w", newline="") as f:

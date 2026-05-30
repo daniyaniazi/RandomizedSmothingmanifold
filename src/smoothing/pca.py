@@ -80,21 +80,25 @@ def fit_local_pca(
 
 def whiten(vector: np.ndarray, pca: LocalPCA) -> np.ndarray:
     """Whiten a vector using local PCA.
-    
-    Projects vector into whitened space: w = (x @ V) / sqrt(λ)
-    
-    Note: The mean is NOT subtracted before whitening. The mean is only
-    used during unwhitening to shift the result back to the neighborhood center.
-    
+
+    Projects vector into whitened space: w = ((x - mean) @ V) / sqrt(λ)
+
+    The neighborhood mean is subtracted before projecting so that the
+    whitened anchor lives at the centre of the local coordinate frame.
+    This matches the notebook convention::
+
+        X_whitened = (X_orig - mean) @ (1/sqrt(ev)) * Vt.T
+
     Args:
         vector: Input vector (D,)
         pca: Local PCA object
-        
+
     Returns:
         Whitened vector (K,) where K = n_components
     """
     x = np.asarray(vector, dtype=np.float32).reshape(-1)
-    return (x @ pca.evecs) / np.sqrt(pca.evals)
+    x_centered = x - pca.mean
+    return (x_centered @ pca.evecs) / np.sqrt(pca.evals)
 
 
 def unwhiten(white_vector: np.ndarray, pca: LocalPCA) -> np.ndarray:

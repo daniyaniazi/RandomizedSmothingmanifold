@@ -162,10 +162,13 @@ class ManifoldSmoother(Smoother):
         Returns:
             Noisy vector (D,)
         """
-        # Whiten
+        # Whiten (mean-centered, matching notebook: X_whitened = (x - mean) @ (1/sqrt(ev)) * Vt.T)
         w = whiten(anchor, pca)
-        # Add isotropic noise in whitened space
-        noise = np.random.randn(len(w)).astype(np.float32) * self._sigma
+        # Scale noise by sigma / sqrt(lambda_max) so the maximum pixel-space std = sigma.
+        # This is alpha = sigma / sqrt(lambda_max) from the notebook Way-2 convention.
+        lambda_max = float(pca.evals[0])
+        alpha = self._sigma / np.sqrt(max(lambda_max, 1e-12))
+        noise = np.random.randn(len(w)).astype(np.float32) * alpha
         w_noisy = w + noise
         # Unwhiten back
         return unwhiten(w_noisy, pca)
