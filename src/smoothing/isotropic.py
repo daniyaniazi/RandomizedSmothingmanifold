@@ -7,6 +7,7 @@ This is the standard randomized smoothing approach.
 from __future__ import annotations
 
 import numpy as np
+import torch
 
 from .base import Smoother, SmoothingResult, gaussian_noise
 
@@ -73,3 +74,20 @@ class IsotropicSmoother(Smoother):
             noise=noise,
             radius=float(np.linalg.norm(noise)),
         )
+
+    # ------------------------------------------------------------------
+    # GPU batch API (training and certification)
+    # ------------------------------------------------------------------
+
+    def sample_batch_gpu(self, images: 'torch.Tensor', **kwargs) -> 'torch.Tensor':
+        """Add isotropic N(0, sigma^2 I) noise to a batch — fully on GPU.
+
+        Args:
+            images: any shape float32 tensor on GPU (e.g. (B,C,H,W) or (B,D))
+            **kwargs: ignored (for API compatibility with ManifoldSmoother)
+
+        Returns:
+            Noisy tensor same shape, on GPU.
+        """
+        import torch
+        return images + torch.randn_like(images) * self._sigma

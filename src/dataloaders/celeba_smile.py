@@ -26,9 +26,10 @@ Sample = Tuple[str, int]
 
 
 class SmileImageDataset(Dataset):
-    def __init__(self, samples: Sequence[Sample], transform=None):
+    def __init__(self, samples: Sequence[Sample], transform=None, return_index: bool = False):
         self.samples = list(samples)
         self.transform = transform
+        self.return_index = return_index
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -38,7 +39,10 @@ class SmileImageDataset(Dataset):
         image = Image.open(image_path).convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
-        return image, torch.tensor(float(label), dtype=torch.float32)
+        label_t = torch.tensor(float(label), dtype=torch.float32)
+        if self.return_index:
+            return image, label_t, index
+        return image, label_t
 
 
 @dataclass

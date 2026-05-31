@@ -1065,35 +1065,64 @@ def save_sample_visualization(
 @torch.no_grad()
 def certify_single_sample(
     classifier: torch.nn.Module,
-    sample_fn: Callable[[], torch.Tensor],
+    img_tensor: torch.Tensor,
+    smoother,
     n_samples: int,
     n0_samples: int,
     classifier_transform: transforms.Compose,
     device: torch.device,
     alpha_conf: float = 0.001,
     sigma: float = 0.25,
+    gpu_cache: Optional[dict] = None,
+    sample_index: Optional[int] = None,
 ) -> TokenCertificate:
-    classifier.eval()
-    if int(n0_samples) <= 0:
-        raise ValueError("Paper-aligned CERTIFY requires n0_samples > 0.")
-    if int(n_samples) <= 0:
-        raise ValueError("Paper-aligned CERTIFY requires n_samples > 0.")
-    class_counts_n0 = np.zeros(2, dtype=np.int64)
-    class_counts_n = np.zeros(2, dtype=np.int64)
+    """Certify one image using batched GPU noise sampling.
 
-    total_samples = int(max(0, n0_samples) + max(0, n_samples))
-    for sample_idx in range(total_samples):
-        noised_img = sample_fn()
-        noised_clipped = noised_img.clamp(-1, 1) * 0.5 + 0.5
-        noised_pil = transforms.ToPILImage()(noised_clipped)
-        x = classifier_transform(noised_pil).unsqueeze(0).to(device)
-        
-        logit = classifier(x).squeeze()
-        pred = 1 if torch.sigmoid(logit).item() > 0.5 else 0
-        if sample_idx < int(max(0, n0_samples)):
-            class_counts_n0[pred] += 1
+    All n0+n noise copies are generated and classified in one GPU batch
+    (or mini-batches if memory is tight), replacing the old Python loop.
+    """
+    classifier.eval()
+    if n0_samples <= 0 or n_samples <= 0:
+        raise ValueError("n0_samples and n_samples must be > 0.")
+
+    # Pre-process the clean image once
+    x_clean = classifier_transform(
+        transforms.ToPILImage()(img_tensor.clamp(-1, 1) * 0.5 + 0.5)
+    ).unsqueeze(0).to(device)  # (1, C, H, W)
+
+    total = n0_samples + n_samples
+    class_counts_n0 = np.zeros(2, dtype=np.int64)
+    class_counts_n  = np.zeros(2, dtype=np.int64)
+
+    # Build index tensor for manifold cache lookup
+    if gpu_cache is not None and sample_index is not None:
+        idx = torch.tensor([sample_index], device=device)  # (1,)
+
+    processed = 0
+    CHUNK = 256  # max samples per GPU forward to avoid OOM
+    while processed < total:
+        chunk = min(CHUNK, total - processed)
+        # Repeat clean image chunk times: (chunk, C, H, W)
+        x_rep = x_clean.expand(chunk, -1, -1, -1).clone()
+
+        # Add noise entirely on GPU
+        if gpu_cache is not None and sample_index is not None:
+            idx_rep = idx.expand(chunk)  # (chunk,)
+            x_noisy = smoother.sample_batch_gpu(x_rep, gpu_cache=gpu_cache, indices=idx_rep)
         else:
-            class_counts_n[pred] += 1
+            x_noisy = smoother.sample_batch_gpu(x_rep)
+
+        # Clamp, classify
+        logits = classifier(x_noisy.clamp(0, 1)).squeeze(-1)  # (chunk,)
+        preds  = (torch.sigmoid(logits) >= 0.5).long().cpu().numpy()
+
+        for j, pred in enumerate(preds):
+            global_idx = processed + j
+            if global_idx < n0_samples:
+                class_counts_n0[pred] += 1
+            else:
+                class_counts_n[pred]  += 1
+        processed += chunk
 
     return certify_token_from_counts_two_stage_paper(
         class_counts_n0=class_counts_n0,

@@ -78,6 +78,11 @@ class SmileSmoothingAugConfig:
 
     mode = "isotropic"  -> x' = x + N(0, sigma^2 I)   (no index needed)
     mode = "manifold"   -> x' = x + manifold noise     (requires pixel index)
+
+    Noise is sampled fresh every training step (Cohen et al. 2019 style).
+    For manifold mode, kNN+SVD is pre-computed once before the epoch loop
+    (either from a disk .npz cache or computed in-memory), then each step
+    does only cheap whiten → Gaussian → unwhiten.
     """
     enabled: bool = False
     mode: str = "isotropic"   # isotropic | manifold
@@ -85,8 +90,15 @@ class SmileSmoothingAugConfig:
     knn_k: int = 500
     eps_eig: float = 1e-6
     # Pre-built Annoy index path (required for manifold mode).
-    # If None and mode=manifold the index is built on the fly from the train set.
     index_path: Optional[str] = None
+    # Path to pre-computed PCA cache .npz from precompute_pca_cache.py.
+    # When set, manifold training uses cached mean/evals/evecs per image
+    # (keyed by filename stem) — no kNN/SVD at training time, fresh noise
+    # is sampled every step exactly like isotropic but in whitened space.
+    pca_cache_path: Optional[str] = None
+    # Use in-memory PCA cache for manifold on-the-fly smoothing (pre-computes
+    # kNN+SVD once before the epoch loop).  Set False to disable.
+    use_pca_cache: bool = True
 
 
 @dataclass

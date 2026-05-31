@@ -97,24 +97,157 @@ def build_smoother(cfg: SmileTrainingConfig) -> Optional[IsotropicSmoother | Man
         raise ValueError(f"Unknown smoothing_aug.mode: '{aug.mode}'. Choose 'isotropic' or 'manifold'.")
 
 
-def apply_smoother_to_batch(
-    images: torch.Tensor,
-    smoother: IsotropicSmoother | ManifoldSmoother,
-) -> torch.Tensor:
-    """Apply smoother to each image in a batch (CPU, numpy round-trip).
+# ---------------------------------------------------------------------------
+# GPU noise functions (no CPU round-trip)
+# ---------------------------------------------------------------------------
 
-    One noise sample per image per training step — this is the standard
-    Gaussian data augmentation from Cohen et al. (2019).
+def apply_isotropic_noise_gpu(images: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Add N(0, σ²I) noise — fully on GPU, zero CPU involvement."""
+    return images + torch.randn_like(images) * sigma
+
+
+def apply_manifold_noise_gpu(
+    images: torch.Tensor,
+    indices: torch.Tensor,
+    gpu_cache: dict,
+    sigma: float,
+) -> torch.Tensor:
+    """Add manifold noise (whiten → Gaussian → unwhiten) — fully on GPU.
+
+    Replicates ManifoldSmoother._sample_from_pca() in batched torch form:
+        w  = (x - mean) @ evecs / sqrt(evals)          # whiten
+        w' = w + N(0, (σ/√λ_max)² I)                  # add noise
+        x' = (w' * sqrt(evals)) @ evecs.T + mean       # unwhiten
+
+    Args:
+        images:    (B, C, H, W) float32 on GPU
+        indices:   (B,) long tensor — dataset sample indices for cache lookup
+        gpu_cache: dict with GPU tensors:
+                     'mean'  (N, D)
+                     'evals' (N, K)
+                     'evecs' (N, D, K)
+        sigma:     noise scale
+    Returns:
+        (B, C, H, W) noisy images on GPU
     """
     B, C, H, W = images.shape
-    noisy = []
-    imgs_np = images.cpu().numpy()  # (B, C, H, W)
-    for i in range(B):
-        flat = imgs_np[i].flatten().astype("float32")
-        noisy_flat = smoother.sample(flat)
-        noisy.append(noisy_flat.reshape(C, H, W))
-    noisy_np = np.stack(noisy, axis=0)  # (B, C, H, W)
-    return torch.from_numpy(noisy_np).to(images.device)
+    D = C * H * W
+
+    x     = images.view(B, D)                                   # (B, D)
+    mean  = gpu_cache['mean'][indices]                           # (B, D)
+    evecs = gpu_cache['evecs'][indices]                          # (B, D, K)
+    evals = gpu_cache['evals'][indices]                          # (B, K)
+
+    # Whiten: w = (x - mean) @ evecs / sqrt(evals)
+    x_c = (x - mean).unsqueeze(1)                               # (B, 1, D)
+    w   = torch.bmm(x_c, evecs).squeeze(1)                      # (B, K)
+    w   = w / torch.sqrt(evals.clamp(min=1e-12))                # (B, K)
+
+    # Noise scale: alpha = sigma / sqrt(lambda_max)
+    lambda_max = evals[:, 0].clamp(min=1e-12)                   # (B,)
+    alpha      = sigma / torch.sqrt(lambda_max)                  # (B,)
+    noise      = torch.randn_like(w) * alpha.unsqueeze(1)       # (B, K)
+    w_noisy    = w + noise                                       # (B, K)
+
+    # Unwhiten: x' = (w_noisy * sqrt(evals)) @ evecs.T + mean
+    w_scaled = w_noisy * torch.sqrt(evals.clamp(min=1e-12))     # (B, K)
+    x_noisy  = torch.bmm(
+        w_scaled.unsqueeze(1), evecs.transpose(1, 2)
+    ).squeeze(1) + mean                                          # (B, D)
+
+    return x_noisy.view(B, C, H, W)
+
+
+def build_gpu_pca_tensors_from_disk(
+    dataset,
+    npz_path: str,
+    device: torch.device,
+) -> dict:
+    """Load pre-computed PCA .npz and build GPU tensors aligned to dataset order.
+
+    Tensors are indexed by dataset sample index so each training batch can do
+    a single index_select — no string lookups at training time.
+
+    Returns:
+        dict with GPU tensors  mean (N,D), evals (N,K), evecs (N,D,K)
+    """
+    print(f"Loading PCA cache from disk: {npz_path}")
+    raw = np.load(npz_path)
+
+    npz_stems: set = {k[:-5] for k in raw.files if k.endswith("_mean")}
+    first_stem = next(iter(npz_stems))
+    D = int(raw[f"{first_stem}_mean"].shape[0])
+    K = int(raw[f"{first_stem}_evals"].shape[0])
+
+    N = len(dataset.samples)
+    means  = np.zeros((N, D), dtype=np.float32)
+    evals_ = np.zeros((N, K), dtype=np.float32)
+    evecs_ = np.zeros((N, D, K), dtype=np.float32)
+
+    missing = 0
+    for i, (img_path, _) in enumerate(dataset.samples):
+        stem = Path(img_path).stem
+        if stem in npz_stems:
+            means[i]  = raw[f"{stem}_mean"]
+            evals_[i] = raw[f"{stem}_evals"][:K]
+            evecs_[i] = raw[f"{stem}_evecs"][:, :K]
+        else:
+            missing += 1
+
+    if missing > 0:
+        print(f"  WARNING: {missing}/{N} images not in PCA cache — those get zero noise direction.")
+    print(f"  PCA tensors: N={N}, D={D}, K={K} → moving to {device}")
+    return {
+        'mean':  torch.from_numpy(means).to(device),
+        'evals': torch.from_numpy(evals_).to(device),
+        'evecs': torch.from_numpy(evecs_).to(device),
+    }
+
+
+def precompute_gpu_pca_tensors(
+    smoother: ManifoldSmoother,
+    dataset,
+    device: torch.device,
+) -> dict:
+    """Compute kNN+SVD once for every training image, return GPU tensors.
+
+    Called when no disk cache exists.  After this, every training step samples
+    noise with batched GPU ops only.
+
+    Returns:
+        dict with GPU tensors  mean (N,D), evals (N,K), evecs (N,D,K)
+    """
+    N = len(dataset.samples)
+    # Probe first image to get D and K
+    img0, _ = dataset[0]
+    flat0 = img0.numpy().flatten().astype("float32")
+    cached0 = smoother.compute_pca(flat0)
+    D = int(cached0.pca.mean.shape[0])
+    K = int(cached0.pca.evals.shape[0])
+
+    print(f"Pre-computing PCA for {N} images (D={D}, K={K}) — runs once before training ...")
+    means  = np.zeros((N, D), dtype=np.float32)
+    evals_ = np.zeros((N, K), dtype=np.float32)
+    evecs_ = np.zeros((N, D, K), dtype=np.float32)
+
+    means[0]  = cached0.pca.mean
+    evals_[0] = cached0.pca.evals[:K]
+    evecs_[0] = cached0.pca.evecs[:, :K]
+
+    for i in tqdm(range(1, N), desc="PCA precompute", leave=True):
+        img, _ = dataset[i]
+        flat = img.numpy().flatten().astype("float32")
+        cached = smoother.compute_pca(flat)
+        means[i]  = cached.pca.mean
+        evals_[i] = cached.pca.evals[:K]
+        evecs_[i] = cached.pca.evecs[:, :K]
+
+    print(f"  Done. Moving PCA tensors to {device} ...")
+    return {
+        'mean':  torch.from_numpy(means).to(device),
+        'evals': torch.from_numpy(evals_).to(device),
+        'evecs': torch.from_numpy(evecs_).to(device),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -123,21 +256,33 @@ def apply_smoother_to_batch(
 
 def run_epoch(
     model, loader, optimizer, criterion, device, train: bool, log_every: int,
-    smoother: Optional[IsotropicSmoother | ManifoldSmoother] = None,
+    aug_mode: Optional[str] = None,
+    sigma: float = 0.0,
+    gpu_cache: Optional[dict] = None,
 ):
     model.train(train)
     total_loss, total_acc, n_batches = 0.0, 0.0, 0
 
     with torch.set_grad_enabled(train):
-        for step, (images, labels) in enumerate(tqdm(loader, leave=False)):
+        for step, batch in enumerate(tqdm(loader, leave=False)):
+            # Batch may be (images, labels) or (images, labels, indices)
+            if len(batch) == 3:
+                images, labels, indices = batch
+                indices = indices.to(device)
+            else:
+                images, labels = batch
+                indices = None
             images = images.to(device)
             labels = labels.to(device)
 
             # ── Smoothing augmentation (train only) ───────────────────────
-            # Apply one noise sample per image, matching the certification
-            # distribution.  Eval always runs on clean images.
-            if train and smoother is not None:
-                images = apply_smoother_to_batch(images.cpu(), smoother).to(device)
+            # One fresh noise sample per image per step — fully on GPU.
+            # Eval always uses clean images.
+            if train and aug_mode is not None:
+                if aug_mode == "manifold" and gpu_cache is not None:
+                    images = apply_manifold_noise_gpu(images, indices, gpu_cache, sigma)
+                else:
+                    images = apply_isotropic_noise_gpu(images, sigma)
 
             logits = model(images).squeeze(-1)
             loss = criterion(logits, labels)
@@ -173,9 +318,12 @@ def train(cfg: SmileTrainingConfig) -> None:
     save_smile_resolved_config(cfg, output_dir / "resolved_config.yaml")
 
     # ── Smoother (optional training-time augmentation) ────────────────────
+    # Noise is sampled fresh every step during training (Cohen et al. 2019).
+    aug = cfg.smoothing_aug
+
     smoother = build_smoother(cfg)
     if smoother is not None:
-        print(f"Training WITH smoothing augmentation: mode={cfg.smoothing_aug.mode}  σ={cfg.smoothing_aug.sigma}")
+        print(f"Training WITH smoothing augmentation: mode={aug.mode}  σ={aug.sigma}")
     else:
         print("Training WITHOUT smoothing augmentation (clean images only).")
 
@@ -187,6 +335,30 @@ def train(cfg: SmileTrainingConfig) -> None:
     )
     print(f"Train: {len(data.train_loader)} batches | Val: {len(data.val_loader)} batches")
     print(f"Positive-weight: {data.pos_weight:.4f}")
+
+    # ── Build GPU PCA tensors for manifold noise (once, before epoch loop) ──
+    # kNN+SVD is computed once here.  Every training step then samples fresh
+    # noise with cheap batched GPU ops (whiten → Gaussian → unwhiten).
+    gpu_cache: Optional[dict] = None
+    if aug.enabled and aug.mode == "manifold":
+        assert isinstance(smoother, ManifoldSmoother)
+        if aug.pca_cache_path is not None:
+            if not Path(aug.pca_cache_path).exists():
+                raise FileNotFoundError(f"pca_cache_path not found: {aug.pca_cache_path}")
+            gpu_cache = smoother.build_gpu_cache_from_npz(
+                data.train_loader.dataset, aug.pca_cache_path, device
+            )
+        elif aug.use_pca_cache:
+            gpu_cache = smoother.build_gpu_cache(
+                data.train_loader.dataset, device
+            )
+        else:
+            print("PCA cache disabled (use_pca_cache=False) — kNN+SVD will run per step (slow).")
+        # Enable integer-index return so batches can index directly into GPU tensors
+        data.train_loader.dataset.return_index = True
+
+    # Determine effective aug mode (None = no augmentation)
+    aug_mode_active: Optional[str] = aug.mode if aug.enabled else None
 
     # Model
     model = build_resnet_classifier(
@@ -239,11 +411,11 @@ def train(cfg: SmileTrainingConfig) -> None:
             model, data.train_loader, optimizer, criterion, device,
             train=True, log_every=cfg.logging.log_every_n_steps,
             smoother=smoother,
+            gpu_cache=gpu_cache,
         )
         val_loss, val_acc = run_epoch(
             model, data.val_loader, optimizer, criterion, device,
             train=False, log_every=999,
-            smoother=None,  # always eval on clean images
         )
 
         print(f"  Train loss={train_loss:.4f}  acc={train_acc:.4f}")
@@ -293,7 +465,6 @@ def train(cfg: SmileTrainingConfig) -> None:
     test_loss, test_acc = run_epoch(
         model, data.test_loader, optimizer, criterion, device,
         train=False, log_every=999,
-        smoother=None,
     )
     print(f"  Test  loss={test_loss:.4f}  acc={test_acc:.4f}")
     history.append({"epoch": "test", "test_loss": test_loss, "test_acc": test_acc})

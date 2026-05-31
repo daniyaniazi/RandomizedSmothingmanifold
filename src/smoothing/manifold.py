@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+import torch
 
 from src.indexing.base import NeighborIndex, neighbor_vectors
 
@@ -206,3 +207,173 @@ class ManifoldSmoother(Smoother):
             noise=diff,
             radius=float(np.linalg.norm(diff)),
         )
+
+    # ------------------------------------------------------------------
+    # GPU batch API (training and certification)
+    # ------------------------------------------------------------------
+
+    def build_gpu_cache(self, dataset, device) -> dict:
+        """Pre-compute kNN+SVD for every image in dataset, return GPU tensors.
+
+        Call once before training or certification.  After this, every call to
+        sample_batch_gpu() does only cheap batched matmuls on GPU — no kNN, no SVD.
+
+        Args:
+            dataset: any object with .samples list of (img_path, label) tuples
+                     OR a plain list of flat numpy vectors.
+            device:  torch.device
+
+        Returns:
+            dict with GPU float32 tensors:
+                'mean'  (N, D)
+                'evals' (N, K)
+                'evecs' (N, D, K)
+        """
+        import torch
+        from pathlib import Path
+        from PIL import Image
+        from tqdm import tqdm
+
+        samples = dataset.samples if hasattr(dataset, 'samples') else dataset
+        N = len(samples)
+
+        # Probe first entry to get D and K
+        if isinstance(samples[0], (list, tuple)):
+            img_path = samples[0][0]
+            # load image the same way the dataloader does
+            from torchvision import transforms as T
+            _to_flat = lambda p: (
+                np.asarray(
+                    Image.open(p).convert('RGB').resize(
+                        (int(np.sqrt(self._index.dim // 3)),
+                         int(np.sqrt(self._index.dim // 3))),
+                        Image.BILINEAR),
+                    dtype=np.float32) / 255.0
+            ).flatten()
+            flat0 = _to_flat(img_path)
+        else:
+            flat0 = np.asarray(samples[0], dtype=np.float32).flatten()
+            _to_flat = lambda x: np.asarray(x, dtype=np.float32).flatten()
+
+        cached0 = self.compute_pca(flat0)
+        D = int(cached0.pca.mean.shape[0])
+        K = int(cached0.pca.evals.shape[0])
+
+        means  = np.zeros((N, D), dtype=np.float32)
+        evals_ = np.zeros((N, K), dtype=np.float32)
+        evecs_ = np.zeros((N, D, K), dtype=np.float32)
+        means[0]  = cached0.pca.mean
+        evals_[0] = cached0.pca.evals[:K]
+        evecs_[0] = cached0.pca.evecs[:, :K]
+
+        for i in tqdm(range(1, N), desc='build_gpu_cache', leave=True):
+            entry = samples[i]
+            flat = _to_flat(entry[0] if isinstance(entry, (list, tuple)) else entry)
+            c = self.compute_pca(flat)
+            means[i]  = c.pca.mean
+            evals_[i] = c.pca.evals[:K]
+            evecs_[i] = c.pca.evecs[:, :K]
+
+        print(f'GPU cache ready: N={N} D={D} K={K} device={device}')
+        return {
+            'mean':  torch.from_numpy(means).to(device),
+            'evals': torch.from_numpy(evals_).to(device),
+            'evecs': torch.from_numpy(evecs_).to(device),
+        }
+
+    def build_gpu_cache_from_npz(self, dataset, npz_path: str, device) -> dict:
+        """Load pre-computed PCA .npz and align to dataset order as GPU tensors.
+
+        Args:
+            dataset:  object with .samples list of (img_path, label)
+            npz_path: path to .npz saved by precompute_pca_cache.py
+            device:   torch.device
+
+        Returns:
+            dict with GPU float32 tensors  mean (N,D), evals (N,K), evecs (N,D,K)
+        """
+        import torch
+        from pathlib import Path
+
+        print(f'Loading PCA cache: {npz_path}')
+        raw = np.load(npz_path)
+        stems: set = {k[:-5] for k in raw.files if k.endswith('_mean')}
+        first = next(iter(stems))
+        D = int(raw[f'{first}_mean'].shape[0])
+        K = int(raw[f'{first}_evals'].shape[0])
+
+        N = len(dataset.samples)
+        means  = np.zeros((N, D), dtype=np.float32)
+        evals_ = np.zeros((N, K), dtype=np.float32)
+        evecs_ = np.zeros((N, D, K), dtype=np.float32)
+
+        missing = 0
+        for i, (img_path, _) in enumerate(dataset.samples):
+            stem = Path(img_path).stem
+            if stem in stems:
+                means[i]  = raw[f'{stem}_mean']
+                evals_[i] = raw[f'{stem}_evals'][:K]
+                evecs_[i] = raw[f'{stem}_evecs'][:, :K]
+            else:
+                missing += 1
+        if missing:
+            print(f'  WARNING: {missing}/{N} images missing from cache.')
+        print(f'  GPU tensors: N={N} D={D} K={K} -> {device}')
+        return {
+            'mean':  torch.from_numpy(means).to(device),
+            'evals': torch.from_numpy(evals_).to(device),
+            'evecs': torch.from_numpy(evecs_).to(device),
+        }
+
+    def sample_batch_gpu(
+        self,
+        images: 'torch.Tensor',
+        gpu_cache: dict,
+        indices: 'torch.Tensor',
+    ) -> 'torch.Tensor':
+        """Sample manifold noise for a batch — fully on GPU.
+
+        Implements whiten -> N(0, alpha^2 I) -> unwhiten in batched torch ops.
+        No CPU involved; noise is fresh every call.
+
+        Args:
+            images:    (B, C, H, W) float32 on GPU  -- training batch
+                       OR (B, D) flat vectors on GPU -- certification
+            gpu_cache: dict from build_gpu_cache / build_gpu_cache_from_npz
+                         'mean'  (N, D)
+                         'evals' (N, K)
+                         'evecs' (N, D, K)
+            indices:   (B,) long tensor -- row indices into gpu_cache tensors
+
+        Returns:
+            Noisy tensor same shape as images, on GPU.
+        """
+        import torch
+        shape = images.shape
+        if images.dim() == 4:
+            B, C, H, W = shape
+            x = images.view(B, C * H * W)
+        else:
+            B = shape[0]
+            x = images  # already (B, D)
+
+        mean  = gpu_cache['mean'][indices]    # (B, D)
+        evecs = gpu_cache['evecs'][indices]   # (B, D, K)
+        evals = gpu_cache['evals'][indices]   # (B, K)
+
+        # Whiten: w = (x - mean) @ evecs / sqrt(evals)
+        x_c = (x - mean).unsqueeze(1)                          # (B, 1, D)
+        w   = torch.bmm(x_c, evecs).squeeze(1)                 # (B, K)
+        w   = w / torch.sqrt(evals.clamp(min=1e-12))           # (B, K)
+
+        # Noise: alpha = sigma / sqrt(lambda_max)
+        alpha = self._sigma / torch.sqrt(evals[:, 0].clamp(min=1e-12))  # (B,)
+        noise = torch.randn_like(w) * alpha.unsqueeze(1)                # (B, K)
+        w_noisy = w + noise
+
+        # Unwhiten: x' = (w_noisy * sqrt(evals)) @ evecs.T + mean
+        w_s    = w_noisy * torch.sqrt(evals.clamp(min=1e-12))  # (B, K)
+        x_out  = torch.bmm(w_s.unsqueeze(1),
+                            evecs.transpose(1, 2)).squeeze(1) + mean  # (B, D)
+
+        return x_out.view(shape)
