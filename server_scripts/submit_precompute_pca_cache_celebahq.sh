@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 PARTITION="gpu20"
-TIME="24:00:00"
+TIME="72:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="32G"
@@ -63,7 +63,9 @@ SBATCH_CMD="sbatch \
             --index_path ${INDEX_PATH} \
             --image_size 512 \
             --knn_k ${KNN_K} \
-            --output_dir ${OUTPUT_DIR}\""
+            --output_dir ${OUTPUT_DIR} \
+            --workers ${CPUS} \
+            --chunk_size 32\""
 
 echo "Submitting PCA cache precompute: CelebA-HQ  knn_k=${KNN_K}"
 echo ""
