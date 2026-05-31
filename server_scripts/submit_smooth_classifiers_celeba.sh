@@ -44,7 +44,8 @@ TRAIN_CFG="src/configs/training/smile_resnet_celeba.yaml"
 BASE_CKPT="output/pretrained_model"
 PIXEL_INDEX="output/smile_classification/celeba/index/pixel/annoy/euclidean/index.ann"
 
-SIGMAS=(0.01 0.03 0.05 0.07 0.10 0.12 0.15 0.17 0.20 0.22 0.25 0.27 0.30 0.32 0.35 0.37 0.40 0.42 0.45 0.47 0.50 0.55)
+# SIGMAS=(0.01 0.03 0.05 0.07 0.10 0.12 0.15 0.17 0.20 0.22 0.25 0.27 0.30 0.32 0.35 0.37 0.40 0.42 0.45 0.47 0.50 0.55)
+SIGMAS=(0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 0.50)
 MODES=(isotropic manifold)
 
 skipped=0; trained=0; failed=0
