@@ -12,6 +12,13 @@ Output:
         {name}_evals  (K,)    eigenvalues
         {name}_evecs  (D, K)  eigenvectors
 
+Strategy (memory-safe):
+    Each thread writes its result immediately to a tiny per-image .npz file
+    inside a scratch directory.  The main thread only tracks stem names
+    (strings) -- never holds large arrays in RAM.  After all images are done,
+    a single merge pass reads the per-image files and writes the final .npz.
+    Re-runs skip any stem whose per-image scratch file already exists.
+
 Usage:
     python -m src.experiments.training.resnet_smile.precompute_pca_cache \\
         --image_dir /BS/databases08/CelebA/img_align_celeba \\
@@ -27,10 +34,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
@@ -43,31 +48,53 @@ def load_image_flat(path: Path, size: int) -> np.ndarray:
     return (np.asarray(img, dtype=np.float32) / 255.0).flatten()
 
 
-def save_cache(cache: dict, path: Path) -> None:
-    """Atomically write cache to .npz via a temp file to avoid corruption."""
-    tmp = path.with_suffix(".tmp.npz")
-    npz_dict: dict = {}
-    for stem, (mean, evals, evecs) in cache.items():
-        npz_dict[f"{stem}_mean"]  = mean
-        npz_dict[f"{stem}_evals"] = evals
-        npz_dict[f"{stem}_evecs"] = evecs
-    np.savez_compressed(tmp, **npz_dict)
-    tmp.replace(path)  # atomic rename — safe even if killed mid-write
-
-
 def _process_one(
     img_path: Path,
     image_size: int,
     smoother,
-) -> Tuple[str, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute PCA for a single image. Runs inside a thread.
+    scratch_dir: Path,
+) -> str:
+    """Compute PCA for one image and write immediately to scratch_dir/{stem}.npz.
 
-    numpy SVD releases the GIL so multiple threads run truly in parallel.
-    The smoother/index is shared (Annoy read-only queries are thread-safe).
+    Returns the stem on success.  Never keeps large arrays in the calling
+    thread after the file is written -- RAM per thread is O(one image).
+    numpy SVD releases the GIL so threads truly run in parallel.
     """
+    out_file = scratch_dir / f"{img_path.stem}.npz"
+    if out_file.exists():
+        return img_path.stem  # already done from a previous run
+
     flat = load_image_flat(img_path, image_size)
     cached = smoother.compute_pca(flat)
-    return img_path.stem, cached.pca.mean, cached.pca.evals, cached.pca.evecs
+    np.savez_compressed(
+        out_file,
+        mean=cached.pca.mean,
+        evals=cached.pca.evals,
+        evecs=cached.pca.evecs,
+    )
+    return img_path.stem
+
+
+def merge_scratch_to_npz(scratch_dir: Path, cache_file: Path, stems: list) -> None:
+    """Read per-image scratch files and write a single merged .npz.
+
+    Streams one image at a time -- RAM during merge is O(one image).
+    """
+    print(f"Merging {len(stems)} per-image files -> {cache_file}", flush=True)
+    tmp = cache_file.with_suffix(".tmp.npz")
+    npz_dict: dict = {}
+    for stem in tqdm(stems, desc="Merging", unit="img"):
+        f = scratch_dir / f"{stem}.npz"
+        if not f.exists():
+            print(f"  WARNING: scratch file missing for {stem}, skipping", flush=True)
+            continue
+        d = np.load(f)
+        npz_dict[f"{stem}_mean"]  = d["mean"]
+        npz_dict[f"{stem}_evals"] = d["evals"]
+        npz_dict[f"{stem}_evecs"] = d["evecs"]
+    np.savez_compressed(tmp, **npz_dict)
+    tmp.replace(cache_file)
+    print("Merge complete.", flush=True)
 
 
 def main() -> None:
@@ -87,7 +114,9 @@ def main() -> None:
     parser.add_argument("--extensions", nargs="+",
                         default=[".jpg", ".jpeg", ".png"])
     parser.add_argument("--workers", type=int, default=1,
-                        help="Number of parallel threads (numpy SVD releases GIL, so >1 is effective)")
+                        help="Number of parallel threads (numpy SVD releases GIL)")
+    parser.add_argument("--merge_only", action="store_true",
+                        help="Skip computation, only merge existing scratch files into final .npz")
     args = parser.parse_args()
 
     image_dir = Path(args.image_dir)
@@ -104,34 +133,34 @@ def main() -> None:
     ])
     if not all_images:
         print(f"ERROR: no images in {image_dir}"); sys.exit(1)
-    print(f"Found {len(all_images)} images")
+    print(f"Found {len(all_images)} images", flush=True)
 
-    # Output path
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_file = out_dir / f"knn{args.knn_k}_{image_dir.name}_pca_cache.npz"
 
-    # Load existing cache if present
-    cache: dict = {}
-    if cache_file.exists():
-        print(f"Loading existing cache: {cache_file}")
-        data = np.load(cache_file)
-        stems: set = set()
-        for key in data.files:
-            stems.add(key.rsplit("_", 1)[0])
-        for stem in stems:
-            cache[stem] = (data[f"{stem}_mean"], data[f"{stem}_evals"], data[f"{stem}_evecs"])
-        print(f"  {len(cache)} images already cached")
+    # Scratch dir: one small .npz per image, survives restarts
+    scratch_dir = out_dir / f"knn{args.knn_k}_{image_dir.name}_scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
 
-    # Filter to only uncached images
-    todo = [p for p in all_images if p.stem not in cache]
-    if not todo:
-        print("All images already cached — nothing to do.")
+    all_stems = [p.stem for p in all_images]
+
+    if args.merge_only:
+        merge_scratch_to_npz(scratch_dir, cache_file, all_stems)
         return
+
+    todo = [p for p in all_images if not (scratch_dir / f"{p.stem}.npz").exists()]
+    already_done = len(all_images) - len(todo)
+    if already_done:
+        print(f"  {already_done} images already in scratch — skipping", flush=True)
+    if not todo:
+        print("All images computed. Running merge step...", flush=True)
+        merge_scratch_to_npz(scratch_dir, cache_file, all_stems)
+        return
+
     print(f"Images to process: {len(todo)}  workers: {args.workers}", flush=True)
 
-    # Load index + smoother once in the main process — shared across threads.
-    # Annoy read-only queries are thread-safe; numpy SVD releases the GIL.
+    # Load index + smoother once — shared read-only across all threads
     from src.indexing.base import load_index
     from src.smoothing.manifold import ManifoldSmoother
     dim = args.image_size * args.image_size * 3
@@ -139,56 +168,28 @@ def main() -> None:
     smoother = ManifoldSmoother(sigma=0.25, index=index, knn_k=args.knn_k, eps_eig=args.eps_eig)
     print("Index loaded — starting threads.", flush=True)
 
-    CHECKPOINT_EVERY = 200  # checkpoint after every N completed images
-
-    new_count = 0
-    cache_lock = threading.Lock()
-
+    failed = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(_process_one, p, args.image_size, smoother): p
+            pool.submit(_process_one, p, args.image_size, smoother, scratch_dir): p
             for p in todo
         }
         pbar = tqdm(total=len(todo), desc="Computing PCA", unit="img")
         for future in as_completed(futures):
             try:
-                stem, mean, evals, evecs = future.result()
+                future.result()
             except Exception as exc:  # noqa: BLE001
                 img_path = futures[future]
                 print(f"\nWARNING: failed {img_path.name}: {exc}", flush=True)
-                pbar.update(1)
-                continue
-
-            with cache_lock:
-                cache[stem] = (mean, evals, evecs)
-                new_count += 1
-                should_save = (new_count % CHECKPOINT_EVERY == 0)
-
-            if should_save:
-                with cache_lock:
-                    snapshot = dict(cache)
-                save_cache(snapshot, cache_file)
-
+                failed += 1
             pbar.update(1)
         pbar.close()
 
-    if new_count == 0:
-        print("No new entries were computed.")
-        return
+    print(f"Computation done. Failed: {failed}", flush=True)
 
-    # Final save
-    save_cache(cache, cache_file)
-    print(f"Done. New entries: {new_count}  Total: {len(cache)}")
-    print(f"Cache file: {cache_file}")
-
-    if new_count == 0:
-        print("No new entries were computed.")
-        return
-
-    # Final save
-    save_cache(cache, cache_file)
-    print(f"Done. New entries: {new_count}  Total: {len(cache)}")
-    print(f"Cache file: {cache_file}")
+    # Merge scratch -> final .npz  (streams one image at a time, O(1) RAM)
+    merge_scratch_to_npz(scratch_dir, cache_file, all_stems)
+    print(f"Cache file: {cache_file}", flush=True)
 
 
 if __name__ == "__main__":
