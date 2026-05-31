@@ -36,7 +36,7 @@ INDEX_PATH="${PROJECT_ROOT}/output/smile_classification/celeba/index/pixel/annoy
 OUTPUT_DIR="${PROJECT_ROOT}/output/pca_cache/celeba"
 CACHE_FILE="${OUTPUT_DIR}/knn${KNN_K}_img_align_celeba_pca_cache.npz"
 
-WRAP_PREFIX="cd $PROJECT_ROOT && export PYTHONPATH=$PROJECT_ROOT:\$PYTHONPATH && \
+WRAP_PREFIX="cd $PROJECT_ROOT && export PYTHONPATH=$PROJECT_ROOT:\${PYTHONPATH:-} && \
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh && conda activate smoothing"
 
 mkdir -p "${PROJECT_ROOT}/output/slurm"
