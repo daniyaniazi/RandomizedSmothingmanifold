@@ -143,6 +143,27 @@ def main() -> None:
     scratch_dir = out_dir / f"knn{args.knn_k}_{image_dir.name}_scratch"
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
+    # Migrate any stems already present in the final .npz into scratch files
+    # so they are recognised as done and not recomputed.
+    if cache_file.exists():
+        print(f"Found existing cache {cache_file} — migrating already-done stems to scratch...", flush=True)
+        data = np.load(cache_file)
+        existing_stems = set()
+        for key in data.files:
+            existing_stems.add(key.rsplit("_", 1)[0])
+        migrated = 0
+        for stem in existing_stems:
+            sfile = scratch_dir / f"{stem}.npz"
+            if not sfile.exists():
+                np.savez_compressed(
+                    sfile,
+                    mean=data[f"{stem}_mean"],
+                    evals=data[f"{stem}_evals"],
+                    evecs=data[f"{stem}_evecs"],
+                )
+                migrated += 1
+        print(f"  Migrated {migrated} new, {len(existing_stems)-migrated} already in scratch. Total known: {len(existing_stems)}", flush=True)
+
     all_stems = [p.stem for p in all_images]
 
     if args.merge_only:
