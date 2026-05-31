@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-IMAGE_DIR="/BS/databases08/CelebA-HQ/data512x512"
+IMAGE_DIR="/BS/databases08/CelebA-HQ/data512x512/train"
 INDEX_PATH="${PROJECT_ROOT}/output/smile_classification/celebahq/index/pixel/annoy/euclidean/index.ann"
 OUTPUT_DIR="${PROJECT_ROOT}/output/pca_cache/celebahq"
 CACHE_FILE="${OUTPUT_DIR}/knn${KNN_K}_data512x512_pca_cache.npz"
