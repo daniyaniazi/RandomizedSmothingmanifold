@@ -31,7 +31,7 @@ model:
 train:
   seed: 73
   device: cuda
-  epochs: 30  # more epochs needed at higher resolution
+  epochs: 10  # more epochs needed at higher resolution
   lr: 0.00005  # lower LR for 512x512 stability
   weight_decay: 0.0001
   grad_clip_norm: 1.0
