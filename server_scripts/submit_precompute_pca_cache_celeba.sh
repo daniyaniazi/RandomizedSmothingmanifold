@@ -64,8 +64,7 @@ SBATCH_CMD="sbatch \
             --image_size 224 \
             --knn_k ${KNN_K} \
             --output_dir ${OUTPUT_DIR} \
-            --workers ${CPUS} \
-            --chunk_size 64\""
+            --workers ${CPUS}\""
 
 echo "Submitting PCA cache precompute: CelebA  knn_k=${KNN_K}"
 echo ""
