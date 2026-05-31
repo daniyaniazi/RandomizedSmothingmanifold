@@ -14,7 +14,7 @@ dataset:
   annotation_format: celeba
   file_extension: ""
   num_workers: 4
-  subset_size: 300  # use subset for faster testing, set null for full dataset
+  subset_size: 100  # use subset for faster testing, set null for full dataset
 
 model:
   name: resnet18

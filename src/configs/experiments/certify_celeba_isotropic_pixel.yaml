@@ -14,7 +14,7 @@ dataset:
   annotation_format: celeba
   file_extension: ""
   num_workers: 4
-  subset_size: 300
+  subset_size: 100
 
 model:
   name: resnet18
