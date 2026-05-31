@@ -59,7 +59,8 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
     set -a; source "$PROJECT_ROOT/.env"; set +a
 fi
 
-SIGMAS=(0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 0.50)
+# SIGMAS=(0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 0.50)
+SIGMAS=(0.10 0.20 0.30 0.40 0.50)
 N_SIGMA=${#SIGMAS[@]}
 
 if [[ ${SLURM_ARRAY_TASK_ID} -lt ${N_SIGMA} ]]; then
