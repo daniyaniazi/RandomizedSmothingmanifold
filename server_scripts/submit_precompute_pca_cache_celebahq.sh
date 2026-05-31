@@ -34,7 +34,7 @@ done
 IMAGE_DIR="/BS/databases08/CelebA-HQ/data512x512/train"
 INDEX_PATH="${PROJECT_ROOT}/output/smile_classification/celebahq/index/pixel/annoy/euclidean/index.ann"
 OUTPUT_DIR="${PROJECT_ROOT}/output/pca_cache/celebahq"
-CACHE_FILE="${OUTPUT_DIR}/knn${KNN_K}_data512x512_pca_cache.npz"
+CACHE_FILE="${OUTPUT_DIR}/knn${KNN_K}_train_pca_cache.npz"
 
 WRAP_PREFIX="cd $PROJECT_ROOT && export PYTHONPATH=$PROJECT_ROOT:\${PYTHONPATH:-} && \
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh && conda activate smoothing"
@@ -61,7 +61,7 @@ SBATCH_CMD="sbatch \
         python -m src.experiments.training.resnet_smile.precompute_pca_cache \
             --image_dir ${IMAGE_DIR} \
             --index_path ${INDEX_PATH} \
-            --image_size 224 \
+            --image_size 512 \
             --knn_k ${KNN_K} \
             --output_dir ${OUTPUT_DIR}\""
 
