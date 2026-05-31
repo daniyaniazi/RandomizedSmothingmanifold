@@ -106,7 +106,7 @@ WORKER
 sed -i "s|__PROJECT_ROOT__|${PROJECT_ROOT}|g" "$JOB_SCRIPT"
 chmod +x "$JOB_SCRIPT"
 
-N_TASKS=20
+N_TASKS=10
 ARRAY_SPEC="0-$(( N_TASKS - 1 ))%${MAX_CONCURRENT}"
 
 SBATCH_CMD="sbatch \
@@ -124,7 +124,7 @@ SBATCH_CMD="sbatch \
 echo "============================================"
 echo " CelebA-HQ smoothed-classifier training array"
 echo "============================================"
-echo "  Tasks      : $N_TASKS  (10 sigmas x 2 modes)"
+echo "  Tasks      : $N_TASKS  (5 sigmas x 2 modes)"
 echo "  Concurrent : $MAX_CONCURRENT"
 echo "  Array spec : $ARRAY_SPEC"
 echo "  Partition  : $PARTITION"
