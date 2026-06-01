@@ -1077,7 +1077,7 @@ def save_sample_visualization(
                                  label="KNN neighbours (OOD attr=1)")
                     if _no_attr.any():
                         _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
-                                     s=12, alpha=0.65, color="orange", linewidths=0, zorder=2,
+                                     s=10, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
                                      label="KNN (OOD attr=0, risky)")
                     # Manifold MC noisy samples — green circles
                     _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
@@ -1511,7 +1511,21 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     
     # Certification loop with checkpointing
     checkpoint_every = cfg.checkpoint.checkpoint_every if cfg.checkpoint.enabled else 0
-    
+
+    # Build OOD attr map once (filename -> 1/0) — used for both KNN OOD fraction and viz
+    _ood_attr_map_global: Optional[dict] = None
+    _ood_attr_name_global = getattr(cfg.dataset, "ood_attribute", None)
+    if _ood_attr_name_global:
+        _attr_path_g = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
+        _lines_g = [l.strip() for l in _attr_path_g.read_text().splitlines() if l.strip()]
+        _attr_names_g = _lines_g[1].split()
+        if _ood_attr_name_global in _attr_names_g:
+            _aidx_g = _attr_names_g.index(_ood_attr_name_global)
+            _ood_attr_map_global = {}
+            for _row_g in _lines_g[2:]:
+                _parts_g = _row_g.split()
+                _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
+
     for idx in tqdm(range(start_idx, len(test_samples)), desc="Certifying (test)", initial=start_idx, total=len(test_samples)):
         img_path, label = test_samples[idx]
         img = Image.open(img_path).convert("RGB")
@@ -1557,6 +1571,19 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "ood_attr_value": 1 if ood_attr else None,  # all certified images have attr=1
         }
 
+        # KNN neighbour OOD fraction: how many of the k neighbours have ood_attr == 1
+        result["nn_ood_count"] = None
+        result["nn_ood_frac"]  = None
+        if _ood_attr_map_global is not None:
+            _knn_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
+            if _knn_index is not None and hasattr(_knn_index, "index") and hasattr(_knn_index.index, "get_nns_by_vector") and hasattr(_knn_index, "filenames"):
+                _qvec = img_tensor.numpy().flatten().astype(np.float32)
+                _k_nn = cfg.smoothing.knn_k
+                _nn_ids = _knn_index.index.get_nns_by_vector(_qvec.tolist(), _k_nn, include_distances=False)
+                _nn_ood_count = sum(_ood_attr_map_global.get(Path(_knn_index.filenames[_nid]).name, 0) for _nid in _nn_ids)
+                result["nn_ood_count"] = int(_nn_ood_count)
+                result["nn_ood_frac"]  = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
+
         # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
         if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
             cached = pixel_smoother.compute_pca(img_tensor.numpy().reshape(-1))
@@ -1590,19 +1617,6 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         if cfg.output.save_visualizations and idx < cfg.output.num_viz_samples:
             viz_dir = paths.experiment_dir / "visualizations"
             current_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
-            # Build OOD attr map once (filename -> 1/0) for neighbour highlighting
-            _ood_attr_map: Optional[dict] = None
-            _ood_attr_name = getattr(cfg.dataset, "ood_attribute", None)
-            if _ood_attr_name:
-                _attr_path = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
-                _lines = [l.strip() for l in _attr_path.read_text().splitlines() if l.strip()]
-                _attr_names = _lines[1].split()
-                if _ood_attr_name in _attr_names:
-                    _aidx = _attr_names.index(_ood_attr_name)
-                    _ood_attr_map = {}
-                    for _row in _lines[2:]:
-                        _parts = _row.split()
-                        _ood_attr_map[_parts[0]] = 1 if int(_parts[1 + _aidx]) == 1 else 0
             save_sample_visualization(
                 viz_dir=viz_dir,
                 sample_idx=idx,
@@ -1617,7 +1631,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 device=device,
                 pixel_smoother=pixel_smoother,
                 latent_smoother=latent_smoother,
-                ood_attr_map=_ood_attr_map,
+                ood_attr_map=_ood_attr_map_global,
             )
         
         # Save checkpoint periodically
@@ -1887,6 +1901,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             csv_path = paths.experiment_dir / "results.csv"
             fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "p_a_lower", "p_b_upper", "correct", "certified_correct",
                           "ood_attribute", "ood_attr_value",
+                          "nn_ood_count", "nn_ood_frac",
                           "lambda_max", "alpha",
                           "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
                           "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
