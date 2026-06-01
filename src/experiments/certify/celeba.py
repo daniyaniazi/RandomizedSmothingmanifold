@@ -1767,6 +1767,22 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 _parts_g = _row_g.split()
                 _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
 
+    # Precompute a fast int8 label array indexed by Annoy ID for mc_ood_count.
+    # Avoids per-sample Python dict + Path() overhead inside the tight MC loop.
+    _pixel_ood_labels: Optional[np.ndarray] = None  # shape (N_train,) int8
+    _pixel_index_vectors: Optional[np.ndarray] = None  # shape (N_train, D) float32 if stored
+    if (_ood_attr_map_global is not None
+            and pixel_index is not None
+            and hasattr(pixel_index, "filenames")):
+        _pixel_ood_labels = np.array(
+            [_ood_attr_map_global.get(Path(fn).name, 0) for fn in pixel_index.filenames],
+            dtype=np.int8,
+        )
+        # If the index stores vectors in memory, we can use brute-force numpy batch NN
+        # (much faster than N sequential Annoy queries for small N_mc).
+        if pixel_index.vectors is not None:
+            _pixel_index_vectors = np.asarray(pixel_index.vectors, dtype=np.float32)
+
     for idx in tqdm(range(start_idx, len(test_samples)), desc="Certifying (test)", initial=start_idx, total=len(test_samples)):
         img_path, label = test_samples[idx]
         img = Image.open(img_path).convert("RGB")
@@ -1844,17 +1860,29 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 result["nn_ood_count"] = int(_nn_ood_count)
                 result["nn_ood_frac"]  = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
 
-        # MC OOD fraction from actual certification n-phase samples (manifold only).
+        # MC OOD fraction from actual certification n-phase samples.
         # Each raw sample is looked up in pixel_index → inherits OOD label of nearest neighbour.
         result["mc_ood_count"] = None
         result["mc_ood_frac"]  = None
-        if _cert_raw_samples is not None and len(_cert_raw_samples) > 0:
-            _mc_hits = 0
-            for _rs in _cert_raw_samples:
-                _rv = _rs.numpy().flatten().astype(np.float32)
-                _nid = pixel_index.index.get_nns_by_vector(_rv.tolist(), 1, include_distances=False)
-                if _nid:
-                    _mc_hits += int(_ood_attr_map_global.get(Path(pixel_index.filenames[_nid[0]]).name, 0))
+        if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
+                and _pixel_ood_labels is not None):
+            _mc_mat = np.stack(
+                [_rs.numpy().flatten().astype(np.float32) for _rs in _cert_raw_samples]
+            )  # (N_mc, D)
+            if _pixel_index_vectors is not None:
+                # Brute-force batch NN: (N_mc, N_train) distances → argmin per row
+                # Uses float32 matmul trick: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a·b^T
+                _sq_a = np.sum(_mc_mat ** 2, axis=1, keepdims=True)       # (N_mc, 1)
+                _sq_b = np.sum(_pixel_index_vectors ** 2, axis=1)          # (N_train,)
+                _dists2 = _sq_a + _sq_b - 2.0 * (_mc_mat @ _pixel_index_vectors.T)  # (N_mc, N_train)
+                _nn_ids = np.argmin(_dists2, axis=1)                       # (N_mc,)
+            else:
+                # Fallback: Annoy queries, but at least avoid Path/dict inside loop
+                _nn_ids = np.array([
+                    pixel_index.index.get_nns_by_vector(_rv.tolist(), 1, include_distances=False)[0]
+                    for _rv in _mc_mat
+                ], dtype=np.int64)
+            _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
             result["mc_ood_count"] = _mc_hits
             result["mc_ood_frac"]  = float(_mc_hits) / len(_cert_raw_samples)
 
