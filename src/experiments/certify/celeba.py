@@ -398,11 +398,17 @@ def load_or_build_pixel_index(
     index_path = index_dir / "index.ann"
     lock_path = index_dir / "index.lock"
     
+    # Filenames list in the same order as vectors were inserted into the index.
+    # Attached to the NeighborIndex so OOD lookup code can resolve neighbour IDs → filenames.
+    _fnames = [str(p) for p, _ in train_samples]
+
     # Check if index already exists (fast path, no lock needed)
     if index_path.exists() and not force_rebuild:
         dim = 3 * image_size * image_size
         _log(f"Loading existing pixel index: {index_path}")
-        return load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
+        _idx = load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
+        _idx.filenames = _fnames
+        return _idx
     
     # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -413,7 +419,9 @@ def load_or_build_pixel_index(
         if index_path.exists() and not force_rebuild:
             dim = 3 * image_size * image_size
             _log(f"Loading existing pixel index (built by another job): {index_path}")
-            return load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
+            _idx = load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
+            _idx.filenames = _fnames
+            return _idx
         
         _log(f"Building pixel index from {len(train_samples)} samples (metric={metric})...")
         
@@ -432,6 +440,7 @@ def load_or_build_pixel_index(
         )
         
         _log(f"Pixel index saved: {index_path} ({len(train_samples)} items)")
+        artifacts.index.filenames = _fnames
         return artifacts.index
 
 
@@ -447,11 +456,16 @@ def load_or_build_latent_index(
     """Build or load latent-space index using generic utilities."""
     index_path = index_dir / "index.ann"
     lock_path = index_dir / "index.lock"
+
+    # Filenames list in insertion order — attached to the index for OOD neighbour lookup.
+    _fnames = [str(p) for p, _ in train_samples]
     
     # Check if index already exists (fast path, no lock needed)
     if index_path.exists() and not force_rebuild:
         _log(f"Loading existing latent index: {index_path}")
-        return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
+        _idx = load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
+        _idx.filenames = _fnames
+        return _idx
     
     # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -461,7 +475,9 @@ def load_or_build_latent_index(
         # Re-check after acquiring lock
         if index_path.exists() and not force_rebuild:
             _log(f"Loading existing latent index (built by another job): {index_path}")
-            return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
+            _idx = load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
+            _idx.filenames = _fnames
+            return _idx
         
         _log(f"Building latent index from {len(train_samples)} samples (metric={metric})...")
         
@@ -493,6 +509,7 @@ def load_or_build_latent_index(
         )
         
         _log(f"Latent index saved: {index_path} ({len(train_samples)} items)")
+        artifacts.index.filenames = _fnames
         return artifacts.index
 
 
@@ -1285,6 +1302,151 @@ def save_sample_visualization(
             if i == 0:
                 axes[6, i].set_title("Neighbours", fontsize=9)
 
+        # ── Latent Manifold geometry figure ───────────────────────────────
+        if isinstance(manifold_sm_latent, ManifoldSmoother) and _cached_latent_pca is not None:
+            try:
+                from matplotlib.patches import Ellipse as _Ellipse
+                import matplotlib.pyplot as _plt_geom
+
+                _pca_obj = _cached_latent_pca.pca
+                _nbrs = _cached_latent_pca.neighbors  # (k, D_latent) centred
+                _ev = np.asarray(_pca_obj.evals, dtype=np.float64)
+                _Vt = _pca_obj.evecs.T  # (n_comp, D_latent)
+                _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
+                _lambda_max_lat = float(_ev[0])
+                _sqrt_lambda_max_lat = float(np.sqrt(_lambda_max_lat))
+                _anchor_2d = (query_vec - np.asarray(_pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
+                _neigh_2d = _nbrs.astype(np.float64) @ _Vt[:2].T
+
+                _a1 = float(sigma * np.sqrt(_ev_norm[0]))
+                _a2 = float(sigma * np.sqrt(_ev_norm[1]))
+                _mid_idx = len(_ev_norm) // 2
+                _a_mid  = float(sigma * np.sqrt(_ev_norm[_mid_idx]))
+                _a_last = float(sigma * np.sqrt(_ev_norm[-1]))
+                _pc1_std = float(np.std(_neigh_2d[:, 0]))
+                _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
+                _zoom_mid = 0.10 * _pc1_range
+                _zoom_tight = _a1
+
+                _zoom_labels = [
+                    (None,        f"[A] Full cloud  σ/std={sigma / (_pc1_std + 1e-12):.4f}", _a1, _a2),
+                    (_zoom_mid,   f"[B] Mid-zoom  ±{_zoom_mid:.2f}", _a1, _a2),
+                    (_zoom_tight, f"[C] Tight ±σ={_zoom_tight:.4f}  a2={_a2:.4f}", _a1, _a2),
+                    (_zoom_tight, f"[D] Mid PC (k={_mid_idx})  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/_a1:.4f}", _a1, _a_mid),
+                    (_zoom_tight, f"[E] Last PC (k={len(_ev_norm)-1})  a_last={_a_last:.6f}\na_last/a1={_a_last/_a1:.6f}", _a1, _a_last),
+                ]
+
+                # Generate MC noisy samples in latent manifold space → project to PCA-2D
+                _N_mc = cfg.smoothing.n_samples
+                _mc_samples_2d = []
+                for _ in range(_N_mc):
+                    _ns = manifold_sm_latent.sample_from_cached(_cached_latent_pca)
+                    _ns_centred = _ns - np.asarray(_pca_obj.mean, dtype=np.float64)
+                    _mc_samples_2d.append(_ns_centred @ _Vt[:2].T)
+                _mc_2d = np.array(_mc_samples_2d)  # (N_mc, 2)
+
+                # OOD flag per latent neighbour
+                _nn_has_attr = np.zeros(len(_neigh_2d), dtype=bool)
+                if ood_attr_map is not None and index is not None and hasattr(index, "filenames"):
+                    _nn_ids_ood = index.index.get_nns_by_vector(
+                        query_vec.astype(np.float32),
+                        len(_neigh_2d), include_distances=False,
+                    ) if hasattr(index.index, "get_nns_by_vector") else []
+                    for _ni, _nid in enumerate(_nn_ids_ood[:len(_neigh_2d)]):
+                        _fname = Path(index.filenames[_nid]).name if hasattr(index, "filenames") else ""
+                        _nn_has_attr[_ni] = bool(ood_attr_map.get(_fname, 0))
+
+                # Per-MC-sample OOD label via nearest KNN neighbour in 2D PCA space
+                if ood_attr_map is not None and len(_neigh_2d) > 0:
+                    _mc_nn_dists = np.linalg.norm(
+                        _mc_2d[:, None, :] - _neigh_2d[None, :, :], axis=-1
+                    )
+                    _mc_nn_idx = np.argmin(_mc_nn_dists, axis=1)
+                    _mc_is_ood = _nn_has_attr[_mc_nn_idx]
+                else:
+                    _mc_is_ood = np.zeros(len(_mc_2d), dtype=bool)
+
+                _gfig, _gaxes = _plt_geom.subplots(1, 5, figsize=(22, 5.5), facecolor="white")
+                _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
+                _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
+                _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
+                                  float(np.max(_y_all) - np.min(_y_all)), 1e-6)
+                _n_ood_mc_total    = int(_mc_is_ood.sum())
+                _n_notood_mc_total = int((~_mc_is_ood).sum())
+
+                for _gax, (_zr, _gtitle, _ea1, _ea2) in zip(_gaxes, _zoom_labels):
+                    if _zr is None:
+                        _mask = np.ones(len(_neigh_2d), dtype=bool)
+                        _mask_mc = np.ones(len(_mc_2d), dtype=bool)
+                    else:
+                        _mask = (
+                            (_neigh_2d[:, 0] >= _anchor_2d[0] - _zr) & (_neigh_2d[:, 0] <= _anchor_2d[0] + _zr) &
+                            (_neigh_2d[:, 1] >= _anchor_2d[1] - _zr) & (_neigh_2d[:, 1] <= _anchor_2d[1] + _zr)
+                        )
+                        _mask_mc = (
+                            (_mc_2d[:, 0] >= _anchor_2d[0] - _zr) & (_mc_2d[:, 0] <= _anchor_2d[0] + _zr) &
+                            (_mc_2d[:, 1] >= _anchor_2d[1] - _zr) & (_mc_2d[:, 1] <= _anchor_2d[1] + _zr)
+                        )
+                    _has_attr = _mask & _nn_has_attr
+                    _no_attr  = _mask & ~_nn_has_attr
+                    _gax.scatter(_neigh_2d[_has_attr, 0], _neigh_2d[_has_attr, 1],
+                                 s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
+                                 label="KNN neighbours (OOD attr=1)")
+                    if _no_attr.any():
+                        _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
+                                     s=10, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
+                                     label="KNN (OOD attr=0, risky)")
+                    _mc_vis_ood     = _mask_mc & _mc_is_ood
+                    _mc_vis_not_ood = _mask_mc & ~_mc_is_ood
+                    _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
+                                 s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in OOD territory ({_n_ood_mc_total}/{_N_mc})")
+                    _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
+                                 s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in non-OOD territory ({_n_notood_mc_total}/{_N_mc})")
+                    _gax.add_patch(_plt_geom.Circle(
+                        (_anchor_2d[0], _anchor_2d[1]), sigma,
+                        fill=False, edgecolor="tab:blue", linewidth=2.5,
+                        linestyle=(0, (4, 2)), alpha=0.95, zorder=3,
+                        label=f"Iso circle r=σ={sigma}",
+                    ))
+                    _gax.add_patch(_Ellipse(
+                        (_anchor_2d[0], _anchor_2d[1]),
+                        width=2.0 * _ea1, height=2.0 * _ea2,
+                        fill=False, edgecolor="tab:orange", linewidth=2.5,
+                        linestyle="solid", alpha=0.95, zorder=3,
+                        label=f"Mani ellipse a1={_ea1:.4f} a2={_ea2:.4f}",
+                    ))
+                    _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
+                                 c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
+                    if _zr is None:
+                        _gax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
+                        _gax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
+                    else:
+                        _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
+                        _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
+                    _gax.set_aspect("equal")
+                    _gax.set_title(_gtitle, fontsize=8.5)
+                    _gax.set_xlabel(f"PC1 (std={_pc1_std:.2f})")
+                    _gax.set_ylabel("PC2")
+                    _gax.grid(alpha=0.25)
+                    _gax.legend(fontsize=7, loc="upper right")
+
+                _ood_tag_lat = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
+                _gfig.suptitle(
+                    f"Latent Manifold: Circle + Ellipse Geometry (idx={sample_idx})  "
+                    f"| λ_max={_lambda_max_lat:.4f}  √λ_max={_sqrt_lambda_max_lat:.4f}  "
+                    f"|  α=σ/√λ_max={alpha_display:.4f}  (α/σ={alpha_display/sigma:.4f})\n"
+                    f"σ={sigma}  |  K={manifold_sm_latent.knn_k if hasattr(manifold_sm_latent, 'knn_k') else '?'}  |  PC1 std={_pc1_std:.3f}{_ood_tag_lat}",
+                    fontsize=11, y=1.02,
+                )
+                _plt_geom.tight_layout()
+                _geom_lat_path = viz_dir / f"sample_{sample_idx:04d}_geometry_latent.png"
+                _gfig.savefig(_geom_lat_path, dpi=150, bbox_inches="tight")
+                _plt_geom.close(_gfig)
+            except Exception as _geom_err_lat:
+                _log(f"Latent geometry figure skipped for sample {sample_idx}: {_geom_err_lat}")
+
     # ------------------------------------------------------------------
     # Title with certification result
     # ------------------------------------------------------------------
@@ -1531,7 +1693,13 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             metric=cfg.index.metric,
         )
     
-    if cfg.smoothing.mode in ("latent", "both") and cfg.smoothing.use_manifold and vae is not None:
+    # Load latent index for manifold mode, AND for isotropic latent when OOD tracking is needed
+    # (latent_index is used as the query index for nn_ood_count in latent mode).
+    _need_latent_index = (
+        cfg.smoothing.mode in ("latent", "both") and vae is not None and
+        (cfg.smoothing.use_manifold or _need_pixel_index_for_ood)
+    )
+    if _need_latent_index:
         latent_index = load_or_build_latent_index(
             train_samples, vae, paths.latent_index_dir, cfg.index.n_trees, device,
             metric=cfg.index.metric,
@@ -1654,13 +1822,22 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         }
 
         # KNN neighbour OOD fraction: how many of the k neighbours have ood_attr == 1
-        # Only meaningful for manifold runs (pixel_index built); None for isotropic.
+        # Works for both manifold and isotropic runs whenever an index is available.
         result["nn_ood_count"] = None
         result["nn_ood_frac"]  = None
-        if _ood_attr_map_global is not None and cfg.smoothing.use_manifold:
+        if _ood_attr_map_global is not None:
             _knn_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
             if _knn_index is not None and hasattr(_knn_index, "index") and hasattr(_knn_index.index, "get_nns_by_vector") and hasattr(_knn_index, "filenames"):
-                _qvec = img_tensor.numpy().flatten().astype(np.float32)
+                # Use latent encoding as query for latent index; pixel flatten for pixel index
+                if cfg.smoothing.mode == "latent" and vae is not None:
+                    with torch.no_grad():
+                        _x_q = img_tensor.unsqueeze(0).to(device)
+                        if _x_q.shape[-1] != vae.image_size or _x_q.shape[-2] != vae.image_size:
+                            _x_q = F.interpolate(_x_q, size=vae.image_size, mode="bilinear", align_corners=False)
+                        _mu_q, _ = vae.encode(_x_q)
+                    _qvec = _mu_q.squeeze(0).cpu().numpy().astype(np.float32)
+                else:
+                    _qvec = img_tensor.numpy().flatten().astype(np.float32)
                 _k_nn = cfg.smoothing.knn_k
                 _nn_ids = _knn_index.index.get_nns_by_vector(_qvec.tolist(), _k_nn, include_distances=False)
                 _nn_ood_count = sum(_ood_attr_map_global.get(Path(_knn_index.filenames[_nid]).name, 0) for _nid in _nn_ids)
@@ -1787,7 +1964,26 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         metrics[f"class_{cls_name}_correct"] = cls_correct
         metrics[f"class_{cls_name}_accuracy"] = cls_correct / len(cls_results) if cls_results else 0.0
         metrics[f"class_{cls_name}_mean_radius"] = float(np.mean(cls_radii)) if cls_radii else 0.0
-    
+
+    # ── OOD neighbour + MC hit-rate aggregates (reported for both iso and manifold) ──
+    _nn_fracs = [r["nn_ood_frac"] for r in results if r.get("nn_ood_frac") is not None]
+    _mc_fracs = [r["mc_ood_frac"] for r in results if r.get("mc_ood_frac") is not None]
+    _nn_counts = [r["nn_ood_count"] for r in results if r.get("nn_ood_count") is not None]
+    _mc_counts = [r["mc_ood_count"] for r in results if r.get("mc_ood_count") is not None]
+    metrics["ood_stats"] = {
+        "ood_attribute": ood_attr if ood_attr else None,
+        # KNN neighbour OOD fraction (how many of k nearest neighbours have ood_attr=1)
+        "nn_samples_with_data": len(_nn_fracs),
+        "mean_nn_ood_frac":   float(np.mean(_nn_fracs))   if _nn_fracs   else None,
+        "median_nn_ood_frac": float(np.median(_nn_fracs)) if _nn_fracs   else None,
+        "mean_nn_ood_count":  float(np.mean(_nn_counts))  if _nn_counts  else None,
+        # MC sample OOD hit-rate (fraction of n-phase certification samples landing in OOD territory)
+        "mc_samples_with_data": len(_mc_fracs),
+        "mean_mc_ood_frac":   float(np.mean(_mc_fracs))   if _mc_fracs   else None,
+        "median_mc_ood_frac": float(np.median(_mc_fracs)) if _mc_fracs   else None,
+        "mean_mc_ood_count":  float(np.mean(_mc_counts))  if _mc_counts  else None,
+    }
+
     # Print results
     _log("=" * 70)
     _log(f"CERTIFICATION RESULTS: {cfg.experiment_name}")
@@ -1988,7 +2184,20 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                  f"geom_factor={vol['mean_geometry_factor']:.2f}, eff_rank={vol['mean_effective_rank']:.1f}")
         elif vol["mean_log_vol_iso_D"] is not None:
             _log(f"Volume (iso, D={ambient_dim}): mean_log_vol_iso_D={vol['mean_log_vol_iso_D']:.2f}")
-    
+
+    # Log OOD stats summary
+    _ood_s = metrics.get("ood_stats", {})
+    if _ood_s.get("mean_nn_ood_frac") is not None or _ood_s.get("mean_mc_ood_frac") is not None:
+        _log(f"OOD stats  [{_ood_s.get('ood_attribute')}=1]:")
+        if _ood_s.get("mean_nn_ood_frac") is not None:
+            _log(f"  KNN neighbour OOD frac: mean={_ood_s['mean_nn_ood_frac']:.3f}  "
+                 f"median={_ood_s['median_nn_ood_frac']:.3f}  "
+                 f"(n={_ood_s['nn_samples_with_data']})")
+        if _ood_s.get("mean_mc_ood_frac") is not None:
+            _log(f"  MC sample   OOD frac:   mean={_ood_s['mean_mc_ood_frac']:.3f}  "
+                 f"median={_ood_s['median_mc_ood_frac']:.3f}  "
+                 f"(n={_ood_s['mc_samples_with_data']})")
+
     # Save results
     if cfg.output.save_results:
         (paths.experiment_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
