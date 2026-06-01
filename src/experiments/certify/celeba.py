@@ -796,104 +796,73 @@ def save_sample_visualization(
             import matplotlib.pyplot as _plt_geom
             from sklearn.decomposition import PCA as _PCA
 
-            # PCA on KNN neighbours (from pixel index)
-            _flat = query_vec  # already computed above
-            _iso_sm = iso_pixel
-            if index is not None and hasattr(index.index, "get_nns_by_vector"):
-                _nn_ids = index.index.get_nns_by_vector(_flat, 500, include_distances=False)
-                _nn_vecs = np.array([index.index.get_item_vector(i) for i in _nn_ids], dtype=np.float32)
-            else:
-                _nn_vecs = None
+            # PCA fit on MC noisy samples (iso geometry: no KNN, just noise cloud around anchor)
+            _flat = query_vec
 
-            # Generate N Monte Carlo noisy samples in pixel space → project to PCA-2D
-            _N_mc = 300
+            # Generate N Monte Carlo noisy samples in pixel space
+            _N_mc = 500
             _mc_flat = np.stack([
                 _flat + np.random.randn(*_flat.shape).astype(np.float32) * sigma
                 for _ in range(_N_mc)
             ])  # (N, D)
 
-            if _nn_vecs is not None and len(_nn_vecs) >= 2:
-                _pca2 = _PCA(n_components=2).fit(_nn_vecs)
-                _neigh_2d = _pca2.transform(_nn_vecs)
-                _anchor_2d = _pca2.transform(_flat.reshape(1, -1))[0]
-                _mc_2d = _pca2.transform(_mc_flat)
+            # Fit PCA on the MC cloud itself (centred on anchor)
+            _pca2 = _PCA(n_components=2).fit(_mc_flat)
+            _anchor_2d = _pca2.transform(_flat.reshape(1, -1))[0]
+            _mc_2d = _pca2.transform(_mc_flat)
 
-                # OOD flag per neighbour
-                _nn_has_attr = np.zeros(len(_nn_ids), dtype=bool)
-                if ood_attr_map is not None and index is not None and hasattr(index, "filenames"):
-                    for _ni, _nid in enumerate(_nn_ids):
-                        _fname = Path(index.filenames[_nid]).name if hasattr(index, "filenames") else ""
-                        _nn_has_attr[_ni] = bool(ood_attr_map.get(_fname, 0))
+            _pc1_std = float(np.std(_mc_2d[:, 0]))
+            _pc2_std = float(np.std(_mc_2d[:, 1]))
+            _zoom_mid = 3 * sigma
+            _zoom_tight = sigma
+            _zoom_specs = [
+                (None,        f"[A] Full cloud  σ/std={sigma/(_pc1_std+1e-12):.3f}"),
+                (_zoom_mid,   f"[B] Mid-zoom ±3σ={_zoom_mid:.4f}"),
+                (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
+            ]
 
-                _pc1_std = float(np.std(_neigh_2d[:, 0]))
-                _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
-                _zoom_mid = 0.10 * _pc1_range
-                _zoom_tight = sigma
-                _zoom_specs = [
-                    (None,        f"[A] Full cloud  σ/std={sigma/(_pc1_std+1e-12):.3f}"),
-                    (_zoom_mid,   f"[B] Mid-zoom ±{_zoom_mid:.3f}"),
-                    (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
-                ]
+            _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
+            _mc_pad = 0.05 * max(float(np.ptp(_mc_2d[:, 0])), float(np.ptp(_mc_2d[:, 1])), 1e-6)
 
-                _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
-                _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
-                _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
-                _pad = 0.05 * max(float(np.ptp(_x_all)), float(np.ptp(_y_all)), 1e-6)
+            for _gax, (_zr, _gtitle) in zip(_gaxes, _zoom_specs):
+                if _zr is None:
+                    _mask_mc = np.ones(len(_mc_2d), dtype=bool)
+                else:
+                    _mask_mc = (
+                        (np.abs(_mc_2d[:, 0] - _anchor_2d[0]) <= _zr) &
+                        (np.abs(_mc_2d[:, 1] - _anchor_2d[1]) <= _zr)
+                    )
 
-                for _gax, (_zr, _gtitle) in zip(_gaxes, _zoom_specs):
-                    if _zr is None:
-                        _mask_n = np.ones(len(_neigh_2d), dtype=bool)
-                        _mask_mc = np.ones(len(_mc_2d), dtype=bool)
-                    else:
-                        _mask_n = (
-                            (np.abs(_neigh_2d[:, 0] - _anchor_2d[0]) <= _zr) &
-                            (np.abs(_neigh_2d[:, 1] - _anchor_2d[1]) <= _zr)
-                        )
-                        _mask_mc = (
-                            (np.abs(_mc_2d[:, 0] - _anchor_2d[0]) <= _zr) &
-                            (np.abs(_mc_2d[:, 1] - _anchor_2d[1]) <= _zr)
-                        )
+                # Iso MC noisy samples — blue (no KNN for isotropic)
+                _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                             s=6, alpha=0.40, color="#4c78a8", marker="+", linewidths=0.8,
+                             zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
 
-                    # neighbours: grey, OOD highlighted orange
-                    _no_ood = _mask_n & ~_nn_has_attr
-                    _yes_ood = _mask_n & _nn_has_attr
-                    _gax.scatter(_neigh_2d[_no_ood, 0],  _neigh_2d[_no_ood, 1],
-                                 s=5, alpha=0.25, color="#aaaaaa", linewidths=0, zorder=1, label="KNN neighbours")
-                    if _yes_ood.any():
-                        _gax.scatter(_neigh_2d[_yes_ood, 0], _neigh_2d[_yes_ood, 1],
-                                     s=12, alpha=0.65, color="orange", linewidths=0, zorder=2,
-                                     label="KNN (OOD attr)")
+                # iso circle
+                _gax.add_patch(_plt_geom.Circle(
+                    (_anchor_2d[0], _anchor_2d[1]), sigma,
+                    fill=False, edgecolor="tab:blue", linewidth=2,
+                    linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle r={sigma}",
+                ))
+                _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
+                             c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
+                if _zr is None:
+                    _gax.set_xlim(float(np.min(_mc_2d[:, 0])) - _mc_pad, float(np.max(_mc_2d[:, 0])) + _mc_pad)
+                    _gax.set_ylim(float(np.min(_mc_2d[:, 1])) - _mc_pad, float(np.max(_mc_2d[:, 1])) + _mc_pad)
+                else:
+                    _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
+                    _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
+                _gax.set_aspect("equal")
+                _gax.set_title(_gtitle, fontsize=9)
+                _gax.set_xlabel(f"PC1 (MC std={_pc1_std:.4f})")
+                _gax.set_ylabel(f"PC2 (MC std={_pc2_std:.4f})")
+                _gax.grid(alpha=0.25)
+                _gax.legend(fontsize=7, loc="upper right")
 
-                    # Iso MC noisy samples — blue
-                    _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                                 s=6, alpha=0.40, color="#4c78a8", marker="+", linewidths=0.8,
-                                 zorder=3, label="Iso noisy samples")
-
-                    # iso circle
-                    _gax.add_patch(_plt_geom.Circle(
-                        (_anchor_2d[0], _anchor_2d[1]), sigma,
-                        fill=False, edgecolor="tab:blue", linewidth=2,
-                        linestyle=(0, (4, 2)), alpha=0.9, zorder=3, label=f"Iso circle r=σ={sigma}",
-                    ))
-                    _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
-                                 c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
-                    if _zr is None:
-                        _gax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
-                        _gax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
-                    else:
-                        _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
-                        _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
-                    _gax.set_aspect("equal")
-                    _gax.set_title(_gtitle, fontsize=9)
-                    _gax.set_xlabel(f"PC1 (cloud std={_pc1_std:.2f})")
-                    _gax.set_ylabel(f"PC2 (cloud std={float(np.std(_neigh_2d[:,1])):.2f})")
-                    _gax.grid(alpha=0.25)
-                    _gax.legend(fontsize=7, loc="upper right")
-
-                _ood_tag = f"  |  OOD attr highlighted" if ood_attr_map is not None else ""
+                _ood_tag = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
                 _gfig.suptitle(
                     f"Isotropic: Circle Geometry (idx={sample_idx})\n"
-                    f"σ list=[{sigma}]  |  K=500  |  PC1 std={_pc1_std:.3f}{_ood_tag}",
+                    f"σ={sigma}  |  MC samples={_N_mc}  |  PC1 std={_pc1_std:.4f}  |  PC2 std={_pc2_std:.4f}{_ood_tag}",
                     fontsize=11,
                 )
                 _plt_geom.tight_layout()
@@ -1142,12 +1111,12 @@ def save_sample_visualization(
                     _gax.grid(alpha=0.25)
                     _gax.legend(fontsize=7, loc="upper right")
 
-                _ood_tag_mani = f"  |  OOD attr (orange)" if ood_attr_map is not None else ""
+                _ood_tag_mani = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
                 _gfig.suptitle(
                     f"Manifold: Circle + Ellipse Geometry (idx={sample_idx})  "
                     f"| λ_max={_lambda_max:.4f}  √λ_max={_sqrt_lambda_max:.4f}  "
                     f"|  α=σ/√λ_max={alpha_display:.4f}  (α/σ={alpha_display/sigma:.4f})\n"
-                    f"σ list=[{sigma}]  |  K=500  |  PC1 std={_pc1_std:.3f}{_ood_tag_mani}",
+                    f"σ={sigma}  |  K=500  |  PC1 std={_pc1_std:.3f}{_ood_tag_mani}",
                     fontsize=11, y=1.02,
                 )
                 _plt_geom.tight_layout()
@@ -1270,10 +1239,14 @@ def save_sample_visualization(
     pred_label = "smile" if pred == 1 else "no smile"
     true_label = "smile" if label == 1 else "no smile"
     smoothing_type = "Manifold" if cfg.smoothing.use_manifold else "Isotropic"
+    _ood_title = ""
+    _ood_attr_name = getattr(cfg.dataset, "ood_attribute", None) if hasattr(cfg, "dataset") else None
+    if _ood_attr_name:
+        _ood_title = f"  |  OOD: {_ood_attr_name}=1"
     fig.suptitle(
         f"Sample {sample_idx} | {cfg.smoothing.mode.capitalize()} {smoothing_type} | "
         f"σ={sigma} | True: {true_label} | Pred: {pred_label} | "
-        f"Radius: {radius:.4f} | {cert_status}",
+        f"Radius: {radius:.4f} | {cert_status}{_ood_title}",
         fontsize=11, fontweight="bold",
     )
 
@@ -1400,6 +1373,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         "train_samples": len(train_samples),
         "test_samples": len(test_samples),
         "seed": cfg.seed,
+        "ood_attribute": ood_attr if ood_attr else None,
+        "ood_attr_value": 1 if ood_attr else None,  # only attr=1 images are certified
+        "ood_balanced": cfg.dataset.ood_balanced if ood_attr else None,
     }
     (paths.dataset_dir / "dataset_info.json").write_text(json.dumps(dataset_info, indent=2))
     
@@ -1462,8 +1438,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # CelebA: 224×224, CelebA-HQ: 512×512 (set in config).
     pixel_size = cfg.model.input_size
     
-    # Build pixel index for pixel mode OR for latent manifold mode (needed for comparison viz rows)
-    if cfg.smoothing.use_manifold:
+    # Build pixel index for pixel manifold mode or latent manifold comparison viz
+    if cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent", "both") and cfg.output.save_visualizations):
         pixel_index = load_or_build_pixel_index(
             train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees
         )
@@ -1561,6 +1537,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "p_b_upper": cert.p_b_upper,
             "correct": (cert.pred == label) if not cert.abstained else False,
             "certified_correct": (cert.pred == label and not cert.abstained),
+            "ood_attribute": ood_attr if ood_attr else None,
+            "ood_attr_value": 1 if ood_attr else None,  # all certified images have attr=1
         }
 
         # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
@@ -1892,6 +1870,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         if cfg.output.save_per_sample:
             csv_path = paths.experiment_dir / "results.csv"
             fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "p_a_lower", "p_b_upper", "correct", "certified_correct",
+                          "ood_attribute", "ood_attr_value",
                           "lambda_max", "alpha",
                           "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
                           "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]

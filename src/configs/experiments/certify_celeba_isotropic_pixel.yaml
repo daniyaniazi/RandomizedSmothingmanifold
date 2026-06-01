@@ -15,6 +15,10 @@ dataset:
   file_extension: ""
   num_workers: 4
   subset_size: 100
+  # OOD attribute — must match certify_celeba_pixel.yaml for fair iso vs manifold comparison
+  ood_attribute: Mouth_Slightly_Open
+  ood_balanced: true
+  ood_seed: 73
 
 model:
   name: resnet18
