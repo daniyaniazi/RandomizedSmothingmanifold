@@ -1535,9 +1535,13 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             # Default to pixel isotropic
             sample_fn = make_pixel_sample_fn(img_tensor, pixel_smoother)
         
+        # Determine which smoother to use for this sample
+        _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
+
         cert = certify_single_sample(
             classifier=classifier,
-            sample_fn=sample_fn,
+            img_tensor=img_tensor,
+            smoother=_active_smoother,
             n_samples=cfg.smoothing.n_samples,
             n0_samples=int(cfg.smoothing.n0_samples),
             classifier_transform=classifier_transform,
