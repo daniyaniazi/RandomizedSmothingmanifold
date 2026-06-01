@@ -1536,7 +1536,7 @@ def certify_single_sample(
             idx_rep = idx.expand(chunk)  # (chunk,)
             x_noisy = smoother.sample_batch_gpu(x_rep, gpu_cache=gpu_cache, indices=idx_rep)
         elif sample_fn is not None:
-            # CPU fallback: use pre-built sample_fn (kNN+SVD cached, works for ManifoldSmoother).
+            # CPU loop: use pre-built sample_fn (kNN+SVD cached, needed for ManifoldSmoother).
             # sample_fn() returns a normalized tensor in smooth_transform space; undo normalization
             # → PIL → apply classifier_transform to match the GPU path's input space.
             processed_samples = []
@@ -1559,6 +1559,14 @@ def certify_single_sample(
         # Clamp, classify
         logits = classifier(x_noisy.clamp(0, 1)).squeeze(-1)  # (chunk,)
         preds  = (torch.sigmoid(logits) >= 0.5).long().cpu().numpy()
+
+        # Collect exact GPU-generated n-phase samples (for iso GPU batch path where sample_fn=None).
+        # x_noisy is already classified — pulling it to CPU here adds only a memcpy, not a
+        # re-forward. This gives the exact same samples that were used for certification.
+        if _raw_n_samples is not None and sample_fn is None:
+            for _ci in range(chunk):
+                if processed + _ci >= n0_samples:
+                    _raw_n_samples.append(x_noisy[_ci].detach().cpu())
 
         for j, pred in enumerate(preds):
             global_idx = processed + j
@@ -1803,6 +1811,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                     and hasattr(pixel_index, "index")
                     and hasattr(pixel_index.index, "get_nns_by_vector")
                     and hasattr(pixel_index, "filenames"))
+        _is_iso = not cfg.smoothing.use_manifold
         cert, _cert_raw_samples = certify_single_sample(
             classifier=classifier,
             img_tensor=img_tensor,
@@ -1813,7 +1822,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             device=device,
             alpha_conf=cfg.alpha_conf,
             sigma=cfg.smoothing.sigma,
-            sample_fn=sample_fn,
+            # Iso: pass sample_fn=None → GPU batch path (fast). Exact cert samples are
+            # collected directly from x_noisy inside certify_single_sample (memcpy only).
+            # Manifold: must pass sample_fn → CPU loop (PCA cached, unavoidable).
+            sample_fn=None if _is_iso else sample_fn,
             collect_n_samples=_collect,
         )
         
