@@ -800,7 +800,7 @@ def save_sample_visualization(
             _flat = query_vec
 
             # Generate N Monte Carlo noisy samples in pixel space
-            _N_mc = 500
+            _N_mc = cfg.smoothing.n_samples
             _mc_flat = np.stack([
                 _flat + np.random.randn(*_flat.shape).astype(np.float32) * sigma
                 for _ in range(_N_mc)
@@ -1059,7 +1059,7 @@ def save_sample_visualization(
                 ]
 
                 # ── Generate Monte Carlo noisy samples in manifold space → project to PCA-2D
-                _N_mc = 300
+                _N_mc = cfg.smoothing.n_samples
                 _mc_samples_2d = []
                 for _ in range(_N_mc):
                     _ns = manifold_sm.sample_from_cached(_cached_pca)
@@ -1645,7 +1645,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 and hasattr(pixel_index, "index")
                 and hasattr(pixel_index.index, "get_nns_by_vector")
                 and hasattr(pixel_index, "filenames")):
-            _N_mc_csv = 100
+            _N_mc_csv = cfg.smoothing.n_samples  # use certification MC sample count
             _mc_ood_hits = 0
             for _ in range(_N_mc_csv):
                 _s = sample_fn()  # (C,H,W) normalized tensor
