@@ -1274,6 +1274,7 @@ def certify_single_sample(
     sigma: float = 0.25,
     gpu_cache: Optional[dict] = None,
     sample_index: Optional[int] = None,
+    sample_fn: Optional[callable] = None,
 ) -> TokenCertificate:
     """Certify one image using batched GPU noise sampling.
 
@@ -1299,6 +1300,9 @@ def certify_single_sample(
 
     processed = 0
     CHUNK = 256  # max samples per GPU forward to avoid OOM
+    # Pre-compute normalization constants for CPU fallback denormalization
+    _smooth_mean = torch.tensor(CELEBA_MEAN).view(3, 1, 1)
+    _smooth_std  = torch.tensor(CELEBA_STD).view(3, 1, 1)
     while processed < total:
         chunk = min(CHUNK, total - processed)
         # Repeat clean image chunk times: (chunk, C, H, W)
@@ -1308,6 +1312,17 @@ def certify_single_sample(
         if gpu_cache is not None and sample_index is not None:
             idx_rep = idx.expand(chunk)  # (chunk,)
             x_noisy = smoother.sample_batch_gpu(x_rep, gpu_cache=gpu_cache, indices=idx_rep)
+        elif sample_fn is not None:
+            # CPU fallback: use pre-built sample_fn (kNN+SVD cached, works for ManifoldSmoother).
+            # sample_fn() returns a normalized tensor in smooth_transform space; undo normalization
+            # → PIL → apply classifier_transform to match the GPU path's input space.
+            processed_samples = []
+            for _ in range(chunk):
+                s = sample_fn()  # (C, H, W) in smooth_transform space
+                s_01 = (s * _smooth_std + _smooth_mean).clamp(0, 1)
+                pil = transforms.ToPILImage()(s_01)
+                processed_samples.append(classifier_transform(pil))
+            x_noisy = torch.stack(processed_samples, dim=0).to(device)  # (chunk, C, H, W)
         else:
             x_noisy = smoother.sample_batch_gpu(x_rep)
 
@@ -1524,6 +1539,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             device=device,
             alpha_conf=cfg.alpha_conf,
             sigma=cfg.smoothing.sigma,
+            sample_fn=sample_fn,
         )
         
         result = {
