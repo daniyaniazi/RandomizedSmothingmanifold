@@ -1325,11 +1325,17 @@ def certify_single_sample(
     gpu_cache: Optional[dict] = None,
     sample_index: Optional[int] = None,
     sample_fn: Optional[callable] = None,
-) -> TokenCertificate:
+    collect_n_samples: bool = False,
+) -> Tuple[TokenCertificate, Optional[List[torch.Tensor]]]:
     """Certify one image using batched GPU noise sampling.
 
     All n0+n noise copies are generated and classified in one GPU batch
     (or mini-batches if memory is tight), replacing the old Python loop.
+
+    If collect_n_samples=True and sample_fn is provided, returns the raw
+    n-phase sample tensors (in smooth_transform space) alongside the cert.
+    These are the exact samples used for certification, useful for OOD analysis.
+    Returns (cert, n_phase_raw_samples) or (cert, None).
     """
     classifier.eval()
     if n0_samples <= 0 or n_samples <= 0:
@@ -1343,6 +1349,8 @@ def certify_single_sample(
     total = n0_samples + n_samples
     class_counts_n0 = np.zeros(2, dtype=np.int64)
     class_counts_n  = np.zeros(2, dtype=np.int64)
+    # Collect raw n-phase samples (smooth_transform space) if requested
+    _raw_n_samples: Optional[List[torch.Tensor]] = [] if collect_n_samples else None
 
     # Build index tensor for manifold cache lookup
     if gpu_cache is not None and sample_index is not None:
@@ -1367,12 +1375,19 @@ def certify_single_sample(
             # sample_fn() returns a normalized tensor in smooth_transform space; undo normalization
             # → PIL → apply classifier_transform to match the GPU path's input space.
             processed_samples = []
+            raw_chunk: List[torch.Tensor] = []
             for _ in range(chunk):
                 s = sample_fn()  # (C, H, W) in smooth_transform space
+                raw_chunk.append(s)
                 s_01 = (s * _smooth_std + _smooth_mean).clamp(0, 1)
                 pil = transforms.ToPILImage()(s_01)
                 processed_samples.append(classifier_transform(pil))
             x_noisy = torch.stack(processed_samples, dim=0).to(device)  # (chunk, C, H, W)
+            # Collect raw n-phase samples only
+            if _raw_n_samples is not None:
+                for _ci, _raw in enumerate(raw_chunk):
+                    if processed + _ci >= n0_samples:
+                        _raw_n_samples.append(_raw)
         else:
             x_noisy = smoother.sample_batch_gpu(x_rep)
 
@@ -1388,13 +1403,14 @@ def certify_single_sample(
                 class_counts_n[pred]  += 1
         processed += chunk
 
-    return certify_token_from_counts_two_stage_paper(
+    cert = certify_token_from_counts_two_stage_paper(
         class_counts_n0=class_counts_n0,
         class_counts_n=class_counts_n,
         alpha_noise=sigma,
         alpha_conf=alpha_conf,
         abstain_label=-1,
     )
+    return cert, (_raw_n_samples if collect_n_samples else None)
 
 
 def run_certification(cfg: CertifyConfig) -> Dict:
@@ -1593,7 +1609,13 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         # Determine which smoother to use for this sample
         _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
 
-        cert = certify_single_sample(
+        _collect = (cfg.smoothing.use_manifold
+                    and _ood_attr_map_global is not None
+                    and pixel_index is not None
+                    and hasattr(pixel_index, "index")
+                    and hasattr(pixel_index.index, "get_nns_by_vector")
+                    and hasattr(pixel_index, "filenames"))
+        cert, _cert_raw_samples = certify_single_sample(
             classifier=classifier,
             img_tensor=img_tensor,
             smoother=_active_smoother,
@@ -1604,6 +1626,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             alpha_conf=cfg.alpha_conf,
             sigma=cfg.smoothing.sigma,
             sample_fn=sample_fn,
+            collect_n_samples=_collect,
         )
         
         result = {
@@ -1635,26 +1658,19 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 result["nn_ood_count"] = int(_nn_ood_count)
                 result["nn_ood_frac"]  = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
 
-        # MC OOD fraction: how many of N_mc noisy samples land in OOD territory (nearest pixel-index
-        # neighbour has ood_attr=1).  Uses sample_fn so manifold runs use manifold samples,
-        # iso runs use iso samples.  Only computed when pixel_index is available (manifold runs).
+        # MC OOD fraction from actual certification n-phase samples (manifold only).
+        # Each raw sample is looked up in pixel_index → inherits OOD label of nearest neighbour.
         result["mc_ood_count"] = None
         result["mc_ood_frac"]  = None
-        if (_ood_attr_map_global is not None
-                and pixel_index is not None
-                and hasattr(pixel_index, "index")
-                and hasattr(pixel_index.index, "get_nns_by_vector")
-                and hasattr(pixel_index, "filenames")):
-            _N_mc_csv = cfg.smoothing.n_samples  # use certification MC sample count
-            _mc_ood_hits = 0
-            for _ in range(_N_mc_csv):
-                _s = sample_fn()  # (C,H,W) normalized tensor
-                _sv = _s.numpy().flatten().astype(np.float32)
-                _nid = pixel_index.index.get_nns_by_vector(_sv.tolist(), 1, include_distances=False)
+        if _cert_raw_samples is not None and len(_cert_raw_samples) > 0:
+            _mc_hits = 0
+            for _rs in _cert_raw_samples:
+                _rv = _rs.numpy().flatten().astype(np.float32)
+                _nid = pixel_index.index.get_nns_by_vector(_rv.tolist(), 1, include_distances=False)
                 if _nid:
-                    _mc_ood_hits += int(_ood_attr_map_global.get(Path(pixel_index.filenames[_nid[0]]).name, 0))
-            result["mc_ood_count"] = _mc_ood_hits
-            result["mc_ood_frac"]  = float(_mc_ood_hits) / _N_mc_csv
+                    _mc_hits += int(_ood_attr_map_global.get(Path(pixel_index.filenames[_nid[0]]).name, 0))
+            result["mc_ood_count"] = _mc_hits
+            result["mc_ood_frac"]  = float(_mc_hits) / len(_cert_raw_samples)
 
         # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
         if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
