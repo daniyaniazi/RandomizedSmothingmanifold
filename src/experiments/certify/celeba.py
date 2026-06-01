@@ -219,10 +219,16 @@ class CertifyPaths:
         pixel_index_dir = index_base / "pixel" / cfg.index.backend / cfg.index.metric
         latent_index_dir = index_base / "latent" / cfg.index.backend / cfg.index.metric
         
-        # Certify: certify/{mode}/sigma_{sigma}/
+        # Certify output path:
+        #   standard : certify/{mode}/sigma_{s}/
+        #   OOD      : certify_ood/{attr}/{mode}/sigma_{s}/
         sigma_tag = f"sigma_{cfg.smoothing.sigma:.2f}".replace(".", "_")
         mode_tag = f"{cfg.smoothing.mode}_{'manifold' if cfg.smoothing.use_manifold else 'isotropic'}"
-        experiment_dir = base_dir / "certify" / mode_tag / sigma_tag
+        ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+        if ood_attr:
+            experiment_dir = base_dir / "certify_ood" / ood_attr.lower() / mode_tag / sigma_tag
+        else:
+            experiment_dir = base_dir / "certify" / mode_tag / sigma_tag
         
         return cls(
             base_dir=base_dir,
@@ -276,9 +282,76 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
     return train_samples, test_samples
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Index Building (uses generic utilities from src/indexing/image_index)
-# ─────────────────────────────────────────────────────────────────────────────
+def get_ood_test_samples(
+    cfg: CertifyConfig,
+    test_samples: List[Tuple[str, int]],
+) -> List[Tuple[str, int]]:
+    """Filter test_samples to an OOD attribute subset.
+
+    If cfg.dataset.ood_attribute is set, keeps only test images where that
+    attribute == 1.  If cfg.dataset.ood_balanced is True (default), also
+    balances to exactly subset_size/2 smile + subset_size/2 non-smile.
+
+    Returns the filtered (and possibly subsampled) list.
+    Falls back to standard subset_size random sampling when ood_attribute is null.
+    """
+    ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+    subset_size = getattr(cfg.dataset, "subset_size", None)
+
+    if not ood_attr:
+        # Standard: random subset of test split
+        if subset_size and subset_size < len(test_samples):
+            import random
+            rng = random.Random(cfg.seed)
+            test_samples = rng.sample(test_samples, subset_size)
+        return test_samples
+
+    # Parse the full CelebA attribute file to get attr values per filename
+    import random
+    attr_path = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
+    lines = [l.strip() for l in attr_path.read_text().splitlines() if l.strip()]
+    attr_names = lines[1].split()
+    if ood_attr not in attr_names:
+        raise ValueError(f"OOD attribute '{ood_attr}' not found in {attr_path}. "
+                         f"Available: {attr_names}")
+    attr_idx = attr_names.index(ood_attr)
+
+    # Build filename -> attr_value map
+    attr_map: dict = {}
+    for row in lines[2:]:
+        parts = row.split()
+        fname = parts[0]
+        attr_map[fname] = int(parts[1 + attr_idx])  # -1 or 1
+
+    # Filter test samples where attr == 1
+    filtered = [
+        (path, label) for path, label in test_samples
+        if attr_map.get(Path(path).name, -1) == 1
+    ]
+    _log(f"OOD filter '{ood_attr}': {len(filtered)}/{len(test_samples)} test images match")
+
+    balanced = getattr(cfg.dataset, "ood_balanced", True)
+    ood_seed = getattr(cfg.dataset, "ood_seed", cfg.seed)
+    n_per_class = (subset_size // 2) if subset_size else None
+
+    if balanced and n_per_class:
+        smile    = [s for s in filtered if s[1] == 1]
+        nonsmile = [s for s in filtered if s[1] == 0]
+        if len(smile) < n_per_class or len(nonsmile) < n_per_class:
+            _log(f"WARNING: not enough images for balanced OOD subset "
+                 f"(smile={len(smile)}, non-smile={len(nonsmile)}, need {n_per_class} each). "
+                 f"Using all available.")
+            filtered = smile + nonsmile
+        else:
+            rng = random.Random(ood_seed)
+            filtered = rng.sample(smile, n_per_class) + rng.sample(nonsmile, n_per_class)
+        _log(f"OOD balanced subset: {len(filtered)} images "
+             f"({sum(s[1] for s in filtered)} smile, {sum(1-s[1] for s in filtered)} non-smile)")
+    elif subset_size and len(filtered) > subset_size:
+        rng = random.Random(ood_seed)
+        filtered = rng.sample(filtered, subset_size)
+
+    return filtered
 
 
 def _create_image_dataloader(
@@ -1161,12 +1234,13 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # Load train/test samples using existing dataloader
     # ─────────────────────────────────────────────────────────────────────────
     train_samples, test_samples = get_train_test_samples(cfg)
-    
-    if cfg.dataset.subset_size and cfg.dataset.subset_size < len(test_samples):
-        random.shuffle(test_samples)
-        test_samples = test_samples[:cfg.dataset.subset_size]
-        test_samples.sort(key=lambda x: x[0])
-        _log(f"Using subset of {len(test_samples)} test samples")
+
+    # Apply OOD attribute filter (or standard subset) — replaces old subset_size block
+    test_samples = get_ood_test_samples(cfg, test_samples)
+
+    ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+    if ood_attr:
+        _log(f"OOD attribute: '{ood_attr}'  test subset: {len(test_samples)} images")
     
     dataset_info = {
         "dataset": cfg.dataset.name,

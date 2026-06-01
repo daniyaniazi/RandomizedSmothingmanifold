@@ -200,7 +200,12 @@ def celeb_output_dir(cfg: dict, sigma: float) -> Path:
     dataset_name = str(cfg.get("dataset", {}).get("name", "celeba")).lower().replace("-", "").replace("_", "")
     base_dir = Path(cfg.get("output", {}).get("output_dir", "output")) / "smile_classification" / dataset_name
     mode = str(cfg.get("smoothing", {}).get("mode", "pixel")).strip().lower()
-    return base_dir / "certify" / mode / sigma_tag(sigma)
+    use_manifold = cfg.get("smoothing", {}).get("use_manifold", False)
+    mode_tag = f"{mode}_{'manifold' if use_manifold else 'isotropic'}"
+    ood_attr = cfg.get("dataset", {}).get("ood_attribute", None)
+    if ood_attr:
+        return base_dir / "certify_ood" / ood_attr.lower() / mode_tag / sigma_tag(sigma)
+    return base_dir / "certify" / mode_tag / sigma_tag(sigma)
 
 def _layer_tag(layer_index):
     return "last" if layer_index is None else f"layer_{int(layer_index)}"

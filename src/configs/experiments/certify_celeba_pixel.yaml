@@ -15,6 +15,12 @@ dataset:
   file_extension: ""
   num_workers: 4
   subset_size: 100  # use subset for faster testing, set null for full dataset
+  # OOD attribute subset settings
+  # Set ood_attribute to restrict test images to those where the attribute=1
+  # The subset will be balanced: 50 smile + 50 non-smile (requires subset_size=100)
+  ood_attribute: null          # e.g. "Male", "Eyeglasses", "Wearing_Hat", null = standard test split
+  ood_balanced: true           # if true: sample exactly subset_size/2 smile + subset_size/2 non-smile
+  ood_seed: 73                 # random seed for OOD sampling
 
 model:
   name: resnet18
