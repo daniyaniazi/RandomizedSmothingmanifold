@@ -821,6 +821,20 @@ def save_sample_visualization(
                 (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
             ]
 
+            # ── OOD label per ISO MC sample via nearest pixel-index neighbour ──
+            # Each MC sample is assigned the OOD status of its nearest training neighbour.
+            # Green = lands in OOD territory (nearest neighbour has ood_attr=1)
+            # Teal  = lands in non-OOD territory (nearest neighbour has ood_attr=0)
+            _iso_mc_is_ood = np.zeros(len(_mc_flat), dtype=bool)
+            if (ood_attr_map is not None and index is not None
+                    and hasattr(index, "index") and hasattr(index.index, "get_nns_by_vector")
+                    and hasattr(index, "filenames")):
+                for _mi, _ms in enumerate(_mc_flat):
+                    _nid = index.index.get_nns_by_vector(_ms.tolist(), 1, include_distances=False)
+                    if _nid:
+                        _fname = Path(index.filenames[_nid[0]]).name
+                        _iso_mc_is_ood[_mi] = bool(ood_attr_map.get(_fname, 0))
+
             _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
             _mc_pad = 0.05 * max(float(np.ptp(_mc_2d[:, 0])), float(np.ptp(_mc_2d[:, 1])), 1e-6)
 
@@ -833,10 +847,24 @@ def save_sample_visualization(
                         (np.abs(_mc_2d[:, 1] - _anchor_2d[1]) <= _zr)
                     )
 
-                # Iso MC noisy samples — blue (no KNN for isotropic)
-                _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                             s=6, alpha=0.40, color="#4c78a8", marker="+", linewidths=0.8,
-                             zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
+                # Iso MC noisy samples — coloured by OOD territory of nearest index neighbour
+                _iso_vis_ood     = _mask_mc & _iso_mc_is_ood
+                _iso_vis_not_ood = _mask_mc & ~_iso_mc_is_ood
+                _n_iso_ood     = int(_iso_vis_ood.sum())
+                _n_iso_not_ood = int(_iso_vis_not_ood.sum())
+                if _iso_vis_ood.any():
+                    _gax.scatter(_mc_2d[_iso_vis_ood, 0], _mc_2d[_iso_vis_ood, 1],
+                                 s=6, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC → OOD territory ({_n_iso_ood})")
+                if _iso_vis_not_ood.any():
+                    _gax.scatter(_mc_2d[_iso_vis_not_ood, 0], _mc_2d[_iso_vis_not_ood, 1],
+                                 s=6, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC → non-OOD territory ({_n_iso_not_ood})")
+                if not _iso_vis_ood.any() and not _iso_vis_not_ood.any():
+                    # Fallback: no OOD map available — plain blue
+                    _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                                 s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                                 zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
 
                 # iso circle
                 _gax.add_patch(_plt_geom.Circle(
@@ -1050,6 +1078,19 @@ def save_sample_visualization(
                         _fname = Path(index.filenames[_nid]).name if hasattr(index, "filenames") else ""
                         _nn_has_attr[_ni] = bool(ood_attr_map.get(_fname, 0))
 
+                # ── Per-MC-sample OOD label: nearest neighbour in 2D PCA space ──
+                # Each MC noisy sample is assigned the OOD status of its closest KNN neighbour.
+                # Green  = lands in OOD territory   (nearest KNN has ood_attr=1)
+                # Teal   = lands in non-OOD territory (nearest KNN has ood_attr=0)
+                if ood_attr_map is not None and len(_neigh_2d) > 0:
+                    _mc_nn_dists = np.linalg.norm(
+                        _mc_2d[:, None, :] - _neigh_2d[None, :, :], axis=-1
+                    )  # (N_mc, k)
+                    _mc_nn_idx  = np.argmin(_mc_nn_dists, axis=1)  # (N_mc,)
+                    _mc_is_ood  = _nn_has_attr[_mc_nn_idx]          # (N_mc,) bool
+                else:
+                    _mc_is_ood = np.zeros(len(_mc_2d), dtype=bool)
+
                 _gfig, _gaxes = _plt_geom.subplots(1, 5, figsize=(22, 5.5), facecolor="white")
                 _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
                 _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
@@ -1079,10 +1120,19 @@ def save_sample_visualization(
                         _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
                                      s=10, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
                                      label="KNN (OOD attr=0, risky)")
-                    # Manifold MC noisy samples — green circles
-                    _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                                 s=8, alpha=0.45, color="#2ca02c", marker="o", linewidths=0,
-                                 zorder=3, label="Manifold noisy samples")
+                    # Manifold MC noisy samples — coloured by OOD territory of nearest KNN neighbour
+                    _mc_vis_ood     = _mask_mc & _mc_is_ood
+                    _mc_vis_not_ood = _mask_mc & ~_mc_is_ood
+                    _n_ood_mc     = int(_mc_vis_ood.sum())
+                    _n_notood_mc  = int(_mc_vis_not_ood.sum())
+                    if _mc_vis_ood.any():
+                        _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
+                                     s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                                     zorder=3, label=f"MC → OOD territory ({_n_ood_mc})")
+                    if _mc_vis_not_ood.any():
+                        _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
+                                     s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                                     zorder=3, label=f"MC → non-OOD territory ({_n_notood_mc})")
                     _gax.add_patch(_plt_geom.Circle(
                         (_anchor_2d[0], _anchor_2d[1]), sigma,
                         fill=False, edgecolor="tab:blue", linewidth=2.5,
@@ -1572,9 +1622,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         }
 
         # KNN neighbour OOD fraction: how many of the k neighbours have ood_attr == 1
+        # Only meaningful for manifold runs (pixel_index built); None for isotropic.
         result["nn_ood_count"] = None
         result["nn_ood_frac"]  = None
-        if _ood_attr_map_global is not None:
+        if _ood_attr_map_global is not None and cfg.smoothing.use_manifold:
             _knn_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
             if _knn_index is not None and hasattr(_knn_index, "index") and hasattr(_knn_index.index, "get_nns_by_vector") and hasattr(_knn_index, "filenames"):
                 _qvec = img_tensor.numpy().flatten().astype(np.float32)
@@ -1583,6 +1634,27 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 _nn_ood_count = sum(_ood_attr_map_global.get(Path(_knn_index.filenames[_nid]).name, 0) for _nid in _nn_ids)
                 result["nn_ood_count"] = int(_nn_ood_count)
                 result["nn_ood_frac"]  = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
+
+        # MC OOD fraction: how many of N_mc noisy samples land in OOD territory (nearest pixel-index
+        # neighbour has ood_attr=1).  Uses sample_fn so manifold runs use manifold samples,
+        # iso runs use iso samples.  Only computed when pixel_index is available (manifold runs).
+        result["mc_ood_count"] = None
+        result["mc_ood_frac"]  = None
+        if (_ood_attr_map_global is not None
+                and pixel_index is not None
+                and hasattr(pixel_index, "index")
+                and hasattr(pixel_index.index, "get_nns_by_vector")
+                and hasattr(pixel_index, "filenames")):
+            _N_mc_csv = 100
+            _mc_ood_hits = 0
+            for _ in range(_N_mc_csv):
+                _s = sample_fn()  # (C,H,W) normalized tensor
+                _sv = _s.numpy().flatten().astype(np.float32)
+                _nid = pixel_index.index.get_nns_by_vector(_sv.tolist(), 1, include_distances=False)
+                if _nid:
+                    _mc_ood_hits += int(_ood_attr_map_global.get(Path(pixel_index.filenames[_nid[0]]).name, 0))
+            result["mc_ood_count"] = _mc_ood_hits
+            result["mc_ood_frac"]  = float(_mc_ood_hits) / _N_mc_csv
 
         # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
         if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
@@ -1902,6 +1974,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained", "p_a_lower", "p_b_upper", "correct", "certified_correct",
                           "ood_attribute", "ood_attr_value",
                           "nn_ood_count", "nn_ood_frac",
+                          "mc_ood_count", "mc_ood_frac",
                           "lambda_max", "alpha",
                           "log_vol_mani_actual", "log_vol_iso_D", "geometry_factor",
                           "eigen_k", "ambient_D", "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
