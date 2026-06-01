@@ -266,8 +266,8 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
         label_column="smile",
         file_extension=cfg.dataset.file_extension,
         num_workers=cfg.dataset.num_workers,
-        train_ratio=0.8,
-        val_ratio=0.1,
+        train_ratio=cfg.dataset.train_ratio,
+        val_ratio=cfg.dataset.val_ratio,
         split_seed=cfg.seed,
     )
     

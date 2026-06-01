@@ -94,6 +94,10 @@ Examples:
         annotation_file=cfg.dataset.annotation_file,
         annotation_format=cfg.dataset.annotation_format,
         file_extension=getattr(cfg.dataset, "file_extension", ""),
+        # Explicitly match certification split — must be identical to celeba.py get_train_test_samples()
+        train_ratio=cfg.dataset.train_ratio,
+        val_ratio=cfg.dataset.val_ratio,
+        split_seed=cfg.seed,  # same seed as run_certification()
     )
     loader_cfg = SmileDataloaderConfig(
         batch_size=32,

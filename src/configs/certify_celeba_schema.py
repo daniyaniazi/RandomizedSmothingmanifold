@@ -18,6 +18,9 @@ class CertifyDatasetConfig:
     file_extension: str = ""
     num_workers: int = 4
     subset_size: Optional[int] = None  # limit samples for testing
+    # Split ratios — must be identical across training, indexing, and certification
+    train_ratio: float = 0.8
+    val_ratio: float = 0.1   # test = 1 - train_ratio - val_ratio
 
 
 @dataclass
