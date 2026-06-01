@@ -14,7 +14,11 @@ dataset:
   annotation_format: celeba
   file_extension: ""
   num_workers: 4
-  subset_size: 500
+  subset_size: 100
+  # OOD attribute subset — balanced 50 smile + 50 non-smile where attr=1
+  ood_attribute: Wearing_Hat   # e.g. "Wearing_Hat", "Male", null = standard test split
+  ood_balanced: true
+  ood_seed: 73
 
 model:
   name: resnet18
@@ -33,10 +37,10 @@ vae:
 smoothing:
   mode: latent
   sigma: 0.5  # default sigma (used if not overridden)
-  sigma_values: [0.25, 0.50, 0.75, 1.00]  # for sweep experiments
+  sigma_values: [0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
   n0_samples: 100
   n_samples: 250
-  knn_k: 500
+  knn_k: 150
   eps_eig: 1.0e-06
   use_manifold: true
 

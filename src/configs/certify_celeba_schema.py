@@ -64,7 +64,7 @@ class CertifySmoothingConfig:
 @dataclass
 class CertifyIndexConfig:
     backend: str = "annoy"  # annoy | faiss | torch
-    metric: str = "euclidean"
+    metric: str = "euclidean"  # angular (cosine) | euclidean — set in config yaml
     n_trees: int = 50
     pixel_index_path: Optional[str] = None  # pre-built .ann for pixel space
     latent_index_path: Optional[str] = None  # pre-built .ann for latent space

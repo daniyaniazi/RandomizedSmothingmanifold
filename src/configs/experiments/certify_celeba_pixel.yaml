@@ -18,7 +18,7 @@ dataset:
   # OOD attribute subset settings
   # Set ood_attribute to restrict test images to those where the attribute=1
   # The subset will be balanced: 50 smile + 50 non-smile (requires subset_size=100)
-  ood_attribute: Wearing_Hat          # e.g. "Male", "Eyeglasses", "Wearing_Hat", null = standard test split
+  ood_attribute: Mouth_Slightly_Open          # e.g. "Male", "Eyeglasses", "Wearing_Hat", null = standard test split
   ood_balanced: true           # if true: sample exactly subset_size/2 smile + subset_size/2 non-smile
   ood_seed: 73                 # random seed for OOD sampling
 
@@ -42,7 +42,7 @@ smoothing:
   mode: pixel
   sigma: 0.10  # default sigma
   # sigma_values: [0.01, 0.03, 0.05, 0.07, 0.10, 0.12, 0.15, 0.17, 0.20, 0.22, 0.25, 0.27, 0.30, 0.32, 0.35, 0.37, 0.40, 0.42, 0.45, 0.47, 0.50, 0.55]  # 22 values 0.01–0.55
-  sigma_values: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+  sigma_values: [0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
   n0_samples: 30
   n_samples: 100
   knn_k: 500

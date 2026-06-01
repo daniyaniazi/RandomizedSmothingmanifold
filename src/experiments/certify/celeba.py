@@ -392,6 +392,7 @@ def load_or_build_pixel_index(
     index_dir: Path,
     n_trees: int = 50,
     force_rebuild: bool = False,
+    metric: str = "euclidean",
 ) -> NeighborIndex:
     """Build or load pixel-space index using generic utilities."""
     index_path = index_dir / "index.ann"
@@ -401,7 +402,7 @@ def load_or_build_pixel_index(
     if index_path.exists() and not force_rebuild:
         dim = 3 * image_size * image_size
         _log(f"Loading existing pixel index: {index_path}")
-        return load_index(dim=dim, index_path=str(index_path), backend="annoy")
+        return load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
     
     # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -412,9 +413,9 @@ def load_or_build_pixel_index(
         if index_path.exists() and not force_rebuild:
             dim = 3 * image_size * image_size
             _log(f"Loading existing pixel index (built by another job): {index_path}")
-            return load_index(dim=dim, index_path=str(index_path), backend="annoy")
+            return load_index(dim=dim, index_path=str(index_path), backend="annoy", metric=metric)
         
-        _log(f"Building pixel index from {len(train_samples)} samples...")
+        _log(f"Building pixel index from {len(train_samples)} samples (metric={metric})...")
         
         dataloader = _create_image_dataloader(train_samples, image_size)
         
@@ -423,7 +424,7 @@ def load_or_build_pixel_index(
             dataloader=dataloader,
             space="pixel",
             backend="annoy",
-            metric="euclidean",
+            metric=metric,
             index_path=str(index_path),
             n_trees=n_trees,
             rebuild=force_rebuild,
@@ -441,6 +442,7 @@ def load_or_build_latent_index(
     n_trees: int = 50,
     device: torch.device = torch.device("cuda"),
     force_rebuild: bool = False,
+    metric: str = "angular",
 ) -> NeighborIndex:
     """Build or load latent-space index using generic utilities."""
     index_path = index_dir / "index.ann"
@@ -449,7 +451,7 @@ def load_or_build_latent_index(
     # Check if index already exists (fast path, no lock needed)
     if index_path.exists() and not force_rebuild:
         _log(f"Loading existing latent index: {index_path}")
-        return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy")
+        return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
     
     # Use file lock to prevent parallel jobs from building simultaneously
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -459,9 +461,9 @@ def load_or_build_latent_index(
         # Re-check after acquiring lock
         if index_path.exists() and not force_rebuild:
             _log(f"Loading existing latent index (built by another job): {index_path}")
-            return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy")
+            return load_index(dim=vae.latent_dim, index_path=str(index_path), backend="annoy", metric=metric)
         
-        _log(f"Building latent index from {len(train_samples)} samples...")
+        _log(f"Building latent index from {len(train_samples)} samples (metric={metric})...")
         
         dataloader = _create_image_dataloader(train_samples, vae.image_size)
         
@@ -483,7 +485,7 @@ def load_or_build_latent_index(
             space="latent",
             encoder=vae_encoder,
             backend="annoy",
-            metric="euclidean",
+            metric=metric,
             index_path=str(index_path),
             n_trees=n_trees,
             rebuild=force_rebuild,
@@ -1525,12 +1527,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     _need_pixel_index_for_ood = bool(getattr(cfg.dataset, "ood_attribute", None))
     if cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent", "both") and cfg.output.save_visualizations) or _need_pixel_index_for_ood:
         pixel_index = load_or_build_pixel_index(
-            train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees
+            train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees,
+            metric=cfg.index.metric,
         )
     
     if cfg.smoothing.mode in ("latent", "both") and cfg.smoothing.use_manifold and vae is not None:
         latent_index = load_or_build_latent_index(
-            train_samples, vae, paths.latent_index_dir, cfg.index.n_trees, device
+            train_samples, vae, paths.latent_index_dir, cfg.index.n_trees, device,
+            metric=cfg.index.metric,
         )
     
     # ─────────────────────────────────────────────────────────────────────────

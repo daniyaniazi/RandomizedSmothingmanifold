@@ -25,15 +25,16 @@ CPUS=8
 MEM_PER_CPU="8G"
 MAX_CONCURRENT=4
 DRY_RUN=false
-CELEBA_ONLY=false
-NER_ONLY=false
-CELEBAHQ_ONLY=false
+DATASET_FILTER=""   # celeba | celebahq | ner | "" (all)
+SPACE_FILTER=""     # pixel | latent | "" (all)
 
 # Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
 NER_MANI_CFG="src/configs/experiments/ner_conll2003_bert_certify.yaml"
 CELEBA_ISO_CFG="src/configs/experiments/certify_celeba_isotropic_pixel.yaml"
 CELEBA_MANI_CFG="src/configs/experiments/certify_celeba_pixel.yaml"
+CELEBA_ISO_LATENT_CFG="src/configs/experiments/certify_celeba_isotropic_latent_128.yaml"
+CELEBA_MANI_LATENT_CFG="src/configs/experiments/certify_celeba_latent_128.yaml"
 CELEBAHQ_ISO_CFG="src/configs/experiments/certify_celebahq_isotropic_pixel.yaml"
 CELEBAHQ_MANI_CFG="src/configs/experiments/certify_celebahq_pixel.yaml"
 
@@ -48,14 +49,20 @@ Options:
   --mem-per-cpu MEM       Memory per CPU (default: 8G)
   --max-concurrent N      Array concurrency cap (default: 4)
   --dry-run               Print generated array command only
-    --celeba-only           Submit only CelebA configs as the array
-    --celebahq-only         Submit only CelebA-HQ configs as the array
-    --ner-only              Submit only NER configs as the array
+  --dataset DATASET       Filter by dataset: celeba | celebahq | ner  (default: all)
+  --space SPACE           Filter by space:   pixel | latent           (default: all)
   --help                  Show this help
+
+Examples:
+  --dataset celeba  --space pixel       CelebA pixel ISO+manifold
+  --dataset celeba  --space latent      CelebA latent ISO+manifold
+  --dataset celebahq --space pixel      CelebA-HQ pixel ISO+manifold
+  --dataset ner                         NER ISO+manifold
+  (no flags)                            All configs
 
 Behavior:
     - Reads sigma_values from each config independently.
-    - Skips tasks whose `metrics.json` already exists.
+    - Skips tasks whose metrics.json already exists.
     - Creates one Slurm array over all unfinished tasks.
 EOF
 }
@@ -86,17 +93,13 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
-        --celeba-only)
-            CELEBA_ONLY=true
-            shift
+        --dataset)
+            DATASET_FILTER="$2"
+            shift 2
             ;;
-        --celebahq-only)
-            CELEBAHQ_ONLY=true
-            shift
-            ;;
-        --ner-only)
-            NER_ONLY=true
-            shift
+        --space)
+            SPACE_FILTER="$2"
+            shift 2
             ;;
         --help|-h)
             print_help
@@ -115,27 +118,51 @@ if ! [[ "$MAX_CONCURRENT" =~ ^[0-9]+$ ]] || [[ "$MAX_CONCURRENT" -lt 1 ]]; then
     exit 1
 fi
 
-if $CELEBA_ONLY && $NER_ONLY; then
-    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
+if [[ -n "$DATASET_FILTER" ]] && ! [[ "$DATASET_FILTER" =~ ^(celeba|celebahq|ner)$ ]]; then
+    echo "Error: --dataset must be celeba, celebahq, or ner"
     exit 1
 fi
-if $CELEBA_ONLY && $CELEBAHQ_ONLY; then
-    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
+if [[ -n "$SPACE_FILTER" ]] && ! [[ "$SPACE_FILTER" =~ ^(pixel|latent)$ ]]; then
+    echo "Error: --space must be pixel or latent"
     exit 1
 fi
-if $NER_ONLY && $CELEBAHQ_ONLY; then
-    echo "Error: choose only one of --celeba-only, --celebahq-only or --ner-only"
+if [[ "$DATASET_FILTER" == "ner" && "$SPACE_FILTER" == "latent" ]]; then
+    echo "Error: NER does not have a latent config"
+    exit 1
+fi
+if [[ "$DATASET_FILTER" == "celebahq" && "$SPACE_FILTER" == "latent" ]]; then
+    echo "Error: CelebA-HQ does not have a latent config"
     exit 1
 fi
 
-if $CELEBA_ONLY; then
-    CONFIGS_TO_CHECK=("$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG")
-elif $CELEBAHQ_ONLY; then
-    CONFIGS_TO_CHECK=("$CELEBAHQ_ISO_CFG" "$CELEBAHQ_MANI_CFG")
-elif $NER_ONLY; then
-    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG")
-else
-    CONFIGS_TO_CHECK=("$NER_ISO_CFG" "$NER_MANI_CFG" "$CELEBA_ISO_CFG" "$CELEBA_MANI_CFG" "$CELEBAHQ_ISO_CFG" "$CELEBAHQ_MANI_CFG")
+# Build CONFIGS_TO_CHECK from all known configs, then filter by dataset/space
+ALL_CONFIGS=(
+    "$NER_ISO_CFG"          "ner"       "pixel"
+    "$NER_MANI_CFG"         "ner"       "pixel"
+    "$CELEBA_ISO_CFG"       "celeba"    "pixel"
+    "$CELEBA_MANI_CFG"      "celeba"    "pixel"
+    "$CELEBA_ISO_LATENT_CFG" "celeba"   "latent"
+    "$CELEBA_MANI_LATENT_CFG" "celeba"  "latent"
+    "$CELEBAHQ_ISO_CFG"     "celebahq"  "pixel"
+    "$CELEBAHQ_MANI_CFG"    "celebahq"  "pixel"
+)
+
+CONFIGS_TO_CHECK=()
+i=0
+while [[ $i -lt ${#ALL_CONFIGS[@]} ]]; do
+    cfg="${ALL_CONFIGS[$i]}"
+    ds="${ALL_CONFIGS[$((i+1))]}"
+    sp="${ALL_CONFIGS[$((i+2))]}"
+    if { [[ -z "$DATASET_FILTER" ]] || [[ "$ds" == "$DATASET_FILTER" ]]; } && \
+       { [[ -z "$SPACE_FILTER" ]]  || [[ "$sp" == "$SPACE_FILTER" ]]; }; then
+        CONFIGS_TO_CHECK+=("$cfg")
+    fi
+    i=$((i+3))
+done
+
+if [[ ${#CONFIGS_TO_CHECK[@]} -eq 0 ]]; then
+    echo "Error: no configs match --dataset='$DATASET_FILTER' --space='$SPACE_FILTER'"
+    exit 1
 fi
 
 for cfg in "${CONFIGS_TO_CHECK[@]}"; do
@@ -152,7 +179,7 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-CELEBA_ONLY="$CELEBA_ONLY" NER_ONLY="$NER_ONLY" CELEBAHQ_ONLY="$CELEBAHQ_ONLY" python3 - <<PY
+DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" python3 - <<PY
 import os
 import yaml
 from pathlib import Path
@@ -161,25 +188,25 @@ project_root = Path(r"$PROJECT_ROOT")
 sweep_dir = Path(r"$SWEEP_CONFIG_DIR")
 task_file = Path(r"$TASK_FILE")
 
-celeba_only = os.environ.get("CELEBA_ONLY", "false").lower() == "true"
-ner_only = os.environ.get("NER_ONLY", "false").lower() == "true"
-celebahq_only = os.environ.get("CELEBAHQ_ONLY", "false").lower() == "true"
+dataset_filter = os.environ.get("DATASET_FILTER", "").strip().lower()
+space_filter   = os.environ.get("SPACE_FILTER",   "").strip().lower()
 
 entries = [
-    ("ner_iso",      Path(r"$NER_ISO_CFG"),      "ner"),
-    ("ner_mani",     Path(r"$NER_MANI_CFG"),     "ner"),
-    ("celeb_iso",    Path(r"$CELEBA_ISO_CFG"),    "celeba"),
-    ("celeb_mani",   Path(r"$CELEBA_MANI_CFG"),   "celeba"),
-    ("celebahq_iso", Path(r"$CELEBAHQ_ISO_CFG"), "celebahq"),
-    ("celebahq_mani",Path(r"$CELEBAHQ_MANI_CFG"),"celebahq"),
+    ("ner_iso",           Path(r"$NER_ISO_CFG"),            "ner",     "pixel"),
+    ("ner_mani",          Path(r"$NER_MANI_CFG"),           "ner",     "pixel"),
+    ("celeb_iso",         Path(r"$CELEBA_ISO_CFG"),         "celeba",  "pixel"),
+    ("celeb_mani",        Path(r"$CELEBA_MANI_CFG"),        "celeba",  "pixel"),
+    ("celeb_iso_latent",  Path(r"$CELEBA_ISO_LATENT_CFG"),  "celeba",  "latent"),
+    ("celeb_mani_latent", Path(r"$CELEBA_MANI_LATENT_CFG"), "celeba",  "latent"),
+    ("celebahq_iso",      Path(r"$CELEBAHQ_ISO_CFG"),       "celebahq","pixel"),
+    ("celebahq_mani",     Path(r"$CELEBAHQ_MANI_CFG"),      "celebahq","pixel"),
 ]
 
-if celeba_only:
-    entries = [item for item in entries if item[2] == "celeba"]
-elif celebahq_only:
-    entries = [item for item in entries if item[2] == "celebahq"]
-elif ner_only:
-    entries = [item for item in entries if item[2] == "ner"]
+# Filter by --dataset and --space
+if dataset_filter:
+    entries = [e for e in entries if e[2] == dataset_filter]
+if space_filter:
+    entries = [e for e in entries if e[3] == space_filter]
 
 if not entries:
     raise SystemExit("No configs selected for submission.")
@@ -239,7 +266,7 @@ config_sigma_counts = {}
 # so the array order is: ner_iso[0], ner_mani[0], celeb_iso[0], celeb_mani[0],
 #                        ner_iso[1], ner_mani[1], celeb_iso[1], celeb_mani[1], ...
 per_config_tasks = {}  # short_name -> list of formatted task strings
-for short_name, cfg_path, kind in entries:
+for short_name, cfg_path, ds, sp in entries:
     sigma_values = sigma_list(cfg_path)
     if not sigma_values:
         raise SystemExit(f"No sigma_values found in {cfg_path}")
@@ -256,7 +283,7 @@ for short_name, cfg_path, kind in entries:
         cfg["experiment_name"] = job_exp_name
         cfg.setdefault("checkpoint", {})["resume"] = True
 
-        if kind == "ner":
+        if ds == "ner":
             resolved_index_path = cfg.get("smoothing", {}).get("index_path")
             out_dir = ner_output_dir(cfg, sigma, resolved_index_path)
         else:  # celeba or celebahq
@@ -271,12 +298,12 @@ for short_name, cfg_path, kind in entries:
         with out_cfg.open("w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
 
-        per_config_tasks[short_name].append(f"{job_exp_name}|{out_cfg}|{kind}|{sigma}")
+        per_config_tasks[short_name].append(f"{job_exp_name}|{out_cfg}|{ds}_{sp}|{sigma}")
 
 # Interleave: for each sigma index, emit one task per config (if it exists)
 max_len = max(len(v) for v in per_config_tasks.values())
 for i in range(max_len):
-    for short_name, _, _ in entries:
+    for short_name, _, _ds, _sp in entries:
         task_list = per_config_tasks[short_name]
         if i < len(task_list):
             lines.append(task_list[i])
@@ -324,7 +351,7 @@ cd PROJECT_ROOT_PLACEHOLDER
 export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:${PYTHONPATH:-}
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh
 conda activate smoothing
-if [ "$TASK_KIND" = "ner" ]; then
+if [[ "$TASK_KIND" == ner_* ]]; then
   CHECKPOINT=PROJECT_ROOT_PLACEHOLDER/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
   python -m src.experiments.certify.ner --config "$TASK_CFG" --checkpoint "$CHECKPOINT" --split test --resume --save-every-batches 5
 else
