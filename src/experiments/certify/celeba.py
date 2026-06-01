@@ -837,6 +837,9 @@ def save_sample_visualization(
 
             _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
             _mc_pad = 0.05 * max(float(np.ptp(_mc_2d[:, 0])), float(np.ptp(_mc_2d[:, 1])), 1e-6)
+            # Total counts over all N_mc samples (independent of zoom) — shown in legend
+            _n_iso_ood_total     = int(_iso_mc_is_ood.sum())
+            _n_iso_not_ood_total = int((~_iso_mc_is_ood).sum())
 
             for _gax, (_zr, _gtitle) in zip(_gaxes, _zoom_specs):
                 if _zr is None:
@@ -850,21 +853,19 @@ def save_sample_visualization(
                 # Iso MC noisy samples — coloured by OOD territory of nearest index neighbour
                 _iso_vis_ood     = _mask_mc & _iso_mc_is_ood
                 _iso_vis_not_ood = _mask_mc & ~_iso_mc_is_ood
-                _n_iso_ood     = int(_iso_vis_ood.sum())
-                _n_iso_not_ood = int(_iso_vis_not_ood.sum())
-                if _iso_vis_ood.any():
-                    _gax.scatter(_mc_2d[_iso_vis_ood, 0], _mc_2d[_iso_vis_ood, 1],
-                                 s=6, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC → OOD territory ({_n_iso_ood})")
-                if _iso_vis_not_ood.any():
-                    _gax.scatter(_mc_2d[_iso_vis_not_ood, 0], _mc_2d[_iso_vis_not_ood, 1],
-                                 s=6, alpha=0.50, color="#17becf", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC → non-OOD territory ({_n_iso_not_ood})")
                 if not _iso_vis_ood.any() and not _iso_vis_not_ood.any():
                     # Fallback: no OOD map available — plain blue
                     _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
                                  s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
                                  zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
+                else:
+                    # Always plot both — legend shows TOTAL count across all N_mc, not just in-zoom
+                    _gax.scatter(_mc_2d[_iso_vis_ood, 0], _mc_2d[_iso_vis_ood, 1],
+                                 s=6, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in OOD territory ({_n_iso_ood_total}/{_N_mc})")
+                    _gax.scatter(_mc_2d[_iso_vis_not_ood, 0], _mc_2d[_iso_vis_not_ood, 1],
+                                 s=6, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in non-OOD territory ({_n_iso_not_ood_total}/{_N_mc})")
 
                 # iso circle
                 _gax.add_patch(_plt_geom.Circle(
@@ -1096,6 +1097,9 @@ def save_sample_visualization(
                 _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
                 _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
                                   float(np.max(_y_all) - np.min(_y_all)), 1e-6)
+                # Total counts over all N_mc samples (independent of zoom) — shown in legend
+                _n_ood_mc_total     = int(_mc_is_ood.sum())
+                _n_notood_mc_total  = int((~_mc_is_ood).sum())
 
                 for _gax, (_zr, _gtitle, _ea1, _ea2) in zip(_gaxes, _zoom_labels):
                     if _zr is None:
@@ -1123,16 +1127,13 @@ def save_sample_visualization(
                     # Manifold MC noisy samples — coloured by OOD territory of nearest KNN neighbour
                     _mc_vis_ood     = _mask_mc & _mc_is_ood
                     _mc_vis_not_ood = _mask_mc & ~_mc_is_ood
-                    _n_ood_mc     = int(_mc_vis_ood.sum())
-                    _n_notood_mc  = int(_mc_vis_not_ood.sum())
-                    if _mc_vis_ood.any():
-                        _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
-                                     s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
-                                     zorder=3, label=f"MC → OOD territory ({_n_ood_mc})")
-                    if _mc_vis_not_ood.any():
-                        _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
-                                     s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
-                                     zorder=3, label=f"MC → non-OOD territory ({_n_notood_mc})")
+                    # Always plot both groups — legend shows TOTAL count across all N_mc, not just in-zoom
+                    _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
+                                 s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in OOD territory ({_n_ood_mc_total}/{_N_mc})")
+                    _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
+                                 s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                                 zorder=3, label=f"MC in non-OOD territory ({_n_notood_mc_total}/{_N_mc})")
                     _gax.add_patch(_plt_geom.Circle(
                         (_anchor_2d[0], _anchor_2d[1]), sigma,
                         fill=False, edgecolor="tab:blue", linewidth=2.5,
