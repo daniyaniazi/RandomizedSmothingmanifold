@@ -1069,19 +1069,19 @@ def save_sample_visualization(
                             (_mc_2d[:, 0] >= _anchor_2d[0] - _zr) & (_mc_2d[:, 0] <= _anchor_2d[0] + _zr) &
                             (_mc_2d[:, 1] >= _anchor_2d[1] - _zr) & (_mc_2d[:, 1] <= _anchor_2d[1] + _zr)
                         )
-                    # Neighbours: grey for normal, orange for OOD attr
-                    _no_ood = _mask & ~_nn_has_attr
-                    _yes_ood = _mask & _nn_has_attr
-                    _gax.scatter(_neigh_2d[_no_ood, 0], _neigh_2d[_no_ood, 1],
+                    # Neighbours: grey=has OOD attr (safe), orange=missing OOD attr (risky)
+                    _has_attr = _mask & _nn_has_attr
+                    _no_attr  = _mask & ~_nn_has_attr
+                    _gax.scatter(_neigh_2d[_has_attr, 0], _neigh_2d[_has_attr, 1],
                                  s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
-                                 label="KNN neighbours")
-                    if _yes_ood.any():
-                        _gax.scatter(_neigh_2d[_yes_ood, 0], _neigh_2d[_yes_ood, 1],
+                                 label="KNN neighbours (OOD attr=1)")
+                    if _no_attr.any():
+                        _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
                                      s=12, alpha=0.65, color="orange", linewidths=0, zorder=2,
-                                     label="KNN (OOD attr)")
-                    # Manifold MC noisy samples — green
+                                     label="KNN (OOD attr=0, risky)")
+                    # Manifold MC noisy samples — green circles
                     _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                                 s=6, alpha=0.40, color="#2ca02c", marker="+", linewidths=0.8,
+                                 s=8, alpha=0.45, color="#2ca02c", marker="o", linewidths=0,
                                  zorder=3, label="Manifold noisy samples")
                     _gax.add_patch(_plt_geom.Circle(
                         (_anchor_2d[0], _anchor_2d[1]), sigma,
