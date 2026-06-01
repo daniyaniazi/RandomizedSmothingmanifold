@@ -78,11 +78,16 @@ Examples:
     parser.add_argument("--backend", type=str, default="annoy",
                         choices=["annoy", "faiss", "torch"],
                         help="Index backend (default: annoy)")
+    parser.add_argument("--metric", type=str, default=None,
+                        choices=["euclidean", "angular"],
+                        help="Override index metric from config (euclidean or angular)")
     
     args = parser.parse_args()
     
     # Load config
     cfg = load_certify_config(args.config)
+    if args.metric is not None:
+        cfg.index.metric = args.metric  # CLI override takes precedence
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     
     _log(f"Loading dataset: {cfg.dataset.name}")

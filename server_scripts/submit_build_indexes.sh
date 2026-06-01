@@ -2,13 +2,17 @@
 # =============================================================================
 # PRE-BUILD INDEXES using src.experiments.indexing.celeba_images
 # Usage:
-#   ./submit_build_indexes.sh all               # all 4 indexes
-#   ./submit_build_indexes.sh celeba             # CelebA pixel + latent
-#   ./submit_build_indexes.sh celebahq           # CelebaHQ pixel + latent
-#   ./submit_build_indexes.sh celeba-pixel       # CelebA pixel only
-#   ./submit_build_indexes.sh celeba-latent      # CelebA latent only
-#   ./submit_build_indexes.sh celebahq-pixel     # CelebaHQ pixel only
-#   ./submit_build_indexes.sh celebahq-latent    # CelebaHQ latent only
+#   ./submit_build_indexes.sh all                      # all 4 euclidean indexes
+#   ./submit_build_indexes.sh celeba                   # CelebA pixel + latent (euclidean)
+#   ./submit_build_indexes.sh celebahq                 # CelebaHQ pixel + latent (euclidean)
+#   ./submit_build_indexes.sh celeba-pixel             # CelebA pixel only (euclidean)
+#   ./submit_build_indexes.sh celeba-latent            # CelebA latent only (euclidean)
+#   ./submit_build_indexes.sh celebahq-pixel           # CelebaHQ pixel only (euclidean)
+#   ./submit_build_indexes.sh celebahq-latent          # CelebaHQ latent only (euclidean)
+#   ./submit_build_indexes.sh celeba-pixel-angular     # CelebA pixel (angular)
+#   ./submit_build_indexes.sh celeba-latent-angular    # CelebA latent (angular)
+#   ./submit_build_indexes.sh celebahq-pixel-angular   # CelebaHQ pixel (angular)
+#   ./submit_build_indexes.sh celebahq-latent-angular  # CelebaHQ latent (angular)
 # =============================================================================
 
 set -euo pipefail
@@ -30,16 +34,20 @@ submit_index() {
     local config=$1
     local space=$2
     local job_name=$3
-    local mem=${4:-"8G"}  # default 8G, override for large jobs
+    local mem=${4:-"8G"}     # default 8G, override for large jobs
+    local metric=${5:-""}    # optional metric override (euclidean|angular)
+
+    local metric_flag=""
+    [[ -n "$metric" ]] && metric_flag="--metric $metric"
 
     sbatch --partition=$PARTITION --time=$TIME --gres=gpu:$GPUS \
         --cpus-per-task=$CPUS --mem-per-cpu=$mem \
         --job-name="$job_name" \
         --output=$PROJECT_ROOT/output/slurm/${job_name}-%j.out \
         --error=$PROJECT_ROOT/output/slurm/${job_name}-%j.err \
-        --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celeba_images --config $config --space $space"
+        --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celeba_images --config $config --space $space $metric_flag"
 
-    echo "  ✅ $job_name (mem-per-cpu=$mem)"
+    echo "  ✅ $job_name (mem-per-cpu=$mem, metric=${metric:-from_config})"
 }
 
 TARGET=${1:-"all"}
@@ -67,6 +75,18 @@ case $TARGET in
     celebahq)
         submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel" "32G"
         submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent"
+        ;;
+    celeba-pixel-angular)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel-angular" "32G" "angular"
+        ;;
+    celeba-latent-angular)
+        submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent-angular" "8G" "angular"
+        ;;
+    celebahq-pixel-angular)
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_pixel.yaml" pixel "idx-celebahq-pixel-angular" "32G" "angular"
+        ;;
+    celebahq-latent-angular)
+        submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent-angular" "8G" "angular"
         ;;
     all)
         submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
