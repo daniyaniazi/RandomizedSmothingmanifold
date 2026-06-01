@@ -1520,8 +1520,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # CelebA: 224×224, CelebA-HQ: 512×512 (set in config).
     pixel_size = cfg.model.input_size
     
-    # Build pixel index for pixel manifold mode or latent manifold comparison viz
-    if cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent", "both") and cfg.output.save_visualizations):
+    # Build pixel index for pixel manifold mode, latent manifold comparison viz,
+    # or OOD MC-sample tracking (needed for mc_ood_count/mc_ood_frac in both ISO and manifold).
+    _need_pixel_index_for_ood = bool(getattr(cfg.dataset, "ood_attribute", None))
+    if cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent", "both") and cfg.output.save_visualizations) or _need_pixel_index_for_ood:
         pixel_index = load_or_build_pixel_index(
             train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees
         )
@@ -1610,8 +1612,10 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         # Determine which smoother to use for this sample
         _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
 
-        _collect = (cfg.smoothing.use_manifold
-                    and _ood_attr_map_global is not None
+        # Collect raw n-phase MC samples for OOD hit-rate computation.
+        # Works for BOTH isotropic and manifold — pixel_index is now loaded whenever
+        # ood_attribute is configured (see index-loading block above).
+        _collect = (_ood_attr_map_global is not None
                     and pixel_index is not None
                     and hasattr(pixel_index, "index")
                     and hasattr(pixel_index.index, "get_nns_by_vector")
