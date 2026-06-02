@@ -61,7 +61,7 @@ def build_annoy_index_streaming(
 
     _log = log_fn or (lambda msg: None)
 
-    metric_map = {"euclidean": "euclidean", "cosine": "angular", "manhattan": "manhattan"}
+    metric_map = {"euclidean": "euclidean", "cosine": "angular", "angular": "angular","manhattan": "manhattan"}
     ann = AnnoyIndex(dim, metric_map.get(metric, "euclidean"))
 
     item_idx = 0

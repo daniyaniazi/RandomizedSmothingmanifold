@@ -993,7 +993,7 @@ def save_sample_visualization(
             axes[0, 1].imshow(_tensor_to_pil(img_tensor))
         axes[0, 1].set_title("PCA Reconstruction", fontsize=9)
 
-        # Row 1: Manifold noise α = σ/√λ_max  (correct final — used for certification)
+        # Row 1: Manifold noise α = σ/√λ_max  (correct final this is used for certification)
         if isinstance(manifold_sm, ManifoldSmoother):
             def _sample_scaled_pixel():
                 w_anchor = whiten(query_vec, _cached_pca.pca)
