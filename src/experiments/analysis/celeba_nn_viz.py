@@ -142,9 +142,12 @@ def main():
         / "index" / "pixel" / "annoy" / args.metric / "index.ann"
     )
     print(f"Pixel index: {pix_idx_path}")
-    assert pix_idx_path.exists(), f"Not found — run: ./server_scripts/submit_build_indexes.sh celeba-pixel"
-    pix_ann = load_annoy_index(dim=pix_dim, index_path=str(pix_idx_path), metric='angular')
-    print(f"  {pix_ann.index.get_n_items():,} vectors, dim={pix_dim}")
+    if not pix_idx_path.exists():
+        print(f"  SKIP — pixel index not found. Run: ./server_scripts/submit_build_indexes.sh celeba-pixel")
+        pix_ann = None
+    else:
+        pix_ann = load_annoy_index(dim=pix_dim, index_path=str(pix_idx_path), metric=args.metric)
+        print(f"  {pix_ann.index.get_n_items():,} vectors, dim={pix_dim}")
 
     # ── load latent index ─────────────────────────────────────────────────────
     lat_dim = lcfg.vae.latent_dim
@@ -154,9 +157,12 @@ def main():
         / "index" / "latent" / "annoy" / args.metric / "index.ann"
     )
     print(f"Latent index: {lat_idx_path}")
-    assert lat_idx_path.exists(), f"Not found — run: ./server_scripts/submit_build_indexes.sh celeba-latent"
-    lat_ann = load_annoy_index(dim=lat_dim, index_path=str(lat_idx_path), metric=args.metric)
-    print(f"  {lat_ann.index.get_n_items():,} vectors, dim={lat_dim}")
+    if not lat_idx_path.exists():
+        print(f"  SKIP — latent index not found. Run: ./server_scripts/submit_build_indexes.sh celeba-latent")
+        lat_ann = None
+    else:
+        lat_ann = load_annoy_index(dim=lat_dim, index_path=str(lat_idx_path), metric=args.metric)
+        print(f"  {lat_ann.index.get_n_items():,} vectors, dim={lat_dim}")
 
     # ── load VAE ──────────────────────────────────────────────────────────────
     vae = ConvVAE(
@@ -197,38 +203,47 @@ def main():
         anchor_fname = anchor_row["filename"]
         anchor_smile = int(anchor_row["Smiling"])
 
-        pix_vec = load_pix_vec(anchor_fname)
-        lat_vec = load_lat_vec(anchor_fname)
+        pix_vec = load_pix_vec(anchor_fname) if pix_ann else None
+        lat_vec = load_lat_vec(anchor_fname) if lat_ann else None
 
-        pix_nns = _query_nn(pix_ann, tr_fnames, pix_vec, args.k, anchor_fname)
-        lat_nns = _query_nn(lat_ann, tr_fnames, lat_vec, args.k, anchor_fname)
+        pix_nns = _query_nn(pix_ann, tr_fnames, pix_vec, args.k, anchor_fname) if pix_ann else []
+        lat_nns = _query_nn(lat_ann, tr_fnames, lat_vec, args.k, anchor_fname) if lat_ann else []
 
+        n_rows = sum([pix_ann is not None, lat_ann is not None]) + 1  # anchor row shared
         n_cols = 1 + args.k
-        fig, axes = plt.subplots(2, n_cols, figsize=(3 * n_cols, 7))
-        axes[0, 0].set_ylabel("Pixel NNs",  fontsize=9, fontweight="bold", labelpad=6)
-        axes[1, 0].set_ylabel("Latent NNs", fontsize=9, fontweight="bold", labelpad=6)
-
-        for r in range(2):
-            _show_img(axes[r, 0], image_dir, anchor_fname,
+        fig, axes = plt.subplots(max(2, 1 + (lat_ann is not None) + (pix_ann is not None)),
+                                 n_cols, figsize=(3 * n_cols, 7))
+        axes = np.atleast_2d(axes)
+        row = 0
+        axes[row, 0].set_ylabel("Anchor", fontsize=9, fontweight="bold", labelpad=6)
+        for c in range(n_cols):
+            _show_img(axes[row, c], image_dir, anchor_fname,
                       f"ANCHOR\n{attr}=1\n{'smile' if anchor_smile else 'no-smile'}",
-                      border_color="gold")
+                      border_color="gold") if c == 0 else axes[row, c].axis("off")
 
-        for col, nn in enumerate(pix_nns, start=1):
-            _show_img(axes[0, col], image_dir, nn,
-                      f"NN-{col}\n{attr}={attr_val(nn, attr)}\n"
-                      f"{'smile' if fname_to_smile.get(nn,0)==1 else 'no-smile'}",
-                      border_color="#4c78a8")
+        if pix_ann is not None:
+            row += 1
+            axes[row, 0].set_ylabel("Pixel NNs", fontsize=9, fontweight="bold", labelpad=6)
+            for col, nn in enumerate(pix_nns, start=1):
+                _show_img(axes[row, col], image_dir, nn,
+                          f"NN-{col}\n{attr}={attr_val(nn, attr)}\n"
+                          f"{'smile' if fname_to_smile.get(nn,0)==1 else 'no-smile'}",
+                          border_color="#4c78a8")
 
-        for col, nn in enumerate(lat_nns, start=1):
-            _show_img(axes[1, col], image_dir, nn,
-                      f"NN-{col}\n{attr}={attr_val(nn, attr)}\n"
-                      f"{'smile' if fname_to_smile.get(nn,0)==1 else 'no-smile'}",
-                      border_color="#e07b54")
+        if lat_ann is not None:
+            row += 1
+            axes[row, 0].set_ylabel("Latent NNs", fontsize=9, fontweight="bold", labelpad=6)
+            for col, nn in enumerate(lat_nns, start=1):
+                _show_img(axes[row, col], image_dir, nn,
+                          f"NN-{col}\n{attr}={attr_val(nn, attr)}\n"
+                          f"{'smile' if fname_to_smile.get(nn,0)==1 else 'no-smile'}",
+                          border_color="#e07b54")
 
+        pix_info = f"Pixel: {pix_ann.index.get_n_items():,} @ {img_sz}px" if pix_ann else "Pixel: N/A"
+        lat_info = f"Latent: {lat_ann.index.get_n_items():,}, dim={lat_dim}" if lat_ann else "Latent: N/A"
         fig.suptitle(
             f"Attribute: {attr}  |  Anchor (gold)  •  Pixel NNs (blue)  •  Latent NNs (orange)\n"
-            f"Pixel: {pix_ann.index.get_n_items():,} @ {img_sz}px  |  "
-            f"Latent: {lat_ann.index.get_n_items():,}, dim={lat_dim}",
+            f"{pix_info}  |  {lat_info}",
             fontsize=10, y=1.02,
         )
         plt.tight_layout()

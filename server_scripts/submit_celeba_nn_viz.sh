@@ -17,6 +17,7 @@ sbatch \
     conda activate smoothing && \
     python -m src.experiments.analysis.celeba_nn_viz \
       --output-dir output/analysis/nn_viz \
+      --metric angular \
       --n-attrs 8 \
       --k 5"
 
