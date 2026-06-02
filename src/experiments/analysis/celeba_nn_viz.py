@@ -92,7 +92,7 @@ def main():
     parser.add_argument("--latent-cfg", default="src/configs/experiments/certify_celeba_latent_128.yaml")
     parser.add_argument("--metric",     default="euclidean", choices=["euclidean", "angular"])
     parser.add_argument("--output-dir", default="output/analysis/nn_viz")
-    parser.add_argument("--n-attrs",    type=int, default=8,  help="Top N OOD-feasible attrs")
+    parser.add_argument("--n-attrs",    type=int, default=40,  help="Top N OOD-feasible attrs")
     parser.add_argument("--k",          type=int, default=5,  help="Number of neighbours")
     parser.add_argument("--anchor-seed",type=int, default=42)
     parser.add_argument("--train-ratio",type=float, default=0.8)
@@ -143,7 +143,7 @@ def main():
     )
     print(f"Pixel index: {pix_idx_path}")
     assert pix_idx_path.exists(), f"Not found — run: ./server_scripts/submit_build_indexes.sh celeba-pixel"
-    pix_ann = load_annoy_index(dim=pix_dim, index_path=str(pix_idx_path), metric=args.metric)
+    pix_ann = load_annoy_index(dim=pix_dim, index_path=str(pix_idx_path), metric='angular')
     print(f"  {pix_ann.index.get_n_items():,} vectors, dim={pix_dim}")
 
     # ── load latent index ─────────────────────────────────────────────────────
