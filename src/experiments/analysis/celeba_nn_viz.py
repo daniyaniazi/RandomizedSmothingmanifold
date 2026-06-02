@@ -142,6 +142,8 @@ def main():
         / "index" / "pixel" / "annoy" / args.metric / "index.ann"
     )
     print(f"Pixel index: {pix_idx_path}")
+    print("pix_dim =", pix_dim)
+    
     if not pix_idx_path.exists():
         print(f"  SKIP — pixel index not found. Run: ./server_scripts/submit_build_indexes.sh celeba-pixel")
         pix_ann = None
@@ -149,6 +151,7 @@ def main():
         pix_ann = load_annoy_index(dim=pix_dim, index_path=str(pix_idx_path), metric=args.metric)
         print(f"  {pix_ann.index.get_n_items():,} vectors, dim={pix_dim}")
 
+    lat_ann = None
     # ── load latent index ─────────────────────────────────────────────────────
     lat_dim = lcfg.vae.latent_dim
     lat_idx_path = (

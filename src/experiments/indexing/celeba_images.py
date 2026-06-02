@@ -86,6 +86,8 @@ Examples:
     
     # Load config
     cfg = load_certify_config(args.config)
+    metric = args.metric if args.metric is not None else cfg.index.metric
+    _log(f"Using index metric: {metric}")
     if args.metric is not None:
         cfg.index.metric = args.metric  # CLI override takes precedence
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -120,10 +122,11 @@ Examples:
     
     # Set output directory
     out_dir = Path(cfg.output.output_dir) / "smile_classification" / cfg.dataset.name.lower().replace("-", "").replace("_", "") / "index" / args.space
-    index_dir = out_dir / args.backend / cfg.index.metric
+    index_dir = out_dir / args.backend / metric
     index_dir.mkdir(parents=True, exist_ok=True)
     
     if args.space == "pixel" and args.backend == "annoy":
+        _log(f"Streaming pixel vectors into Annoy Metric (metric={metric})...")
         # ── Streaming mode for pixel+annoy: avoids OOM for high-dim vectors ──
         first_batch = next(iter(data.train_loader))
         img = first_batch["image"] if isinstance(first_batch, dict) else first_batch[0]
@@ -135,13 +138,13 @@ Examples:
             dataloader=data.train_loader,
             dim=dim,
             image_key="image",
-            metric=cfg.index.metric,
+            metric=metric,
             n_trees=cfg.index.n_trees,
             max_samples=args.max_samples,
             metadata={
                 "space": args.space,
                 "backend": args.backend,
-                "metric": cfg.index.metric,
+                "metric": metric,
                 "dataset": cfg.dataset.name,
                 "image_size": cfg.model.input_size,
             },
