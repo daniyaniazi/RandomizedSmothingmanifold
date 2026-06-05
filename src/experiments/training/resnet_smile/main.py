@@ -391,6 +391,8 @@ def train(cfg: SmileTrainingConfig) -> None:
     saved_ckpts: list[Path] = []
     history: list[dict] = []
     start_epoch = 1
+    history_path = output_dir / "training_history.json"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Resume from checkpoint ──
     resume_path = ckpt_dir / "latest.pt"
@@ -410,7 +412,8 @@ def train(cfg: SmileTrainingConfig) -> None:
         train_loss, train_acc = run_epoch(
             model, data.train_loader, optimizer, criterion, device,
             train=True, log_every=cfg.logging.log_every_n_steps,
-            smoother=smoother,
+            aug_mode=aug_mode_active,
+            sigma=aug.sigma,
             gpu_cache=gpu_cache,
         )
         val_loss, val_acc = run_epoch(
@@ -425,9 +428,6 @@ def train(cfg: SmileTrainingConfig) -> None:
                "val_loss": val_loss, "val_acc": val_acc}
         history.append(row)
 
-        # Save training history JSON after every epoch
-        history_path = output_dir / "training_history.json"
-        history_path.parent.mkdir(parents=True, exist_ok=True)
         history_path.write_text(json.dumps(history, indent=2))
 
         if wandb_run is not None:
