@@ -52,7 +52,7 @@ checkpoint:
   base_dir: output/pretrained_model/smile_resnet_celeba
 
 smoothing_aug:
-  enabled: true
+  enabled: false
   mode: manifold          # isotropic | manifold
   sigma: 0.25             # overridden per task by train_smooth_sweep.py
   knn_k: 500
