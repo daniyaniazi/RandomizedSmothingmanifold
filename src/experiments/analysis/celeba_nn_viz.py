@@ -181,7 +181,6 @@ def main():
     tf_latent = T.Compose([
         T.Resize((lcfg.vae.image_size, lcfg.vae.image_size)),
         T.ToTensor(),
-        T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
 
     def load_pix_vec(fname):

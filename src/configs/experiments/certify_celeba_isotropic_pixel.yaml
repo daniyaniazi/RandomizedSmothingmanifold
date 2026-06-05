@@ -19,6 +19,7 @@ dataset:
   ood_attribute: Wearing_Hat
   ood_balanced: true
   ood_seed: 73
+  split_seed: 73               # must match training split_seed to ensure same train/test split
 
 model:
   name: resnet18

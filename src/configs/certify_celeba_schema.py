@@ -18,9 +18,10 @@ class CertifyDatasetConfig:
     file_extension: str = ""
     num_workers: int = 4
     subset_size: Optional[int] = None  # limit samples for testing
-    # Split ratios — must be identical across training, indexing, and certification
+    # Split ratios + seed — must be identical across training, indexing, and certification
     train_ratio: float = 0.8
     val_ratio: float = 0.1   # test = 1 - train_ratio - val_ratio
+    split_seed: int = 73     # controls dataset shuffle; keep in sync with training split_seed
     # OOD attribute subset — restrict test images to those where attribute=1
     ood_attribute: Optional[str] = None   # e.g. "Mouth_Slightly_Open", null = standard test split
     ood_balanced: bool = True             # sample exactly subset_size/2 smile + subset_size/2 non-smile

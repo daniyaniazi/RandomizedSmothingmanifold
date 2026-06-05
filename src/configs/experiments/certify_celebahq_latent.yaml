@@ -15,6 +15,7 @@ dataset:
   file_extension: .jpg
   num_workers: 4
   subset_size: 500
+  split_seed: 73               # must match training split_seed to ensure same train/test split
 
 model:
   name: resnet18

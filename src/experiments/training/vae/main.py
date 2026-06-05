@@ -62,13 +62,10 @@ def device_from_cfg(name: str) -> torch.device:
 
 
 def _build_transform(image_size: int, in_channels: int):
-    mean = [0.5] * in_channels
-    std = [0.5] * in_channels
     return transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
         ]
     )
 

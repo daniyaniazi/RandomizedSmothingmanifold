@@ -58,7 +58,7 @@ from src.configs.certify_celeba_io import load_certify_config, save_certify_conf
 from src.configs.certify_celeba_schema import CertifyConfig
 from src.configs.train_smile_schema import SmileDataloaderConfig, SmileDatasetConfig, SmileModelConfig
 from src.certify.randomized import certify_token_from_counts_two_stage_paper, TokenCertificate
-from src.dataloaders.celeba_smile import build_smile_dataloaders
+from src.dataloaders.celeba_smile import build_smile_dataloaders, build_dataloader_from_samples
 from src.indexing.base import load_index, NeighborIndex
 from src.indexing.image_index import build_or_load_image_index, ImageIndexArtifacts
 from src.models.resnet import build_resnet_classifier
@@ -268,7 +268,7 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
         num_workers=cfg.dataset.num_workers,
         train_ratio=cfg.dataset.train_ratio,
         val_ratio=cfg.dataset.val_ratio,
-        split_seed=cfg.seed,
+        split_seed=cfg.dataset.split_seed,
     )
     
     loader_cfg = SmileDataloaderConfig(batch_size=64, shuffle_train=False, pin_memory=True)
@@ -354,37 +354,6 @@ def get_ood_test_samples(
     return filtered
 
 
-def _create_image_dataloader(
-    samples: List[Tuple[str, int]],
-    image_size: int,
-    batch_size: int = 32,
-) -> torch.utils.data.DataLoader:
-    """Create a simple dataloader from (path, label) samples."""
-    from torch.utils.data import Dataset, DataLoader
-    
-    class SimpleImageDataset(Dataset):
-        def __init__(self, samples, transform):
-            self.samples = samples
-            self.transform = transform
-        
-        def __len__(self):
-            return len(self.samples)
-        
-        def __getitem__(self, idx):
-            path, label = self.samples[idx]
-            img = Image.open(path).convert("RGB")
-            img_tensor = self.transform(img)
-            return {"image": img_tensor, "label": label, "path": path}
-    
-    transform = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
-    ])
-    
-    dataset = SimpleImageDataset(samples, transform)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-
 
 def load_or_build_pixel_index(
     train_samples: List[Tuple[str, int]],
@@ -425,8 +394,8 @@ def load_or_build_pixel_index(
         
         _log(f"Building pixel index from {len(train_samples)} samples (metric={metric})...")
         
-        dataloader = _create_image_dataloader(train_samples, image_size)
-        
+        dataloader = build_dataloader_from_samples(train_samples, image_size)
+
         artifacts = build_or_load_image_index(
             out_dir=index_dir,
             dataloader=dataloader,
@@ -481,7 +450,7 @@ def load_or_build_latent_index(
         
         _log(f"Building latent index from {len(train_samples)} samples (metric={metric})...")
         
-        dataloader = _create_image_dataloader(train_samples, vae.image_size)
+        dataloader = build_dataloader_from_samples(train_samples, vae.image_size)
         
         # Create encoder function
         vae.eval()
@@ -644,20 +613,9 @@ def make_latent_sample_fn(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _tensor_to_pil(tensor: torch.Tensor, mean: List[float] = None, std: List[float] = None) -> Image.Image:
-    """Convert normalized tensor (C,H,W) to PIL Image."""
-    if mean is None:
-        mean = CELEBA_MEAN
-    if std is None:
-        std = CELEBA_STD
-    
-    # Denormalize
-    img = tensor.clone()
-    for c in range(3):
-        img[c] = img[c] * std[c] + mean[c]
-    img = img.clamp(0, 1)
-    
-    # Convert to PIL
+def _tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """Convert [0,1] tensor (C,H,W) to PIL Image."""
+    img = tensor.clamp(0, 1)
     img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     return Image.fromarray(img_np)
 
@@ -1508,7 +1466,7 @@ def certify_single_sample(
 
     # Pre-process the clean image once
     x_clean = classifier_transform(
-        transforms.ToPILImage()(img_tensor.clamp(-1, 1) * 0.5 + 0.5)
+        transforms.ToPILImage()(img_tensor.clamp(0, 1))
     ).unsqueeze(0).to(device)  # (1, C, H, W)
 
     total = n0_samples + n_samples
@@ -1523,9 +1481,6 @@ def certify_single_sample(
 
     processed = 0
     CHUNK = 256  # max samples per GPU forward to avoid OOM
-    # Pre-compute normalization constants for CPU fallback denormalization
-    _smooth_mean = torch.tensor(CELEBA_MEAN).view(3, 1, 1)
-    _smooth_std  = torch.tensor(CELEBA_STD).view(3, 1, 1)
     while processed < total:
         chunk = min(CHUNK, total - processed)
         # Repeat clean image chunk times: (chunk, C, H, W)
@@ -1537,15 +1492,13 @@ def certify_single_sample(
             x_noisy = smoother.sample_batch_gpu(x_rep, gpu_cache=gpu_cache, indices=idx_rep)
         elif sample_fn is not None:
             # CPU loop: use pre-built sample_fn (kNN+SVD cached, needed for ManifoldSmoother).
-            # sample_fn() returns a normalized tensor in smooth_transform space; undo normalization
-            # → PIL → apply classifier_transform to match the GPU path's input space.
+            # sample_fn() returns a [0,1] tensor; convert to PIL → apply classifier_transform.
             processed_samples = []
             raw_chunk: List[torch.Tensor] = []
             for _ in range(chunk):
-                s = sample_fn()  # (C, H, W) in smooth_transform space
+                s = sample_fn()  # (C, H, W) in [0, 1]
                 raw_chunk.append(s)
-                s_01 = (s * _smooth_std + _smooth_mean).clamp(0, 1)
-                pil = transforms.ToPILImage()(s_01)
+                pil = transforms.ToPILImage()(s.clamp(0, 1))
                 processed_samples.append(classifier_transform(pil))
             x_noisy = torch.stack(processed_samples, dim=0).to(device)  # (chunk, C, H, W)
             # Collect raw n-phase samples only
@@ -1666,7 +1619,6 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     classifier_transform = transforms.Compose([
         transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
         transforms.ToTensor(),
-        transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
     ])
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -1720,7 +1672,6 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     smooth_transform = transforms.Compose([
         transforms.Resize((smooth_size, smooth_size)),
         transforms.ToTensor(),
-        transforms.Normalize(CELEBA_MEAN, CELEBA_STD),
     ])
     
     # ─────────────────────────────────────────────────────────────────────────

@@ -149,10 +149,7 @@ def _build_transforms(image_size: int):
     train_transform = transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
@@ -160,10 +157,24 @@ def _build_transforms(image_size: int):
         [
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
     return train_transform, eval_transform
+
+
+def build_dataloader_from_samples(
+    samples: List[Sample],
+    image_size: int,
+    batch_size: int = 32,
+    num_workers: int = 0,
+) -> DataLoader:
+    """Wrap a pre-split (path, label) list in a DataLoader with Resize+ToTensor."""
+    transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+    ])
+    dataset = SmileImageDataset(samples, transform=transform)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
 
 def build_smile_dataloaders(

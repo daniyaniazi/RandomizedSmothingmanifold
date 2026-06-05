@@ -21,6 +21,7 @@ dataset:
   ood_attribute: Wearing_Hat          # e.g. "Male", "Eyeglasses", "Wearing_Hat", null = standard test split
   ood_balanced: true           # if true: sample exactly subset_size/2 smile + subset_size/2 non-smile
   ood_seed: 73                 # random seed for OOD sampling
+  split_seed: 73               # must match training split_seed to ensure same train/test split
 
 model:
   name: resnet18
