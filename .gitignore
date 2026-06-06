@@ -39,3 +39,4 @@ notebooks/*_indexmap.json
 
 *.ann
 *.faiss
+.env
