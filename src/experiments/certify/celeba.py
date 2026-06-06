@@ -2344,6 +2344,670 @@ def _save_summary_visualization(out_dir: Path, results: List[Dict], metrics: Dic
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Multi-sigma certification (one-time PCA, loop over sigmas)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float]) -> List[Dict]:
+    """Certify across multiple sigmas with a single shared setup pass.
+
+    For each test sample:
+      - Image is loaded once
+      - kNN + PCA is computed once  (manifold mode)
+      - VAE encode is computed once (latent mode)
+    Then for every sigma the noise is applied and the sample is certified.
+
+    Each sigma writes its results to the *identical* folder hierarchy as
+    run_certification() — certify/{mode_tag}/sigma_{s}/ — so downstream
+    scripts, the quad-array skip logic, and the analysis notebooks all work
+    unchanged.
+
+    Partial-state checkpoints and skip-if-metrics-exists are maintained
+    per sigma, exactly as in the single-sigma pipeline.
+    """
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+
+    if int(cfg.smoothing.n0_samples) <= 0:
+        raise ValueError("n0_samples must be > 0")
+    if int(cfg.smoothing.n_samples) <= 0:
+        raise ValueError("n_samples must be > 0")
+    if not sigma_values:
+        raise ValueError("sigma_values must not be empty")
+
+    sigma_values = sorted(set(float(s) for s in sigma_values))
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    _log(f"Device: {device}")
+    _log(f"Multi-sigma sweep: {sigma_values}")
+
+    # ── shared paths (index dirs are sigma-independent) ───────────────────────
+    paths = CertifyPaths.from_config(cfg)
+    paths.ensure_dirs()
+
+    # ── train / test samples (same split for all sigmas) ─────────────────────
+    train_samples, test_samples = get_train_test_samples(cfg)
+    test_samples = get_ood_test_samples(cfg, test_samples)
+    ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+    _log(f"Train: {len(train_samples)}  Test: {len(test_samples)}")
+
+    dataset_info = {
+        "dataset": cfg.dataset.name,
+        "train_samples": len(train_samples),
+        "test_samples": len(test_samples),
+        "seed": cfg.seed,
+        "ood_attribute": ood_attr if ood_attr else None,
+        "ood_attr_value": 1 if ood_attr else None,
+        "ood_balanced": cfg.dataset.ood_balanced if ood_attr else None,
+    }
+    (paths.dataset_dir / "dataset_info.json").write_text(json.dumps(dataset_info, indent=2))
+
+    # ── classifier ────────────────────────────────────────────────────────────
+    classifier = build_resnet_classifier(
+        name=cfg.model.name,
+        pretrained=False,
+        dropout=cfg.model.dropout,
+        num_classes=cfg.model.num_classes,
+    ).to(device)
+    ckpt_path = resolve_classifier_checkpoint(cfg)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    if "model_state_dict" in ckpt:
+        classifier.load_state_dict(ckpt["model_state_dict"])
+    elif "model_state" in ckpt:
+        classifier.load_state_dict(ckpt["model_state"])
+    elif isinstance(ckpt, dict) and "conv1.weight" not in ckpt:
+        for key in ["state_dict", "model"]:
+            if key in ckpt:
+                classifier.load_state_dict(ckpt[key])
+                break
+        else:
+            raise ValueError(f"Cannot find weights in checkpoint. Keys: {list(ckpt.keys())}")
+    else:
+        classifier.load_state_dict(ckpt)
+    classifier.eval()
+    _log(f"Classifier: {ckpt_path}")
+
+    classifier_transform = transforms.Compose([
+        transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
+        transforms.ToTensor(),
+    ])
+
+    # ── VAE ───────────────────────────────────────────────────────────────────
+    vae = None
+    if cfg.vae.enabled and cfg.smoothing.mode in ("latent", "both"):
+        vae = ConvVAE(
+            in_channels=cfg.vae.in_channels,
+            image_size=cfg.vae.image_size,
+            latent_dim=cfg.vae.latent_dim,
+        ).to(device)
+        load_vae_checkpoint(vae, cfg.vae.checkpoint_path, device)
+        vae.eval()
+        _log(f"VAE: {cfg.vae.checkpoint_path}")
+
+    # ── indices ───────────────────────────────────────────────────────────────
+    pixel_index = None
+    latent_index = None
+    pixel_size = cfg.model.input_size
+    _need_pixel_index_for_ood = bool(ood_attr)
+    if cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent", "both") and cfg.output.save_visualizations) or _need_pixel_index_for_ood:
+        pixel_index = load_or_build_pixel_index(
+            train_samples, pixel_size, paths.pixel_index_dir, cfg.index.n_trees,
+            metric=cfg.index.metric,
+        )
+    _need_latent_index = (
+        cfg.smoothing.mode in ("latent", "both") and vae is not None and
+        (cfg.smoothing.use_manifold or _need_pixel_index_for_ood)
+    )
+    if _need_latent_index:
+        latent_index = load_or_build_latent_index(
+            train_samples, vae, paths.latent_index_dir, cfg.index.n_trees, device,
+            metric=cfg.index.metric,
+        )
+
+    smooth_size = pixel_size
+    smooth_transform = transforms.Compose([
+        transforms.Resize((smooth_size, smooth_size)),
+        transforms.ToTensor(),
+    ])
+
+    # ── OOD map (shared across all sigmas) ────────────────────────────────────
+    _ood_attr_map_global: Optional[dict] = None
+    if ood_attr:
+        _attr_path_g = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
+        _lines_g = [l.strip() for l in _attr_path_g.read_text().splitlines() if l.strip()]
+        _attr_names_g = _lines_g[1].split()
+        if ood_attr in _attr_names_g:
+            _aidx_g = _attr_names_g.index(ood_attr)
+            _ood_attr_map_global = {}
+            for _row_g in _lines_g[2:]:
+                _parts_g = _row_g.split()
+                _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
+
+    _pixel_ood_labels: Optional[np.ndarray] = None
+    if (_ood_attr_map_global is not None and pixel_index is not None and hasattr(pixel_index, "filenames")):
+        _pixel_ood_labels = np.array(
+            [_ood_attr_map_global.get(Path(fn).name, 0) for fn in pixel_index.filenames],
+            dtype=np.int8,
+        )
+
+    # ── per-sigma state — load partial checkpoints, skip completed ────────────
+    def _sigma_experiment_dir(sigma: float) -> Path:
+        """Same path formula as CertifyPaths.from_config but for a given sigma."""
+        sigma_tag = f"sigma_{sigma:.2f}".replace(".", "_")
+        mode_tag = f"{cfg.smoothing.mode}_{'manifold' if cfg.smoothing.use_manifold else 'isotropic'}"
+        if ood_attr:
+            return paths.base_dir / "certify_ood" / ood_attr.lower() / mode_tag / sigma_tag
+        return paths.base_dir / "certify" / mode_tag / sigma_tag
+
+    # Build per-sigma mutable state dicts
+    sigma_states: Dict[float, Dict] = {}
+    active_sigmas: List[float] = []
+    for sigma in sigma_values:
+        exp_dir = _sigma_experiment_dir(sigma)
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        metrics_path = exp_dir / "metrics.json"
+        if metrics_path.exists():
+            _log(f"SKIP sigma={sigma} — metrics.json already exists: {metrics_path}")
+            continue
+
+        state: Dict = {
+            "exp_dir": exp_dir,
+            "results": [],
+            "total_correct": 0,
+            "total_certified": 0,
+            "total_abstained": 0,
+            "radii": [],
+            "start_idx": 0,
+        }
+        # Resume from partial checkpoint if enabled
+        if cfg.checkpoint.resume:
+            partial = _load_partial_state(exp_dir, len(test_samples))
+            if partial is not None:
+                state["start_idx"] = partial["next_idx"]
+                state["results"] = partial["results"]
+                state["total_correct"] = partial["total_correct"]
+                state["total_certified"] = partial["total_certified"]
+                state["total_abstained"] = partial["total_abstained"]
+                state["radii"] = partial["radii"]
+                _log(f"sigma={sigma}: resuming from sample {state['start_idx']}/{len(test_samples)}")
+
+        sigma_states[sigma] = state
+        active_sigmas.append(sigma)
+        # Save config once per sigma dir
+        _cfg_copy = load_certify_config.__module__  # just to have the import; we write manually
+        import copy as _copy
+        import dataclasses as _dc
+        _cfg_sigma = _copy.deepcopy(cfg)
+        _cfg_sigma.smoothing.sigma = sigma
+        save_certify_config(_cfg_sigma, exp_dir / "config.yaml")
+
+    if not active_sigmas:
+        _log("All sigmas already completed — nothing to do.")
+        return []
+
+    # Global start = minimum start_idx across all active sigmas
+    global_start = min(s["start_idx"] for s in sigma_states.values())
+    checkpoint_every = cfg.checkpoint.checkpoint_every if cfg.checkpoint.enabled else 0
+
+    _log(f"Active sigmas: {active_sigmas}  (global_start={global_start})")
+
+    # ── main loop — one pass over test samples ────────────────────────────────
+    for idx in tqdm(range(global_start, len(test_samples)), desc="Certifying (multi-sigma)",
+                    initial=global_start, total=len(test_samples)):
+
+        img_path, label = test_samples[idx]
+        img = Image.open(img_path).convert("RGB")
+        img_tensor = smooth_transform(img)
+
+        # ── compute PCA / VAE encode ONCE per sample ──────────────────────────
+        # For manifold: cache PCA so all sigmas reuse the same kNN+SVD result.
+        # For isotropic: no PCA needed, sample_fn is None (GPU batch path).
+        _is_manifold = cfg.smoothing.use_manifold
+
+        # Latent vector (reused across sigmas for latent mode)
+        _lat_z: Optional[np.ndarray] = None
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            with torch.no_grad():
+                x_vae = img_tensor.unsqueeze(0).to(device)
+                if x_vae.shape[-1] != vae.image_size or x_vae.shape[-2] != vae.image_size:
+                    x_vae = F.interpolate(x_vae, size=vae.image_size, mode="bilinear", align_corners=False)
+                mu, _ = vae.encode(x_vae)
+            _lat_z = mu.squeeze(0).cpu().numpy().astype(np.float32)
+
+        # PCA cache — computed once, reused for all sigmas (manifold only)
+        _pca_cached = None
+        if _is_manifold:
+            if cfg.smoothing.mode == "pixel":
+                # Build a temporary pixel smoother with knn_k to compute PCA
+                _tmp_smoother = ManifoldSmoother(
+                    sigma=1.0,  # sigma doesn't matter for PCA computation
+                    index=pixel_index,
+                    knn_k=cfg.smoothing.knn_k,
+                    eps_eig=cfg.smoothing.eps_eig,
+                )
+                _pca_cached = _tmp_smoother.compute_pca(img_tensor.numpy().flatten().astype(np.float32))
+            elif cfg.smoothing.mode == "latent" and vae is not None and latent_index is not None:
+                _tmp_smoother = ManifoldSmoother(
+                    sigma=1.0,
+                    index=latent_index,
+                    knn_k=cfg.smoothing.knn_k,
+                    eps_eig=cfg.smoothing.eps_eig,
+                )
+                _pca_cached = _tmp_smoother.compute_pca(_lat_z)
+
+        # KNN OOD fraction (sigma-independent — same neighbours for all sigmas)
+        _nn_ood_count: Optional[int] = None
+        _nn_ood_frac: Optional[float] = None
+        if _ood_attr_map_global is not None:
+            _knn_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
+            if _knn_index is not None and hasattr(_knn_index, "index") and hasattr(_knn_index.index, "get_nns_by_vector") and hasattr(_knn_index, "filenames"):
+                _qvec = _lat_z if (cfg.smoothing.mode == "latent" and _lat_z is not None) else img_tensor.numpy().flatten().astype(np.float32)
+                _k_nn = cfg.smoothing.knn_k
+                _nn_ids = _knn_index.index.get_nns_by_vector(_qvec.tolist(), _k_nn, include_distances=False)
+                _nn_ood_count = int(sum(_ood_attr_map_global.get(Path(_knn_index.filenames[_nid]).name, 0) for _nid in _nn_ids))
+                _nn_ood_frac = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
+
+        # ── inner loop: certify this sample for each active sigma ─────────────
+        for sigma in active_sigmas:
+            state = sigma_states[sigma]
+
+            # Skip samples already processed for this sigma
+            if idx < state["start_idx"]:
+                continue
+
+            # Build sigma-specific smoother (cheap — no kNN, just sets sigma)
+            if cfg.smoothing.use_manifold:
+                _pix_sm = ManifoldSmoother(sigma=sigma, index=pixel_index,
+                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig) if pixel_index else IsotropicSmoother(sigma=sigma)
+                _lat_sm = ManifoldSmoother(sigma=sigma, index=latent_index,
+                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig) if latent_index else IsotropicSmoother(sigma=sigma)
+            else:
+                _pix_sm = IsotropicSmoother(sigma=sigma)
+                _lat_sm = IsotropicSmoother(sigma=sigma)
+
+            _active_smoother = _lat_sm if cfg.smoothing.mode == "latent" and vae is not None else _pix_sm
+
+            # sample_fn: for manifold reuse cached PCA, for iso use None (GPU path)
+            _collect = (_ood_attr_map_global is not None and pixel_index is not None
+                        and hasattr(pixel_index, "index") and hasattr(pixel_index.index, "get_nns_by_vector")
+                        and hasattr(pixel_index, "filenames"))
+
+            if _is_manifold and _pca_cached is not None:
+                # Patch sigma into the smoother used by sample_from_cached
+                _active_smoother.sigma = sigma
+                if cfg.smoothing.mode == "pixel":
+                    _pix_sm.sigma = sigma
+                    def _sfn(_sm=_pix_sm, _pc=_pca_cached, _shape=img_tensor.shape):
+                        noisy_flat = _sm.sample_from_cached(_pc)
+                        return torch.from_numpy(noisy_flat.reshape(_shape)).float()
+                    _sample_fn = _sfn
+                else:  # latent
+                    _lat_sm.sigma = sigma
+                    def _sfn(_sm=_lat_sm, _pc=_pca_cached, _z=_lat_z):
+                        z_noised = _sm.sample_from_cached(_pc)
+                        with torch.no_grad():
+                            z_t = torch.from_numpy(z_noised[None, :]).to(device=device, dtype=torch.float32)
+                            return vae.decode(z_t).squeeze(0).cpu()
+                    _sample_fn = _sfn
+            else:
+                _sample_fn = None  # isotropic → GPU batch path in certify_single_sample
+
+            cert, _cert_raw_samples = certify_single_sample(
+                classifier=classifier,
+                img_tensor=img_tensor,
+                smoother=_active_smoother,
+                n_samples=cfg.smoothing.n_samples,
+                n0_samples=int(cfg.smoothing.n0_samples),
+                classifier_transform=classifier_transform,
+                device=device,
+                alpha_conf=cfg.alpha_conf,
+                sigma=sigma,
+                sample_fn=_sample_fn,
+                collect_n_samples=_collect,
+            )
+
+            result = {
+                "idx": idx,
+                "image_path": img_path,
+                "label": label,
+                "pred": cert.pred,
+                "radius": cert.radius,
+                "abstained": cert.abstained,
+                "p_a_lower": cert.p_a_lower,
+                "p_b_upper": cert.p_b_upper,
+                "correct": (cert.pred == label) if not cert.abstained else False,
+                "certified_correct": (cert.pred == label and not cert.abstained),
+                "ood_attribute": ood_attr if ood_attr else None,
+                "ood_attr_value": 1 if ood_attr else None,
+                "nn_ood_count": _nn_ood_count,
+                "nn_ood_frac": _nn_ood_frac,
+                "mc_ood_count": None,
+                "mc_ood_frac": None,
+            }
+
+            # MC OOD fraction
+            if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
+                    and _pixel_ood_labels is not None and pixel_index is not None
+                    and hasattr(pixel_index, "index")):
+                _mc_hits = 0
+                for _rs in _cert_raw_samples:
+                    _nid = pixel_index.index.get_nns_by_vector(
+                        _rs.numpy().flatten().astype(np.float32).tolist(), 1, include_distances=False)
+                    if _nid:
+                        _mc_hits += int(_pixel_ood_labels[_nid[0]])
+                result["mc_ood_count"] = _mc_hits
+                result["mc_ood_frac"] = float(_mc_hits) / len(_cert_raw_samples)
+
+            # Eigenvalue / geometry (reuse cached PCA — no recompute)
+            if _pca_cached is not None:
+                if cfg.smoothing.mode == "pixel":
+                    _lmax = float(_pca_cached.pca.evals[0])
+                    result["eigenvalues"] = _pca_cached.pca.evals.tolist()
+                elif cfg.smoothing.mode == "latent":
+                    _lmax = float(_pca_cached.pca.evals[0])
+                    result["eigenvalues"] = _pca_cached.pca.evals.tolist()
+                else:
+                    _lmax = None
+                if _lmax is not None:
+                    result["lambda_max"] = _lmax
+                    result["alpha"] = float(sigma) / float(np.sqrt(max(_lmax, 1e-12)))
+
+            state["results"].append(result)
+            if cert.abstained:
+                state["total_abstained"] += 1
+            else:
+                state["total_certified"] += 1
+                state["radii"].append(cert.radius)
+                if cert.pred == label:
+                    state["total_correct"] += 1
+
+            # Visualization (first N samples, first sigma only to avoid duplication)
+            if cfg.output.save_visualizations and idx < cfg.output.num_viz_samples and sigma == active_sigmas[0]:
+                _cfg_viz = load_certify_config.__module__  # sentinel
+                import copy as _copy2
+                _cfg_s = _copy2.deepcopy(cfg)
+                _cfg_s.smoothing.sigma = sigma
+                viz_dir = state["exp_dir"] / "visualizations"
+                current_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
+                save_sample_visualization(
+                    viz_dir=viz_dir,
+                    sample_idx=idx,
+                    img_tensor=img_tensor,
+                    label=label,
+                    pred=cert.pred,
+                    radius=cert.radius,
+                    abstained=cert.abstained,
+                    index=current_index,
+                    vae=vae,
+                    cfg=_cfg_s,
+                    device=device,
+                    pixel_smoother=_pix_sm,
+                    latent_smoother=_lat_sm,
+                    ood_attr_map=_ood_attr_map_global,
+                )
+
+        # ── checkpoint all active sigmas periodically ─────────────────────────
+        if checkpoint_every > 0 and (idx + 1) % checkpoint_every == 0:
+            for sigma in active_sigmas:
+                state = sigma_states[sigma]
+                _save_partial_state(
+                    experiment_dir=state["exp_dir"],
+                    next_idx=idx + 1,
+                    results=state["results"],
+                    total_correct=state["total_correct"],
+                    total_certified=state["total_certified"],
+                    total_abstained=state["total_abstained"],
+                    radii=state["radii"],
+                    num_test_samples=len(test_samples),
+                )
+
+    # ── finalise each sigma: compute metrics, save outputs ────────────────────
+    all_outputs = []
+    for sigma in active_sigmas:
+        state = sigma_states[sigma]
+        exp_dir = state["exp_dir"]
+        results = state["results"]
+        total_certified = state["total_certified"]
+        total_abstained = state["total_abstained"]
+        total_correct = state["total_correct"]
+        radii = state["radii"]
+        total = len(test_samples)
+
+        # Clone cfg with this sigma so _save_summary_visualization and metrics are correct
+        import copy as _copy3
+        _cfg_s = _copy3.deepcopy(cfg)
+        _cfg_s.smoothing.sigma = sigma
+
+        metrics = {
+            "experiment": cfg.experiment_name,
+            "dataset": cfg.dataset.name,
+            "smoothing_mode": cfg.smoothing.mode,
+            "use_manifold": cfg.smoothing.use_manifold,
+            "sigma": sigma,
+            "n0_samples": int(cfg.smoothing.n0_samples),
+            "n_samples": cfg.smoothing.n_samples,
+            "total_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
+            "knn_k": cfg.smoothing.knn_k,
+            "index_split": "train",
+            "certify_split": "test",
+            "total_test_samples": total,
+            "certified_samples": total_certified,
+            "abstained_samples": total_abstained,
+            "certified_correct": total_correct,
+            "certified_accuracy": total_correct / total if total > 0 else 0.0,
+            "abstain_rate": total_abstained / total if total > 0 else 0.0,
+            "mean_radius": float(np.mean(radii)) if radii else 0.0,
+            "median_radius": float(np.median(radii)) if radii else 0.0,
+            "max_radius": float(np.max(radii)) if radii else 0.0,
+            "std_radius": float(np.std(radii)) if radii else 0.0,
+        }
+        for cls in [0, 1]:
+            cls_name = "smile" if cls == 1 else "no_smile"
+            cls_results = [r for r in results if r["label"] == cls]
+            cls_correct = sum(1 for r in cls_results if r["certified_correct"])
+            cls_radii = [r["radius"] for r in cls_results if not r["abstained"]]
+            metrics[f"class_{cls_name}_total"] = len(cls_results)
+            metrics[f"class_{cls_name}_correct"] = cls_correct
+            metrics[f"class_{cls_name}_accuracy"] = cls_correct / len(cls_results) if cls_results else 0.0
+            metrics[f"class_{cls_name}_mean_radius"] = float(np.mean(cls_radii)) if cls_radii else 0.0
+
+        _nn_fracs  = [r["nn_ood_frac"]  for r in results if r.get("nn_ood_frac")  is not None]
+        _mc_fracs  = [r["mc_ood_frac"]  for r in results if r.get("mc_ood_frac")  is not None]
+        _nn_counts = [r["nn_ood_count"] for r in results if r.get("nn_ood_count") is not None]
+        _mc_counts = [r["mc_ood_count"] for r in results if r.get("mc_ood_count") is not None]
+        metrics["ood_stats"] = {
+            "ood_attribute": ood_attr if ood_attr else None,
+            "nn_samples_with_data":  len(_nn_fracs),
+            "mean_nn_ood_frac":      float(np.mean(_nn_fracs))   if _nn_fracs   else None,
+            "median_nn_ood_frac":    float(np.median(_nn_fracs)) if _nn_fracs   else None,
+            "mean_nn_ood_count":     float(np.mean(_nn_counts))  if _nn_counts  else None,
+            "mc_samples_with_data":  len(_mc_fracs),
+            "mean_mc_ood_frac":      float(np.mean(_mc_fracs))   if _mc_fracs   else None,
+            "median_mc_ood_frac":    float(np.median(_mc_fracs)) if _mc_fracs   else None,
+            "mean_mc_ood_count":     float(np.mean(_mc_counts))  if _mc_counts  else None,
+        }
+
+        # Volume + geometry metrics (same logic as run_certification)
+        from src.certify.randomized import (
+            log_volume_isotropic, log_volume_manifold, eigenvalue_diagnostics,
+            normalize_eigenvalues, log_volume_geo_iso, log_volume_geo_mani,
+            axis_lengths, anisotropy_ratio, cumulative_stretch_energy,
+        )
+        if cfg.smoothing.mode == "latent" and vae is not None:
+            ambient_dim = vae.latent_dim
+        else:
+            ambient_dim = cfg.model.input_size * cfg.model.input_size * 3
+        sigma_val = float(sigma)
+        k_pca = None
+        geometry_factors, lv_mani_actuals, lv_iso_Ds = [], [], []
+        per_sample_log_geo_ratio, per_sample_anisotropy = [], []
+        per_sample_axis_lengths, per_sample_cum_energy, per_sample_effective_rank = [], [], []
+
+        iso_companion_radii = None
+        _stag = f"sigma_{sigma:.2f}".replace(".", "_")
+        iso_companion_dir = paths.certify_dir / f"{cfg.smoothing.mode}_isotropic" / _stag
+        iso_csv = iso_companion_dir / "results.csv"
+        if iso_csv.exists():
+            import csv as csv_mod2
+            with open(iso_csv) as f:
+                reader = csv_mod2.DictReader(f)
+                iso_companion_radii = np.array([float(row["radius"]) for row in reader if float(row["radius"]) > 0])
+
+        for r in results:
+            if r["radius"] <= 0:
+                continue
+            evals = r.get("eigenvalues")
+            if evals is not None:
+                evals_arr = np.array(evals, dtype=np.float64)
+                k_pca = len(evals_arr)
+                lv_mani = log_volume_manifold(r["radius"], evals_arr)
+                geom = 0.5 * np.sum(np.log(np.maximum(evals_arr, 1e-30)))
+                diag = eigenvalue_diagnostics(evals_arr)
+                r["log_vol_mani_actual"] = lv_mani
+                r["geometry_factor"] = geom
+                r["eigen_k"] = k_pca
+                r["ambient_D"] = ambient_dim
+                r["eigen_effective_rank"] = diag.effective_rank
+                r["eigen_condition_number"] = diag.condition_number
+                r["eigen_sum"] = diag.eigenvalue_sum
+                lv_mani_actuals.append(lv_mani)
+                geometry_factors.append(geom)
+                evals_norm_max = normalize_eigenvalues(evals_arr, mode="max")
+                lv_gm = log_volume_geo_mani(sigma_val, evals_norm_max)
+                lv_gi = log_volume_geo_iso(sigma_val, k_pca)
+                log_geo_ratio = lv_gm - lv_gi
+                ani = anisotropy_ratio(evals_norm_max)
+                ax = axis_lengths(sigma_val, evals_norm_max)
+                cum = cumulative_stretch_energy(evals_norm_max)
+                p = evals_arr / np.maximum(evals_arr.sum(), 1e-30)
+                eff_rank = float(np.exp(-np.sum(p * np.log(p + 1e-30))))
+                per_sample_log_geo_ratio.append(log_geo_ratio)
+                per_sample_anisotropy.append(ani)
+                per_sample_axis_lengths.append(ax.tolist())
+                per_sample_cum_energy.append(cum.tolist())
+                per_sample_effective_rank.append(eff_rank)
+                r["log_v_geo_iso"] = lv_gi
+                r["log_v_geo_mani"] = lv_gm
+                r["log_geo_ratio"] = log_geo_ratio
+                r["anisotropy_ratio"] = ani
+            else:
+                lv_iso_D = log_volume_isotropic(r["radius"], ambient_dim)
+                r["log_vol_iso_D"] = lv_iso_D
+                r["log_vol_mani_actual"] = None
+                r["geometry_factor"] = None
+                r["eigen_k"] = None
+                r["ambient_D"] = ambient_dim
+                lv_iso_Ds.append(lv_iso_D)
+
+        if lv_mani_actuals or lv_iso_Ds:
+            mean_log_vol_iso_D = mean_log_vol_iso_k = mean_log_vol_mani_pred = None
+            if iso_companion_radii is not None and len(iso_companion_radii) > 0 and k_pca is not None:
+                mean_geom = float(np.mean(geometry_factors)) if geometry_factors else 0.0
+                mean_log_vol_iso_D = float(np.mean([log_volume_isotropic(r, ambient_dim) for r in iso_companion_radii]))
+                mean_log_vol_iso_k = float(np.mean([log_volume_isotropic(r, k_pca) for r in iso_companion_radii]))
+                mean_log_vol_mani_pred = float(np.mean([log_volume_isotropic(r, k_pca) + mean_geom for r in iso_companion_radii]))
+            elif lv_iso_Ds:
+                mean_log_vol_iso_D = float(np.mean(lv_iso_Ds))
+            geo_summary = None
+            if per_sample_log_geo_ratio:
+                ax_arr_np = np.array(per_sample_axis_lengths)
+                geo_summary = {
+                    "sigma": sigma_val, "k_pca": k_pca, "ambient_D": ambient_dim,
+                    "log_v_iso_geo": float(log_volume_geo_iso(sigma_val, k_pca)) if k_pca else None,
+                    "mean_log_v_mani_geo": float(np.mean([r["log_v_geo_mani"] for r in results if r.get("log_v_geo_mani") is not None])),
+                    "mean_log_geo_ratio": float(np.mean(per_sample_log_geo_ratio)),
+                    "median_log_geo_ratio": float(np.median(per_sample_log_geo_ratio)),
+                    "std_log_geo_ratio": float(np.std(per_sample_log_geo_ratio)),
+                    "mean_axis_lengths": np.nanmean(ax_arr_np, axis=0).tolist() if ax_arr_np.size else [],
+                    "mean_anisotropy_ratio": float(np.mean(per_sample_anisotropy)),
+                    "median_anisotropy_ratio": float(np.median(per_sample_anisotropy)),
+                    "std_anisotropy_ratio": float(np.std(per_sample_anisotropy)),
+                    "mean_effective_rank": float(np.mean(per_sample_effective_rank)),
+                }
+            metrics["volume"] = {
+                "k_pca": k_pca, "ambient_D": ambient_dim,
+                "mean_log_vol_iso_D": mean_log_vol_iso_D,
+                "mean_log_vol_iso_k": mean_log_vol_iso_k,
+                "mean_log_vol_mani_pred": mean_log_vol_mani_pred,
+                "mean_log_vol_mani_actual": float(np.mean(lv_mani_actuals)) if lv_mani_actuals else None,
+                "mean_geometry_factor": float(np.mean(geometry_factors)) if geometry_factors else None,
+                "median_geometry_factor": float(np.median(geometry_factors)) if geometry_factors else None,
+                "mean_effective_rank": float(np.mean([r["eigen_effective_rank"] for r in results if r.get("eigen_effective_rank")])) if any(r.get("eigen_effective_rank") for r in results) else None,
+                "mean_condition_number": float(np.mean([r["eigen_condition_number"] for r in results if r.get("eigen_condition_number")])) if any(r.get("eigen_condition_number") for r in results) else None,
+                "geometry": geo_summary,
+            }
+
+        _log(f"sigma={sigma}  acc={metrics['certified_accuracy']*100:.2f}%  "
+             f"abstain={metrics['abstain_rate']*100:.2f}%  mean_r={metrics['mean_radius']:.4f}")
+
+        if cfg.output.save_results:
+            (exp_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+            _log(f"  Metrics: {exp_dir / 'metrics.json'}")
+            if cfg.output.save_per_sample:
+                csv_path = exp_dir / "results.csv"
+                fieldnames = ["idx", "image_path", "label", "pred", "radius", "abstained",
+                              "p_a_lower", "p_b_upper", "correct", "certified_correct",
+                              "ood_attribute", "ood_attr_value",
+                              "nn_ood_count", "nn_ood_frac", "mc_ood_count", "mc_ood_frac",
+                              "lambda_max", "alpha", "log_vol_mani_actual", "log_vol_iso_D",
+                              "geometry_factor", "eigen_k", "ambient_D",
+                              "eigen_effective_rank", "eigen_condition_number", "eigen_sum"]
+                with open(csv_path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                    writer.writeheader()
+                    for r in results:
+                        writer.writerow(r)
+                _log(f"  Results CSV: {csv_path}")
+
+                eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if r.get("eigenvalues") is not None]
+                if eigen_samples:
+                    eigen_path = exp_dir / "eigenvalues.npz"
+                    raw_evals_list = [np.array(e[1], dtype=np.float64) for e in eigen_samples]
+                    _ax_max_len = max((len(e) for e in raw_evals_list), default=0)
+                    _ax_arr = np.full((len(raw_evals_list), _ax_max_len), np.nan)
+                    _cum_rows, _geo_ratios, _aniso_arr, _eff_rank_arr, _norm_evals_list = [], [], [], [], []
+                    for i, ev in enumerate(raw_evals_list):
+                        ev_norm = normalize_eigenvalues(ev, mode="max")
+                        _norm_evals_list.append(ev_norm)
+                        ax = axis_lengths(sigma_val, ev_norm)
+                        _ax_arr[i, :len(ax)] = ax
+                        cum = cumulative_stretch_energy(ev_norm)
+                        _cum_rows.append(cum.tolist())
+                        lv_gm = log_volume_geo_mani(sigma_val, ev_norm)
+                        lv_gi = log_volume_geo_iso(sigma_val, len(ev_norm))
+                        _geo_ratios.append(lv_gm - lv_gi)
+                        _aniso_arr.append(anisotropy_ratio(ev_norm))
+                        p = ev / np.maximum(ev.sum(), 1e-30)
+                        _eff_rank_arr.append(float(np.exp(-np.sum(p * np.log(p + 1e-30)))))
+                    cum_max_len = max((len(c) for c in _cum_rows), default=0)
+                    _cum_arr = np.full((len(_cum_rows), cum_max_len), np.nan)
+                    for i, c in enumerate(_cum_rows):
+                        _cum_arr[i, :len(c)] = c
+                    np.savez_compressed(
+                        eigen_path,
+                        indices=np.array([e[0] for e in eigen_samples]),
+                        eigenvalues=np.array(raw_evals_list, dtype=np.float64),
+                        eigenvalues_norm_max=np.array(_norm_evals_list, dtype=np.float64),
+                        axis_lengths_all=_ax_arr,
+                        anisotropy_ratios=np.array(_aniso_arr, dtype=np.float64),
+                        cumulative_stretch_energy=_cum_arr,
+                        log_geo_ratio_per_sample=np.array(_geo_ratios, dtype=np.float64),
+                        effective_rank_per_sample=np.array(_eff_rank_arr, dtype=np.float64),
+                        sigma=np.float64(sigma_val),
+                    )
+                    _log(f"  Eigenvalues: {eigen_path}")
+
+            if cfg.output.save_visualizations:
+                _save_summary_visualization(exp_dir, results, metrics, _cfg_s)
+
+        # Clean up partial state now that metrics.json is written
+        _remove_partial_state(exp_dir)
+        all_outputs.append({"sigma": sigma, "metrics": metrics, "results": results, "exp_dir": exp_dir})
+
+    return all_outputs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2351,10 +3015,27 @@ def _save_summary_visualization(out_dir: Path, results: List[Dict], metrics: Dic
 def parse_args():
     parser = argparse.ArgumentParser(description="CelebA Certification Pipeline")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
+    parser.add_argument(
+        "--sigmas", type=float, nargs="+", default=None,
+        help="Override sigma_values from config. E.g. --sigmas 0.10 0.25 0.50. "
+             "If not given, reads sigma_values (or sigma) from config.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     cfg = load_certify_config(args.config)
-    run_certification(cfg)
+
+    # Resolve sigma list: CLI --sigmas > config sigma_values > config sigma
+    if args.sigmas:
+        sigma_values = [float(s) for s in args.sigmas]
+    else:
+        sigma_values = cfg.smoothing.sigma_values if hasattr(cfg.smoothing, "sigma_values") and cfg.smoothing.sigma_values else [cfg.smoothing.sigma]
+
+    if len(sigma_values) == 1:
+        # Single sigma — use original single-sigma path (no overhead)
+        cfg.smoothing.sigma = sigma_values[0]
+        run_certification(cfg)
+    else:
+        run_certification_multi_sigma(cfg, sigma_values)

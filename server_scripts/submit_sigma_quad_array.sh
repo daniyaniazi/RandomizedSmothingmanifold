@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-# SUBMIT SIGMA SWEEP AS ONE SLURM ARRAY (mixed sigma lists per experiment)
+# SUBMIT SIGMA SWEEP — two strategies, auto-selected per config
 # =============================================================================
-# Runs all four experiment configs in one Slurm array, each with its own
-# sigma_values list. The array queues unfinished tasks in file order.
-# Total tasks = sum of per-config sigma_values lengths
-# Concurrency is capped with Slurm array limit: --array=1-N%MAX_CONCURRENT
+#
+# Strategy "multi"  (default for manifold configs):
+#   One Slurm job per config.  All pending sigmas passed as --sigmas to the
+#   Python multi-sigma runner.  PCA is computed ONCE per sample across all
+#   sigmas — efficient for pixel manifold where kNN+SVD dominates.
+#
+# Strategy "array"  (default for isotropic configs):
+#   One Slurm array task per sigma.  Jobs run in parallel — good for iso/latent
+#   where the bottleneck is classifier forward passes, not PCA.
+#
+# Auto-detection: manifold configs → "multi", isotropic configs → "array".
+# Override with --strategy multi|array to force one mode for all configs.
 #
 # Usage:
-#   ./submit_sigma_quad_array.sh [--dry-run] [--max-concurrent 4] [--celeba-only|--ner-only]
+#   ./submit_sigma_quad_array.sh [--strategy multi|array] [--dataset celeba] [--space pixel]
 # =============================================================================
 
 set -euo pipefail
@@ -27,6 +35,7 @@ MAX_CONCURRENT=4
 DRY_RUN=false
 DATASET_FILTER=""   # celeba | celebahq | ner | "" (all)
 SPACE_FILTER=""     # pixel | latent | "" (all)
+STRATEGY=""         # multi | array | "" (auto: manifold→multi, iso→array)
 
 # Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
@@ -51,19 +60,26 @@ Options:
   --dry-run               Print generated array command only
   --dataset DATASET       Filter by dataset: celeba | celebahq | ner  (default: all)
   --space SPACE           Filter by space:   pixel | latent           (default: all)
+  --strategy STRATEGY     multi | array | auto (default: auto)
+                            multi  = one job per config, all sigmas passed as --sigmas
+                                     PCA computed once → best for pixel manifold
+                            array  = one Slurm task per sigma, run in parallel
+                                     best for isotropic (no PCA, pure classifier cost)
+                            auto   = manifold configs get "multi", iso configs get "array"
   --help                  Show this help
 
 Examples:
-  --dataset celeba  --space pixel       CelebA pixel ISO+manifold
-  --dataset celeba  --space latent      CelebA latent ISO+manifold
-  --dataset celebahq --space pixel      CelebA-HQ pixel ISO+manifold
-  --dataset ner                         NER ISO+manifold
-  (no flags)                            All configs
+  --dataset celeba --space pixel                  CelebA pixel ISO+manifold (auto strategy)
+  --dataset celeba --space pixel --strategy multi  Force multi for all (even iso)
+  --dataset celeba --space pixel --strategy array  Force array for all (even manifold)
+  --dataset celebahq --space pixel                CelebA-HQ pixel ISO+manifold
+  (no flags)                                      All configs, auto strategy
 
 Behavior:
     - Reads sigma_values from each config independently.
-    - Skips tasks whose metrics.json already exists.
-    - Creates one Slurm array over all unfinished tasks.
+    - Skips sigmas whose metrics.json already exists.
+    - manifold configs: one job, all pending sigmas → --sigmas, PCA once per sample.
+    - isotropic configs: one array task per sigma → parallel execution.
 EOF
 }
 
@@ -101,6 +117,10 @@ while [[ $# -gt 0 ]]; do
             SPACE_FILTER="$2"
             shift 2
             ;;
+        --strategy)
+            STRATEGY="$2"
+            shift 2
+            ;;
         --help|-h)
             print_help
             exit 0
@@ -132,6 +152,10 @@ if [[ "$DATASET_FILTER" == "ner" && "$SPACE_FILTER" == "latent" ]]; then
 fi
 if [[ "$DATASET_FILTER" == "celebahq" && "$SPACE_FILTER" == "latent" ]]; then
     echo "Error: CelebA-HQ does not have a latent config"
+    exit 1
+fi
+if [[ -n "$STRATEGY" ]] && ! [[ "$STRATEGY" =~ ^(multi|array|auto)$ ]]; then
+    echo "Error: --strategy must be multi, array, or auto"
     exit 1
 fi
 
@@ -179,7 +203,7 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" python3 - <<PY
+DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" STRATEGY="$STRATEGY" python3 - <<PY
 import os
 import yaml
 from pathlib import Path
@@ -190,6 +214,7 @@ task_file = Path(r"$TASK_FILE")
 
 dataset_filter = os.environ.get("DATASET_FILTER", "").strip().lower()
 space_filter   = os.environ.get("SPACE_FILTER",   "").strip().lower()
+strategy_override = os.environ.get("STRATEGY", "").strip().lower()  # multi | array | ""=auto
 
 entries = [
     ("ner_iso",           Path(r"$NER_ISO_CFG"),            "ner",     "pixel"),
@@ -258,60 +283,75 @@ def ner_output_dir(cfg: dict, sigma: float, resolved_index_path: str | None = No
         return cfg_root / "masked_certify" / layer / metric / backend / index_name / masking_mode / sigma_tag(sigma)
     return cfg_root / "certify" / layer / metric / backend / index_name / sigma_tag(sigma)
 
-lines = []
-skipped = []
-config_sigma_counts = {}
+# ── build task list ───────────────────────────────────────────────────────────
+# Strategy per config:
+#   "multi" → one task, all pending sigmas as --sigmas  (manifold: PCA once)
+#   "array" → one task per sigma                         (iso: parallel)
+#   auto    → manifold configs get "multi", iso gets "array"
 
-# Build per-config candidate task lists first, then interleave by sigma index
-# so the array order is: ner_iso[0], ner_mani[0], celeb_iso[0], celeb_mani[0],
-#                        ner_iso[1], ner_mani[1], celeb_iso[1], celeb_mani[1], ...
-per_config_tasks = {}  # short_name -> list of formatted task strings
+lines = []        # all tasks (both strategies mixed)
+skipped_configs = []
+
 for short_name, cfg_path, ds, sp in entries:
-    sigma_values = sigma_list(cfg_path)
-    if not sigma_values:
+    sigmas = sigma_list(cfg_path)
+    if not sigmas:
         raise SystemExit(f"No sigma_values found in {cfg_path}")
-    config_sigma_counts[short_name] = len(sigma_values)
-    per_config_tasks[short_name] = []
 
-    for sigma in sigma_values:
-        sig_tag = sigma_tag(sigma)
-        with cfg_path.open("r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        base_exp = cfg.get("experiment_name", short_name)
-        job_exp_name = f"{base_exp}_sigma_{sig_tag}"
-        cfg.setdefault("smoothing", {})["sigma"] = float(sigma)
-        cfg["experiment_name"] = job_exp_name
-        cfg.setdefault("checkpoint", {})["resume"] = True
+    with cfg_path.open("r", encoding="utf-8") as f:
+        cfg_raw = yaml.safe_load(f)
 
+    # Auto-detect strategy from config unless overridden
+    is_manifold = bool(cfg_raw.get("smoothing", {}).get("use_manifold", False))
+    if strategy_override in ("multi", "array"):
+        strategy = strategy_override
+    else:
+        # auto: manifold → multi (PCA saving), iso → array (parallel)
+        strategy = "multi" if is_manifold else "array"
+
+    # Which sigmas still need to run?
+    pending, done = [], []
+    for sigma in sigmas:
         if ds == "ner":
-            resolved_index_path = cfg.get("smoothing", {}).get("index_path")
-            out_dir = ner_output_dir(cfg, sigma, resolved_index_path)
-        else:  # celeba or celebahq
-            out_dir = celeb_output_dir(cfg, sigma)
+            out_dir = ner_output_dir(cfg_raw, sigma, cfg_raw.get("smoothing", {}).get("index_path"))
+        else:
+            out_dir = celeb_output_dir(cfg_raw, sigma)
+        if (out_dir / "metrics.json").exists():
+            done.append(sigma)
+        else:
+            pending.append(sigma)
 
-        metrics_path = out_dir / "metrics.json"
-        if metrics_path.exists():
-            skipped.append(f"{short_name} sigma={sigma} -> {metrics_path}")
-            continue
+    if done:
+        skipped_configs.append(f"{short_name}: {len(done)} sigmas already done ({done})")
+    if not pending:
+        skipped_configs.append(f"{short_name}: ALL done — skipping")
+        continue
 
-        out_cfg = sweep_dir / f"{job_exp_name}_{short_name}_{sig_tag}.yaml"
+    cfg_raw.setdefault("checkpoint", {})["resume"] = True
+
+    if strategy == "multi":
+        # ── ONE task, all pending sigmas ──────────────────────────────────────
+        out_cfg = sweep_dir / f"{short_name}_multisigma.yaml"
         with out_cfg.open("w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, sort_keys=False)
+            yaml.safe_dump(cfg_raw, f, sort_keys=False)
+        sigmas_str = " ".join(str(s) for s in pending)
+        lines.append(f"{short_name}|{out_cfg}|{ds}_{sp}|{sigmas_str}|multi")
+        print(f"  {short_name}: strategy=multi  {len(pending)} sigmas in one job")
+    else:
+        # ── ONE task PER sigma (array) ────────────────────────────────────────
+        for sigma in pending:
+            sig_tag = sigma_tag(sigma)
+            cfg_s = dict(cfg_raw)
+            cfg_s.setdefault("smoothing", {})["sigma"] = float(sigma)
+            out_cfg = sweep_dir / f"{short_name}_{sig_tag}.yaml"
+            with out_cfg.open("w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg_s, f, sort_keys=False)
+            lines.append(f"{short_name}_{sig_tag}|{out_cfg}|{ds}_{sp}|{sigma}|array")
+        print(f"  {short_name}: strategy=array  {len(pending)} tasks")
 
-        per_config_tasks[short_name].append(f"{job_exp_name}|{out_cfg}|{ds}_{sp}|{sigma}")
-
-# Interleave: for each sigma index, emit one task per config (if it exists)
-max_len = max(len(v) for v in per_config_tasks.values())
-for i in range(max_len):
-    for short_name, _, _ds, _sp in entries:
-        task_list = per_config_tasks[short_name]
-        if i < len(task_list):
-            lines.append(task_list[i])
-
-if skipped:
-    print("SKIPPED_EXISTING=")
-    for item in skipped:
-        print("  - " + item)
+if skipped_configs:
+    print("SKIP INFO:")
+    for item in skipped_configs:
+        print("  " + item)
 
 if not lines:
     print("All sigma jobs already have metrics.json; nothing to submit.")
@@ -320,17 +360,14 @@ if not lines:
 with task_file.open("w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 
-for name, count in config_sigma_counts.items():
-    print(f"SIGMA_COUNT_{name.upper()}={count}")
 print(f"TASK_COUNT={len(lines)}")
-print("TASKS_PER_CONFIG=" + ", ".join(f"{name}:{count}" for name, count in config_sigma_counts.items()))
 PY
 
 TASK_COUNT=$(wc -l < "$TASK_FILE" | awk '{print $1}')
 ARRAY_SPEC="1-${TASK_COUNT}%${MAX_CONCURRENT}"
 
 echo "=============================================="
-echo "SUBMITTING SIGMA QUAD ARRAY"
+echo "SUBMITTING SIGMA SWEEP (multi-sigma per job)"
 echo "=============================================="
 echo "Task file:       $TASK_FILE"
 echo "Total tasks:     $TASK_COUNT"
@@ -345,17 +382,27 @@ cat > "$JOB_SCRIPT" << 'JOBEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 TASK_LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "TASK_FILE_PLACEHOLDER")
-IFS='|' read -r TASK_NAME TASK_CFG TASK_KIND TASK_SIGMA <<< "$TASK_LINE"
-echo "[Task ${SLURM_ARRAY_TASK_ID}] $TASK_NAME (kind=$TASK_KIND, sigma=$TASK_SIGMA)"
+# Format: name|config_path|kind|sigmas_space_separated|strategy
+IFS='|' read -r TASK_NAME TASK_CFG TASK_KIND TASK_SIGMAS TASK_STRATEGY <<< "$TASK_LINE"
+echo "[Task ${SLURM_ARRAY_TASK_ID}] $TASK_NAME  kind=$TASK_KIND  strategy=$TASK_STRATEGY  sigmas=$TASK_SIGMAS"
 cd PROJECT_ROOT_PLACEHOLDER
 export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:${PYTHONPATH:-}
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh
 conda activate smoothing
+
 if [[ "$TASK_KIND" == ner_* ]]; then
+  # NER: always per-sigma (no multi-sigma runner for NER)
   CHECKPOINT=PROJECT_ROOT_PLACEHOLDER/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
-  python -m src.experiments.certify.ner --config "$TASK_CFG" --checkpoint "$CHECKPOINT" --split test --resume --save-every-batches 5
+  for SIGMA in $TASK_SIGMAS; do
+    python -m src.experiments.certify.ner --config "$TASK_CFG" --checkpoint "$CHECKPOINT" \
+      --split test --resume --save-every-batches 5 --sigma "$SIGMA"
+  done
+elif [[ "$TASK_STRATEGY" == "multi" ]]; then
+  # CelebA manifold: one-time PCA, all sigmas in one Python process
+  python -m src.experiments.certify.celeba --config "$TASK_CFG" --sigmas $TASK_SIGMAS
 else
-  python -m src.experiments.certify.celeba --config "$TASK_CFG"
+  # CelebA isotropic array: single sigma per task (TASK_SIGMAS is one value)
+  python -m src.experiments.certify.celeba --config "$TASK_CFG" --sigmas $TASK_SIGMAS
 fi
 JOBEOF
 
