@@ -17,8 +17,7 @@ sbatch \
     conda activate smoothing && \
     python -m src.experiments.analysis.celeba_nn_viz \
       --output-dir output/analysis/nn_viz \
-      --metric euclidean \
-      --n-attrs 8 \
+      --n-attrs 40 \
       --k 5"
 
 echo "Submitted. Monitor with: squeue -u \$USER"

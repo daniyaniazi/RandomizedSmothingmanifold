@@ -237,9 +237,10 @@ def main():
         fig, axes = plt.subplots(
             n_rows, n_cols,
             figsize=(col_w * n_cols, row_h * n_rows),
-            gridspec_kw={"wspace": 0.04, "hspace": 0.5},
+            gridspec_kw={"wspace": 0.04, "hspace": 0.75},
         )
         axes = np.atleast_2d(axes)
+        fig.subplots_adjust(left=0.10, top=0.95)
 
         for ax in axes.flat:
             _hide_ax(ax)
@@ -263,8 +264,13 @@ def main():
             nn_pairs = [(i, tr_fnames[i]) for i in raw_ids if tr_fnames[i] != anchor_fname][:args.k]
 
             # row label as small text above first cell
-            axes[r, 0].set_title(row_label.replace("\n", " "), fontsize=6,
-                                 color="black", fontweight="normal", loc="left", pad=2)
+            axes[r, 0].text(
+                -0.22, 0.5, row_label.replace("\n", " "),
+                    transform=axes[r, 0].transAxes,
+                    fontsize=6, fontweight="normal",
+                    rotation=90, va="center", ha="right",
+                    clip_on=False
+                )
 
             for col_i, (nn_id, nn_fname) in enumerate(nn_pairs):
                 col = col_i
