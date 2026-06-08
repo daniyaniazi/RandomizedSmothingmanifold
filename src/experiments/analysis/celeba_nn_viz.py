@@ -262,13 +262,12 @@ def main():
             raw_ids  = idx.index.get_nns_by_vector(vec.tolist(), args.k + 10, include_distances=False)
             nn_pairs = [(i, tr_fnames[i]) for i in raw_ids if tr_fnames[i] != anchor_fname][:args.k]
 
-            # row label as rotated text on left edge of col 1 (first NN cell)
-            axes[r, 1].text(-0.18, 0.5, row_label, transform=axes[r, 1].transAxes,
-                            fontsize=6, fontweight="bold", va="center", ha="right",
-                            rotation=90, clip_on=False, color=color)
+            # row label as small text above first cell
+            axes[r, 0].set_title(row_label.replace("\n", " "), fontsize=6,
+                                 color="black", fontweight="normal", loc="left", pad=2)
 
             for col_i, (nn_id, nn_fname) in enumerate(nn_pairs):
-                col = col_i + 1
+                col = col_i
                 if col >= n_cols:
                     continue
                 nn_vec = np.array(idx.index.get_item_vector(nn_id), dtype=np.float32)
