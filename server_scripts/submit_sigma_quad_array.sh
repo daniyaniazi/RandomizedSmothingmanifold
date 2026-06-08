@@ -288,8 +288,14 @@ def ner_output_dir(cfg: dict, sigma: float, resolved_index_path: str | None = No
 #   "multi" → one task, all pending sigmas as --sigmas  (manifold: PCA once)
 #   "array" → one task per sigma                         (iso: parallel)
 #   auto    → manifold configs get "multi", iso gets "array"
+#
+# Ordering: tasks are interleaved iso/mani so that with a concurrency cap of N,
+# both iso and mani tasks run side by side rather than iso filling all slots first.
+# iso_tasks and mani_tasks are built separately, then zipped together:
+#   [iso_0, mani_0, iso_1, mani_1, ...] + leftover
 
-lines = []        # all tasks (both strategies mixed)
+iso_tasks  = []   # array tasks from isotropic configs
+mani_tasks = []   # multi/array tasks from manifold configs
 skipped_configs = []
 
 for short_name, cfg_path, ds, sp in entries:
@@ -300,15 +306,12 @@ for short_name, cfg_path, ds, sp in entries:
     with cfg_path.open("r", encoding="utf-8") as f:
         cfg_raw = yaml.safe_load(f)
 
-    # Auto-detect strategy from config unless overridden
     is_manifold = bool(cfg_raw.get("smoothing", {}).get("use_manifold", False))
     if strategy_override in ("multi", "array"):
         strategy = strategy_override
     else:
-        # auto: manifold → multi (PCA saving), iso → array (parallel)
         strategy = "multi" if is_manifold else "array"
 
-    # Which sigmas still need to run?
     pending, done = [], []
     for sigma in sigmas:
         if ds == "ner":
@@ -328,16 +331,17 @@ for short_name, cfg_path, ds, sp in entries:
 
     cfg_raw.setdefault("checkpoint", {})["resume"] = True
 
+    bucket = mani_tasks if is_manifold else iso_tasks
+
     if strategy == "multi":
-        # ── ONE task, all pending sigmas ──────────────────────────────────────
         out_cfg = sweep_dir / f"{short_name}_multisigma.yaml"
         with out_cfg.open("w", encoding="utf-8") as f:
             yaml.safe_dump(cfg_raw, f, sort_keys=False)
         sigmas_str = " ".join(str(s) for s in pending)
-        lines.append(f"{short_name}|{out_cfg}|{ds}_{sp}|{sigmas_str}|multi")
-        print(f"  {short_name}: strategy=multi  {len(pending)} sigmas in one job")
+        task_line = f"{short_name}|{out_cfg}|{ds}_{sp}|{sigmas_str}|multi"
+        bucket.append(task_line)
+        print(f"  {short_name}: strategy=multi  {len(pending)} sigmas in one job  ({'mani' if is_manifold else 'iso'})")
     else:
-        # ── ONE task PER sigma (array) ────────────────────────────────────────
         for sigma in pending:
             sig_tag = sigma_tag(sigma)
             cfg_s = dict(cfg_raw)
@@ -345,13 +349,24 @@ for short_name, cfg_path, ds, sp in entries:
             out_cfg = sweep_dir / f"{short_name}_{sig_tag}.yaml"
             with out_cfg.open("w", encoding="utf-8") as f:
                 yaml.safe_dump(cfg_s, f, sort_keys=False)
-            lines.append(f"{short_name}_{sig_tag}|{out_cfg}|{ds}_{sp}|{sigma}|array")
-        print(f"  {short_name}: strategy=array  {len(pending)} tasks")
+            task_line = f"{short_name}_{sig_tag}|{out_cfg}|{ds}_{sp}|{sigma}|array"
+            bucket.append(task_line)
+        print(f"  {short_name}: strategy=array  {len(pending)} tasks  ({'mani' if is_manifold else 'iso'})")
 
 if skipped_configs:
     print("SKIP INFO:")
     for item in skipped_configs:
         print("  " + item)
+
+# Interleave: iso_0, mani_0, iso_1, mani_1, ... then append leftover
+lines = []
+for i in range(max(len(iso_tasks), len(mani_tasks))):
+    if i < len(iso_tasks):
+        lines.append(iso_tasks[i])
+    if i < len(mani_tasks):
+        lines.append(mani_tasks[i])
+
+print(f"  Interleaved: {len(iso_tasks)} iso + {len(mani_tasks)} mani = {len(lines)} total tasks")
 
 if not lines:
     print("All sigma jobs already have metrics.json; nothing to submit.")
