@@ -83,15 +83,23 @@ def _show_img(ax, img_dir, fname, title, border_color="white"):
         sp.set_visible(True)
 
 
+def _show_tensor(ax, tensor, title, border_color="white"):
+    img = tensor.clamp(0, 1).permute(1, 2, 0).numpy()
+    ax.imshow((img * 255).astype("uint8"))
+    ax.set_title(title, fontsize=7, pad=2)
+    ax.axis("off")
+    for sp in ax.spines.values():
+        sp.set_edgecolor(border_color)
+        sp.set_linewidth(3)
+        sp.set_visible(True)
+
+
 def _hide_ax(ax):
     ax.axis("off")
     for sp in ax.spines.values():
         sp.set_visible(False)
 
 
-def _query_nn(ann_index, fnames, vec, k, anchor_fname):
-    raw_ids = ann_index.index.get_nns_by_vector(vec.tolist(), k + 10, include_distances=False)
-    return [fnames[i] for i in raw_ids if fnames[i] != anchor_fname][:k]
 
 
 def _try_load_index(base_dir, dataset_tag, space, metric, dim):
@@ -204,16 +212,17 @@ def main():
         return mu.squeeze(0).cpu().numpy().astype("float32")
 
     fname_to_smile = dict(zip(df["filename"], df["Smiling"]))
+    attr_lookup = df.set_index("filename")[attr_cols].to_dict("index")
 
     def attr_val(fname, attr):
-        rows = df.loc[df["filename"] == fname, attr].values
-        return int(rows[0]) if len(rows) else "?"
+        return attr_lookup.get(fname, {}).get(attr, "?")
 
     # ── generate figures ──────────────────────────────────────────────────────
-    n_cols  = 1 + args.k          # anchor + k neighbours
-    n_rows  = 1 + len(active_rows) # anchor row + one per active index
-    col_w   = 2.5
-    row_h   = 2.8
+    # Layout: col 0 = anchor (all rows share it), cols 1..k = NNs per row
+    n_cols = 1 + args.k
+    n_rows = 1 + len(active_rows)
+    col_w  = 2.2
+    row_h  = 2.6
 
     for attr in top_attrs:
         print(f"Processing: {attr} ...", flush=True)
@@ -228,55 +237,57 @@ def main():
         fig, axes = plt.subplots(
             n_rows, n_cols,
             figsize=(col_w * n_cols, row_h * n_rows),
-            gridspec_kw={"wspace": 0.05, "hspace": 0.45},
+            gridspec_kw={"wspace": 0.04, "hspace": 0.5},
         )
         axes = np.atleast_2d(axes)
 
-        # hide all cells by default — paint only the ones we use
         for ax in axes.flat:
             _hide_ax(ax)
 
-        # ── Row 0: anchor (col 0) + empty cols 1..k (kept hidden) ────────────
+        # ── Row 0: anchor in col 0, rest hidden ───────────────────────────────
         _show_img(axes[0, 0], image_dir, anchor_fname,
                   f"ANCHOR\n{attr}=1\n{'smile' if anchor_smile else 'no-smile'}",
                   border_color="gold")
-        # row label
-        axes[0, 0].set_ylabel("Anchor", fontsize=8, fontweight="bold", labelpad=4)
+        axes[0, 0].text(-0.12, 0.5, "Anchor", transform=axes[0, 0].transAxes,
+                        fontsize=7, fontweight="bold", va="center", ha="right",
+                        rotation=90, clip_on=False)
 
         # ── NN rows ───────────────────────────────────────────────────────────
-        for r, (space, metric, color, label) in enumerate(active_rows, start=1):
-            idx   = indexes[(space, metric)]
-            vec   = pix_vec if space == "pixel" else lat_vec
-            nns   = _query_nn(idx, tr_fnames, vec, args.k, anchor_fname)
+        for r, (space, metric, color, row_label) in enumerate(active_rows, start=1):
+            idx     = indexes[(space, metric)]
+            vec     = pix_vec if space == "pixel" else lat_vec
+            img_shp = (3, img_sz, img_sz)
+            use_vae = vae if space == "latent" else None
 
-            axes[r, 0].set_ylabel(label, fontsize=8, fontweight="bold", labelpad=4)
+            raw_ids  = idx.index.get_nns_by_vector(vec.tolist(), args.k + 10, include_distances=False)
+            nn_pairs = [(i, tr_fnames[i]) for i in raw_ids if tr_fnames[i] != anchor_fname][:args.k]
 
-            # col 0: row label cell — show first NN image there too
-            for col_i, nn_fname in enumerate(nns):
-                ax = axes[r, col_i + 1] if col_i + 1 < n_cols else None
-                if ax is None:
+            # row label as rotated text on left edge of col 1 (first NN cell)
+            axes[r, 1].text(-0.18, 0.5, row_label, transform=axes[r, 1].transAxes,
+                            fontsize=6, fontweight="bold", va="center", ha="right",
+                            rotation=90, clip_on=False, color=color)
+
+            for col_i, (nn_id, nn_fname) in enumerate(nn_pairs):
+                col = col_i + 1
+                if col >= n_cols:
                     continue
+                nn_vec = np.array(idx.index.get_item_vector(nn_id), dtype=np.float32)
+                if use_vae is not None:
+                    with torch.no_grad():
+                        z_t = torch.from_numpy(nn_vec[None, :]).to(device=device, dtype=torch.float32)
+                        nn_tensor = use_vae.decode(z_t).squeeze(0).cpu()
+                else:
+                    nn_tensor = torch.from_numpy(nn_vec.reshape(img_shp)).float()
                 smile_tag = "smile" if fname_to_smile.get(nn_fname, 0) == 1 else "no-smile"
-                _show_img(ax, image_dir, nn_fname,
-                          f"NN-{col_i+1}\n{attr}={attr_val(nn_fname, attr)}\n{smile_tag}",
-                          border_color=color)
-
-            # fill col 0 of NN rows with the row label (no image, just axis label)
-            _hide_ax(axes[r, 0])
-            axes[r, 0].set_ylabel(label, fontsize=8, fontweight="bold", labelpad=4)
+                _show_tensor(axes[r, col], nn_tensor,
+                             f"NN-{col_i+1}  {attr}={attr_val(nn_fname, attr)}  {smile_tag}",
+                             border_color=color)
 
         # ── title ─────────────────────────────────────────────────────────────
-        pix_info   = f"Pixel: {indexes[('pixel','euclidean')].index.get_n_items():,} @ {img_sz}px" \
-                     if indexes.get(("pixel","euclidean")) else "Pixel: N/A"
-        lat_info   = f"Latent: dim={lat_dim}" if vae else "Latent: N/A"
-        fig.suptitle(
-            f"Attribute: {attr}  |  Anchor (gold)\n"
-            f"{pix_info}  |  {lat_info}",
-            fontsize=10, y=1.01,
-        )
+        fig.suptitle(attr, fontsize=11, fontweight="bold", y=1.01)
 
         save_path = out_dir / f"nn_viz_{attr.lower()}.png"
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        fig.savefig(save_path, dpi=100, bbox_inches="tight")
         plt.close(fig)
         print(f"  Saved: {save_path}")
 
