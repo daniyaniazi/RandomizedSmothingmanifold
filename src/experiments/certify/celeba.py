@@ -1754,15 +1754,15 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         # Determine which smoother to use for this sample
         _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
 
-        # Collect raw n-phase MC samples for OOD hit-rate computation.
-        # Works for BOTH isotropic and manifold — pixel_index is now loaded whenever
-        # ood_attribute is configured (see index-loading block above).
+        # Collect raw MC samples when doing OOD runs (ood_attribute set) for both iso and
+        # manifold — lets you compare how often each noise type lands in OOD territory.
+        # In normal certification ood_attribute is None so _collect=False and this is free.
+        _is_iso = not cfg.smoothing.use_manifold
         _collect = (_ood_attr_map_global is not None
                     and pixel_index is not None
                     and hasattr(pixel_index, "index")
                     and hasattr(pixel_index.index, "get_nns_by_vector")
                     and hasattr(pixel_index, "filenames"))
-        _is_iso = not cfg.smoothing.use_manifold
         cert, _cert_raw_samples = certify_single_sample(
             classifier=classifier,
             img_tensor=img_tensor,
@@ -1826,13 +1826,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 and _pixel_ood_labels is not None
                 and pixel_index is not None
                 and hasattr(pixel_index, "index")):
-            _mc_hits = 0
-            for _rs in _cert_raw_samples:
-                _nid = pixel_index.index.get_nns_by_vector(
-                    _rs.numpy().flatten().astype(np.float32).tolist(), 1, include_distances=False
-                )
-                if _nid:
-                    _mc_hits += int(_pixel_ood_labels[_nid[0]])
+            # Stack all MC samples into one matrix and batch-query Annoy
+            _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
+                                for _rs in _cert_raw_samples])  # (N, D)
+            _nn_ids = np.array([
+                pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
+                for _i in range(len(_mc_mat))
+            ], dtype=np.int32)
+            _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
             result["mc_ood_count"] = _mc_hits
             result["mc_ood_frac"]  = float(_mc_hits) / len(_cert_raw_samples)
 
