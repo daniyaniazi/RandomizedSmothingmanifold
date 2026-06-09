@@ -2690,12 +2690,13 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
             if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
                     and _pixel_ood_labels is not None and pixel_index is not None
                     and hasattr(pixel_index, "index")):
-                _mc_hits = 0
-                for _rs in _cert_raw_samples:
-                    _nid = pixel_index.index.get_nns_by_vector(
-                        _rs.numpy().flatten().astype(np.float32).tolist(), 1, include_distances=False)
-                    if _nid:
-                        _mc_hits += int(_pixel_ood_labels[_nid[0]])
+                _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
+                                    for _rs in _cert_raw_samples])
+                _nn_ids = np.array([
+                    pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
+                    for _i in range(len(_mc_mat))
+                ], dtype=np.int32)
+                _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
                 result["mc_ood_count"] = _mc_hits
                 result["mc_ood_frac"] = float(_mc_hits) / len(_cert_raw_samples)
 
