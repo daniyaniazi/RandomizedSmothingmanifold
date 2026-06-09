@@ -36,6 +36,7 @@ DRY_RUN=false
 DATASET_FILTER=""   # celeba | celebahq | ner | "" (all)
 SPACE_FILTER=""     # pixel | latent | "" (all)
 STRATEGY=""         # multi | array | "" (auto: manifold→multi, iso→array)
+TYPE_FILTER=""      # iso | mani | "" (all)
 
 # Fixed config set (four experiment configs)
 NER_ISO_CFG="src/configs/experiments/ner_conll2003_bert_isotropic_certify.yaml"
@@ -121,6 +122,10 @@ while [[ $# -gt 0 ]]; do
             STRATEGY="$2"
             shift 2
             ;;
+        --type)
+            TYPE_FILTER="$2"
+            shift 2
+            ;;
         --help|-h)
             print_help
             exit 0
@@ -156,6 +161,10 @@ if [[ "$DATASET_FILTER" == "celebahq" && "$SPACE_FILTER" == "latent" ]]; then
 fi
 if [[ -n "$STRATEGY" ]] && ! [[ "$STRATEGY" =~ ^(multi|array|auto)$ ]]; then
     echo "Error: --strategy must be multi, array, or auto"
+    exit 1
+fi
+if [[ -n "$TYPE_FILTER" ]] && ! [[ "$TYPE_FILTER" =~ ^(iso|mani)$ ]]; then
+    echo "Error: --type must be iso or mani"
     exit 1
 fi
 
@@ -203,7 +212,7 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" STRATEGY="$STRATEGY" python3 - <<PY
+DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" STRATEGY="$STRATEGY" TYPE_FILTER="$TYPE_FILTER" python3 - <<PY
 import os
 import yaml
 from pathlib import Path
@@ -212,9 +221,10 @@ project_root = Path(r"$PROJECT_ROOT")
 sweep_dir = Path(r"$SWEEP_CONFIG_DIR")
 task_file = Path(r"$TASK_FILE")
 
-dataset_filter = os.environ.get("DATASET_FILTER", "").strip().lower()
-space_filter   = os.environ.get("SPACE_FILTER",   "").strip().lower()
-strategy_override = os.environ.get("STRATEGY", "").strip().lower()  # multi | array | ""=auto
+dataset_filter    = os.environ.get("DATASET_FILTER", "").strip().lower()
+space_filter      = os.environ.get("SPACE_FILTER",   "").strip().lower()
+strategy_override = os.environ.get("STRATEGY",       "").strip().lower()  # multi | array | ""=auto
+type_filter       = os.environ.get("TYPE_FILTER",    "").strip().lower()  # iso | mani | ""=all
 
 entries = [
     ("ner_iso",           Path(r"$NER_ISO_CFG"),            "ner",     "pixel"),
@@ -307,6 +317,13 @@ for short_name, cfg_path, ds, sp in entries:
         cfg_raw = yaml.safe_load(f)
 
     is_manifold = bool(cfg_raw.get("smoothing", {}).get("use_manifold", False))
+
+    # Skip if --type filter doesn't match
+    if type_filter == "mani" and not is_manifold:
+        continue
+    if type_filter == "iso" and is_manifold:
+        continue
+
     if strategy_override in ("multi", "array"):
         strategy = strategy_override
     else:

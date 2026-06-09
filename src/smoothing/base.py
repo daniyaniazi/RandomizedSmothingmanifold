@@ -53,6 +53,10 @@ class Smoother(ABC):
     def sigma(self) -> float:
         """Noise standard deviation."""
         return self._sigma
+
+    @sigma.setter
+    def sigma(self, value: float) -> None:
+        self._sigma = float(value)
     
     @abstractmethod
     def sample(self, anchor: np.ndarray) -> np.ndarray:
