@@ -613,6 +613,180 @@ def make_latent_sample_fn(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _draw_geometry_figure(
+    pca_obj,
+    nbrs,           # (k, D) centred neighbour matrix
+    query_vec,      # (D,) anchor in PCA space
+    smoother,       # ManifoldSmoother — used to draw MC samples
+    cached_pca,     # cached PCA result passed to sample_from_cached
+    sigma: float,
+    n_mc: int,
+    save_path,
+    sample_idx: int,
+    space_label: str,       # "Pixel" or "Latent"
+    ood_attr_name: str,     # e.g. "Wearing_Hat" or "" for non-OOD
+    ood_attr_map,           # filename→0/1 dict or None
+    index,                  # NeighborIndex for neighbour OOD lookup
+    vae_decode_fn=None,     # unused here, kept for signature compat
+) -> None:
+    """Shared geometry figure for both pixel-manifold and latent-manifold.
+
+    Shows 5 zoom panels (A–E):
+      A  Full neighbour cloud
+      B  Mid-zoom ±10% PC1 range
+      C  Tight ±a1 (ellipse semi-axis)
+      D  Mid PC axis
+      E  Last PC axis
+
+    Each panel shows:
+      - KNN neighbours (coloured by OOD attr if available, grey otherwise)
+      - MC noise samples (single colour — no MC OOD matching)
+      - Isotropic circle (dashed blue)
+      - Manifold ellipse (solid orange)
+      - Anchor star
+
+    Legend is placed outside the plot (right of each panel) to avoid overlap.
+    """
+    try:
+        import matplotlib.pyplot as _plt
+        from matplotlib.patches import Ellipse as _Ellipse
+    except ImportError:
+        return
+
+    _ev = np.asarray(pca_obj.evals, dtype=np.float64)
+    _Vt = pca_obj.evecs.T                          # (n_comp, D)
+    _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
+    _lambda_max = float(_ev[0])
+    _sqrt_lmax  = float(np.sqrt(_lambda_max))
+    _alpha      = sigma / np.sqrt(max(_lambda_max, 1e-12))
+
+    _anchor_2d = (query_vec - np.asarray(pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
+    _neigh_2d  = nbrs.astype(np.float64) @ _Vt[:2].T
+
+    _a1 = float(sigma * np.sqrt(_ev_norm[0]))
+    _a2 = float(sigma * np.sqrt(_ev_norm[1]))
+    _mid_idx = len(_ev_norm) // 2
+    _a_mid   = float(sigma * np.sqrt(_ev_norm[_mid_idx]))
+    _a_last  = float(sigma * np.sqrt(_ev_norm[-1]))
+    _pc1_std   = float(np.std(_neigh_2d[:, 0]))
+    _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
+    _zoom_mid  = 0.10 * _pc1_range
+    _zoom_tight = _a1
+
+    _zoom_panels = [
+        (None,         f"[A] Full cloud",                              _a1, _a2),
+        (_zoom_mid,    f"[B] Mid-zoom  ±{_zoom_mid:.2f}",             _a1, _a2),
+        (_zoom_tight,  f"[C] Tight  a1={_a1:.4f}  a2={_a2:.4f}",     _a1, _a2),
+        (_zoom_tight,  f"[D] Mid PC  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/(_a1+1e-12):.4f}", _a1, _a_mid),
+        (_zoom_tight,  f"[E] Last PC  a_last={_a_last:.6f}\na_last/a1={_a_last/(_a1+1e-12):.6f}", _a1, _a_last),
+    ]
+
+    # MC samples — plain colour, no OOD matching
+    _mc_2d_list = []
+    for _ in range(n_mc):
+        _ns = smoother.sample_from_cached(cached_pca)
+        _ns_c = _ns - np.asarray(pca_obj.mean, dtype=np.float64)
+        _mc_2d_list.append(_ns_c @ _Vt[:2].T)
+    _mc_2d = np.array(_mc_2d_list)
+
+    # Neighbour OOD colouring (if ood_attr_map provided)
+    _nn_has_attr = np.zeros(len(_neigh_2d), dtype=bool)
+    if ood_attr_map is not None and index is not None and hasattr(index, "filenames") and hasattr(index, "index") and hasattr(index.index, "get_nns_by_vector"):
+        _nn_ids = index.index.get_nns_by_vector(
+            query_vec.astype(np.float32), len(_neigh_2d), include_distances=False)
+        for _ni, _nid in enumerate(_nn_ids[:len(_neigh_2d)]):
+            _nn_has_attr[_ni] = bool(ood_attr_map.get(Path(index.filenames[_nid]).name, 0))
+
+    _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
+    _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
+    _pad = 0.05 * max(float(np.ptp(_x_all)), float(np.ptp(_y_all)), 1e-6)
+
+    _fig, _axes = _plt.subplots(1, 5, figsize=(26, 5.5), facecolor="white")
+
+    for _ax, (_zr, _ptitle, _ea1, _ea2) in zip(_axes, _zoom_panels):
+        if _zr is None:
+            _mask    = np.ones(len(_neigh_2d), dtype=bool)
+            _mask_mc = np.ones(len(_mc_2d),    dtype=bool)
+        else:
+            _mask = (
+                (np.abs(_neigh_2d[:, 0] - _anchor_2d[0]) <= _zr) &
+                (np.abs(_neigh_2d[:, 1] - _anchor_2d[1]) <= _zr)
+            )
+            _mask_mc = (
+                (np.abs(_mc_2d[:, 0] - _anchor_2d[0]) <= _zr) &
+                (np.abs(_mc_2d[:, 1] - _anchor_2d[1]) <= _zr)
+            )
+
+        # Neighbours
+        _has = _mask & _nn_has_attr
+        _no  = _mask & ~_nn_has_attr
+        if ood_attr_map is not None:
+            if _has.any():
+                _ax.scatter(_neigh_2d[_has, 0], _neigh_2d[_has, 1],
+                            s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
+                            label=f"KNN ({ood_attr_name}=1)")
+            if _no.any():
+                _ax.scatter(_neigh_2d[_no, 0], _neigh_2d[_no, 1],
+                            s=8, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
+                            label=f"KNN ({ood_attr_name}=0)")
+        else:
+            _ax.scatter(_neigh_2d[_mask, 0], _neigh_2d[_mask, 1],
+                        s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
+                        label="KNN neighbours")
+
+        # MC samples — single colour, no count in label
+        if _mask_mc.any():
+            _ax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                        s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                        zorder=3, label=f"MC samples (n={n_mc})")
+
+        # Isotropic circle
+        _ax.add_patch(_plt.Circle(
+            (_anchor_2d[0], _anchor_2d[1]), sigma,
+            fill=False, edgecolor="tab:blue", linewidth=2.0,
+            linestyle=(0, (4, 2)), alpha=0.95, zorder=4,
+            label=f"Iso circle  r=σ={sigma}",
+        ))
+        # Manifold ellipse
+        _ax.add_patch(_Ellipse(
+            (_anchor_2d[0], _anchor_2d[1]),
+            width=2.0 * _ea1, height=2.0 * _ea2,
+            fill=False, edgecolor="tab:orange", linewidth=2.0,
+            linestyle="solid", alpha=0.95, zorder=4,
+            label=f"Manifold ellipse  a1={_ea1:.4f}",
+        ))
+        # Anchor
+        _ax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
+                    c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
+
+        if _zr is None:
+            _ax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
+            _ax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
+        else:
+            _ax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
+            _ax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
+
+        _ax.set_aspect("equal")
+        _ax.set_title(_ptitle, fontsize=8.5)
+        _ax.set_xlabel(f"PC1  (std={_pc1_std:.2f})", fontsize=8)
+        _ax.set_ylabel("PC2", fontsize=8)
+        _ax.grid(alpha=0.25)
+        # Legend outside the plot area (right side) — same position for all panels
+        _ax.legend(fontsize=6.5, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+                   borderaxespad=0, framealpha=0.85)
+
+    _ood_tag = f"  |  OOD: {ood_attr_name}=1" if ood_attr_name else ""
+    _fig.suptitle(
+        f"{space_label} Manifold Ellipsoid Geometry  (idx={sample_idx})"
+        f"  |  σ={sigma}  |  λ_max={_lambda_max:.4f}  √λ_max={_sqrt_lmax:.4f}"
+        f"  |  α=σ/√λ_max={_alpha:.4f}{_ood_tag}",
+        fontsize=11, y=1.02,
+    )
+    _plt.tight_layout()
+    _fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    _plt.close(_fig)
+
+
 def _tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
     """Convert [0,1] tensor (C,H,W) to PIL Image."""
     img = tensor.clamp(0, 1)
@@ -1001,156 +1175,24 @@ def save_sample_visualization(
             if i == 0:
                 axes[4, i].set_title("Neighbours", fontsize=9)
 
-        # ── Circle/Ellipse geometry figure (like notebook cell 7) ─────────
+        # ── Geometry figure ───────────────────────────────────────────────
         if isinstance(manifold_sm, ManifoldSmoother):
             try:
-                from matplotlib.patches import Ellipse as _Ellipse
-                import matplotlib.pyplot as _plt_geom
-                from sklearn.decomposition import PCA as _PCA
-
-                _pca_obj = _cached_pca.pca
-                _nbrs = _cached_pca.neighbors  # (k, D) centred
-                _ev = np.asarray(_pca_obj.evals, dtype=np.float64)
-                _Vt = _pca_obj.evecs.T  # (n_comp, D)
-                _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
-                _lambda_max = float(_ev[0])
-                _sqrt_lambda_max = float(np.sqrt(_lambda_max))
-                _anchor_2d = (query_vec - np.asarray(_pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
-                _neigh_2d = _nbrs.astype(np.float64) @ _Vt[:2].T
-
-                _a1 = float(sigma * np.sqrt(_ev_norm[0]))
-                _a2 = float(sigma * np.sqrt(_ev_norm[1]))
-                _mid_idx = len(_ev_norm) // 2
-                _a_mid  = float(sigma * np.sqrt(_ev_norm[_mid_idx]))  # median component
-                _a_last = float(sigma * np.sqrt(_ev_norm[-1]))         # true last component
-                _pc1_std = float(np.std(_neigh_2d[:, 0]))
-                _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
-                _zoom_mid = 0.10 * _pc1_range
-                _zoom_tight = _a1
-
-                _zoom_labels = [
-                    (None, f"[A] Full cloud  σ/std={sigma / (_pc1_std + 1e-12):.4f}", _a1, _a2),
-                    (_zoom_mid, f"[B] Mid-zoom  ±{_zoom_mid:.2f}", _a1, _a2),
-                    (_zoom_tight, f"[C] Tight ±σ={_zoom_tight:.4f}  a2={_a2:.4f}", _a1, _a2),
-                    (_zoom_tight, f"[D] Mid PC (k={_mid_idx})  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/_a1:.4f}", _a1, _a_mid),
-                    (_zoom_tight, f"[E] Last PC (k={len(_ev_norm)-1})  a_last={_a_last:.6f}\na_last/a1={_a_last/_a1:.6f}", _a1, _a_last),
-                ]
-
-                # ── Generate Monte Carlo noisy samples in manifold space → project to PCA-2D
-                _N_mc = cfg.smoothing.n_samples
-                _mc_samples_2d = []
-                for _ in range(_N_mc):
-                    _ns = manifold_sm.sample_from_cached(_cached_pca)
-                    _ns_centred = _ns - np.asarray(_pca_obj.mean, dtype=np.float64)
-                    _mc_samples_2d.append(_ns_centred @ _Vt[:2].T)
-                _mc_2d = np.array(_mc_samples_2d)  # (N_mc, 2)
-
-                # ── OOD flag per neighbour (look up by filename in index) ──
-                _nn_has_attr = np.zeros(len(_neigh_2d), dtype=bool)
-                if ood_attr_map is not None and index is not None and hasattr(index, "filenames"):
-                    _nn_ids_ood = index.index.get_nns_by_vector(
-                        query_vec.astype(np.float32),
-                        len(_neigh_2d), include_distances=False,
-                    ) if hasattr(index.index, "get_nns_by_vector") else []
-                    for _ni, _nid in enumerate(_nn_ids_ood[:len(_neigh_2d)]):
-                        _fname = Path(index.filenames[_nid]).name if hasattr(index, "filenames") else ""
-                        _nn_has_attr[_ni] = bool(ood_attr_map.get(_fname, 0))
-
-                # ── Per-MC-sample OOD label: nearest neighbour in 2D PCA space ──
-                # Each MC noisy sample is assigned the OOD status of its closest KNN neighbour.
-                # Green  = lands in OOD territory   (nearest KNN has ood_attr=1)
-                # Teal   = lands in non-OOD territory (nearest KNN has ood_attr=0)
-                if ood_attr_map is not None and len(_neigh_2d) > 0:
-                    _mc_nn_dists = np.linalg.norm(
-                        _mc_2d[:, None, :] - _neigh_2d[None, :, :], axis=-1
-                    )  # (N_mc, k)
-                    _mc_nn_idx  = np.argmin(_mc_nn_dists, axis=1)  # (N_mc,)
-                    _mc_is_ood  = _nn_has_attr[_mc_nn_idx]          # (N_mc,) bool
-                else:
-                    _mc_is_ood = np.zeros(len(_mc_2d), dtype=bool)
-
-                _gfig, _gaxes = _plt_geom.subplots(1, 5, figsize=(22, 5.5), facecolor="white")
-                _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
-                _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
-                _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
-                                  float(np.max(_y_all) - np.min(_y_all)), 1e-6)
-                # Total counts over all N_mc samples (independent of zoom) — shown in legend
-                _n_ood_mc_total     = int(_mc_is_ood.sum())
-                _n_notood_mc_total  = int((~_mc_is_ood).sum())
-
-                for _gax, (_zr, _gtitle, _ea1, _ea2) in zip(_gaxes, _zoom_labels):
-                    if _zr is None:
-                        _mask = np.ones(len(_neigh_2d), dtype=bool)
-                        _mask_mc = np.ones(len(_mc_2d), dtype=bool)
-                    else:
-                        _mask = (
-                            (_neigh_2d[:, 0] >= _anchor_2d[0] - _zr) & (_neigh_2d[:, 0] <= _anchor_2d[0] + _zr) &
-                            (_neigh_2d[:, 1] >= _anchor_2d[1] - _zr) & (_neigh_2d[:, 1] <= _anchor_2d[1] + _zr)
-                        )
-                        _mask_mc = (
-                            (_mc_2d[:, 0] >= _anchor_2d[0] - _zr) & (_mc_2d[:, 0] <= _anchor_2d[0] + _zr) &
-                            (_mc_2d[:, 1] >= _anchor_2d[1] - _zr) & (_mc_2d[:, 1] <= _anchor_2d[1] + _zr)
-                        )
-                    # Neighbours: grey=has OOD attr (safe), orange=missing OOD attr (risky)
-                    _has_attr = _mask & _nn_has_attr
-                    _no_attr  = _mask & ~_nn_has_attr
-                    _gax.scatter(_neigh_2d[_has_attr, 0], _neigh_2d[_has_attr, 1],
-                                 s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
-                                 label="KNN neighbours (OOD attr=1)")
-                    if _no_attr.any():
-                        _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
-                                     s=10, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
-                                     label="KNN (OOD attr=0, risky)")
-                    # Manifold MC noisy samples — coloured by OOD territory of nearest KNN neighbour
-                    _mc_vis_ood     = _mask_mc & _mc_is_ood
-                    _mc_vis_not_ood = _mask_mc & ~_mc_is_ood
-                    # Always plot both groups — legend shows TOTAL count across all N_mc, not just in-zoom
-                    _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
-                                 s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in OOD territory ({_n_ood_mc_total}/{_N_mc})")
-                    _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
-                                 s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in non-OOD territory ({_n_notood_mc_total}/{_N_mc})")
-                    _gax.add_patch(_plt_geom.Circle(
-                        (_anchor_2d[0], _anchor_2d[1]), sigma,
-                        fill=False, edgecolor="tab:blue", linewidth=2.5,
-                        linestyle=(0, (4, 2)), alpha=0.95, zorder=3,
-                        label=f"Iso circle r=σ={sigma}",
-                    ))
-                    _gax.add_patch(_Ellipse(
-                        (_anchor_2d[0], _anchor_2d[1]),
-                        width=2.0 * _ea1, height=2.0 * _ea2,
-                        fill=False, edgecolor="tab:orange", linewidth=2.5,
-                        linestyle="solid", alpha=0.95, zorder=3,
-                        label=f"Mani ellipse a1={_ea1:.4f} a2={_ea2:.4f}",
-                    ))
-                    _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
-                                 c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
-                    if _zr is None:
-                        _gax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
-                        _gax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
-                    else:
-                        _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
-                        _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
-                    _gax.set_aspect("equal")
-                    _gax.set_title(_gtitle, fontsize=8.5)
-                    _gax.set_xlabel(f"PC1 (std={_pc1_std:.2f})")
-                    _gax.set_ylabel("PC2")
-                    _gax.grid(alpha=0.25)
-                    _gax.legend(fontsize=7, loc="upper right")
-
-                _ood_tag_mani = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
-                _gfig.suptitle(
-                    f"Manifold: Circle + Ellipse Geometry (idx={sample_idx})  "
-                    f"| λ_max={_lambda_max:.4f}  √λ_max={_sqrt_lambda_max:.4f}  "
-                    f"|  α=σ/√λ_max={alpha_display:.4f}  (α/σ={alpha_display/sigma:.4f})\n"
-                    f"σ={sigma}  |  K=500  |  PC1 std={_pc1_std:.3f}{_ood_tag_mani}",
-                    fontsize=11, y=1.02,
+                _draw_geometry_figure(
+                    pca_obj=_cached_pca.pca,
+                    nbrs=_cached_pca.neighbors,
+                    query_vec=query_vec,
+                    smoother=manifold_sm,
+                    cached_pca=_cached_pca,
+                    sigma=sigma,
+                    n_mc=cfg.smoothing.n_samples,
+                    save_path=viz_dir / f"sample_{sample_idx:04d}_geometry.png",
+                    sample_idx=sample_idx,
+                    space_label="Pixel",
+                    ood_attr_name=getattr(cfg.dataset, "ood_attribute", None) or "",
+                    ood_attr_map=ood_attr_map,
+                    index=index,
                 )
-                _plt_geom.tight_layout()
-                _geom_path = viz_dir / f"sample_{sample_idx:04d}_geometry.png"
-                _gfig.savefig(_geom_path, dpi=150, bbox_inches="tight")
-                _plt_geom.close(_gfig)
             except Exception as _geom_err:
                 _log(f"Geometry figure skipped for sample {sample_idx}: {_geom_err}")
 
@@ -1263,145 +1305,21 @@ def save_sample_visualization(
         # ── Latent Manifold geometry figure ───────────────────────────────
         if isinstance(manifold_sm_latent, ManifoldSmoother) and _cached_latent_pca is not None:
             try:
-                from matplotlib.patches import Ellipse as _Ellipse
-                import matplotlib.pyplot as _plt_geom
-
-                _pca_obj = _cached_latent_pca.pca
-                _nbrs = _cached_latent_pca.neighbors  # (k, D_latent) centred
-                _ev = np.asarray(_pca_obj.evals, dtype=np.float64)
-                _Vt = _pca_obj.evecs.T  # (n_comp, D_latent)
-                _ev_norm = np.maximum(_ev, 1e-12) / float(_ev.max())
-                _lambda_max_lat = float(_ev[0])
-                _sqrt_lambda_max_lat = float(np.sqrt(_lambda_max_lat))
-                _anchor_2d = (query_vec - np.asarray(_pca_obj.mean, dtype=np.float64)) @ _Vt[:2].T
-                _neigh_2d = _nbrs.astype(np.float64) @ _Vt[:2].T
-
-                _a1 = float(sigma * np.sqrt(_ev_norm[0]))
-                _a2 = float(sigma * np.sqrt(_ev_norm[1]))
-                _mid_idx = len(_ev_norm) // 2
-                _a_mid  = float(sigma * np.sqrt(_ev_norm[_mid_idx]))
-                _a_last = float(sigma * np.sqrt(_ev_norm[-1]))
-                _pc1_std = float(np.std(_neigh_2d[:, 0]))
-                _pc1_range = float(np.max(_neigh_2d[:, 0]) - np.min(_neigh_2d[:, 0]))
-                _zoom_mid = 0.10 * _pc1_range
-                _zoom_tight = _a1
-
-                _zoom_labels = [
-                    (None,        f"[A] Full cloud  σ/std={sigma / (_pc1_std + 1e-12):.4f}", _a1, _a2),
-                    (_zoom_mid,   f"[B] Mid-zoom  ±{_zoom_mid:.2f}", _a1, _a2),
-                    (_zoom_tight, f"[C] Tight ±σ={_zoom_tight:.4f}  a2={_a2:.4f}", _a1, _a2),
-                    (_zoom_tight, f"[D] Mid PC (k={_mid_idx})  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/_a1:.4f}", _a1, _a_mid),
-                    (_zoom_tight, f"[E] Last PC (k={len(_ev_norm)-1})  a_last={_a_last:.6f}\na_last/a1={_a_last/_a1:.6f}", _a1, _a_last),
-                ]
-
-                # Generate MC noisy samples in latent manifold space → project to PCA-2D
-                _N_mc = cfg.smoothing.n_samples
-                _mc_samples_2d = []
-                for _ in range(_N_mc):
-                    _ns = manifold_sm_latent.sample_from_cached(_cached_latent_pca)
-                    _ns_centred = _ns - np.asarray(_pca_obj.mean, dtype=np.float64)
-                    _mc_samples_2d.append(_ns_centred @ _Vt[:2].T)
-                _mc_2d = np.array(_mc_samples_2d)  # (N_mc, 2)
-
-                # OOD flag per latent neighbour
-                _nn_has_attr = np.zeros(len(_neigh_2d), dtype=bool)
-                if ood_attr_map is not None and index is not None and hasattr(index, "filenames"):
-                    _nn_ids_ood = index.index.get_nns_by_vector(
-                        query_vec.astype(np.float32),
-                        len(_neigh_2d), include_distances=False,
-                    ) if hasattr(index.index, "get_nns_by_vector") else []
-                    for _ni, _nid in enumerate(_nn_ids_ood[:len(_neigh_2d)]):
-                        _fname = Path(index.filenames[_nid]).name if hasattr(index, "filenames") else ""
-                        _nn_has_attr[_ni] = bool(ood_attr_map.get(_fname, 0))
-
-                # Per-MC-sample OOD label via nearest KNN neighbour in 2D PCA space
-                if ood_attr_map is not None and len(_neigh_2d) > 0:
-                    _mc_nn_dists = np.linalg.norm(
-                        _mc_2d[:, None, :] - _neigh_2d[None, :, :], axis=-1
-                    )
-                    _mc_nn_idx = np.argmin(_mc_nn_dists, axis=1)
-                    _mc_is_ood = _nn_has_attr[_mc_nn_idx]
-                else:
-                    _mc_is_ood = np.zeros(len(_mc_2d), dtype=bool)
-
-                _gfig, _gaxes = _plt_geom.subplots(1, 5, figsize=(22, 5.5), facecolor="white")
-                _x_all = np.concatenate([_neigh_2d[:, 0], [_anchor_2d[0]]])
-                _y_all = np.concatenate([_neigh_2d[:, 1], [_anchor_2d[1]]])
-                _pad = 0.05 * max(float(np.max(_x_all) - np.min(_x_all)),
-                                  float(np.max(_y_all) - np.min(_y_all)), 1e-6)
-                _n_ood_mc_total    = int(_mc_is_ood.sum())
-                _n_notood_mc_total = int((~_mc_is_ood).sum())
-
-                for _gax, (_zr, _gtitle, _ea1, _ea2) in zip(_gaxes, _zoom_labels):
-                    if _zr is None:
-                        _mask = np.ones(len(_neigh_2d), dtype=bool)
-                        _mask_mc = np.ones(len(_mc_2d), dtype=bool)
-                    else:
-                        _mask = (
-                            (_neigh_2d[:, 0] >= _anchor_2d[0] - _zr) & (_neigh_2d[:, 0] <= _anchor_2d[0] + _zr) &
-                            (_neigh_2d[:, 1] >= _anchor_2d[1] - _zr) & (_neigh_2d[:, 1] <= _anchor_2d[1] + _zr)
-                        )
-                        _mask_mc = (
-                            (_mc_2d[:, 0] >= _anchor_2d[0] - _zr) & (_mc_2d[:, 0] <= _anchor_2d[0] + _zr) &
-                            (_mc_2d[:, 1] >= _anchor_2d[1] - _zr) & (_mc_2d[:, 1] <= _anchor_2d[1] + _zr)
-                        )
-                    _has_attr = _mask & _nn_has_attr
-                    _no_attr  = _mask & ~_nn_has_attr
-                    _gax.scatter(_neigh_2d[_has_attr, 0], _neigh_2d[_has_attr, 1],
-                                 s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
-                                 label="KNN neighbours (OOD attr=1)")
-                    if _no_attr.any():
-                        _gax.scatter(_neigh_2d[_no_attr, 0], _neigh_2d[_no_attr, 1],
-                                     s=10, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
-                                     label="KNN (OOD attr=0, risky)")
-                    _mc_vis_ood     = _mask_mc & _mc_is_ood
-                    _mc_vis_not_ood = _mask_mc & ~_mc_is_ood
-                    _gax.scatter(_mc_2d[_mc_vis_ood, 0], _mc_2d[_mc_vis_ood, 1],
-                                 s=8, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in OOD territory ({_n_ood_mc_total}/{_N_mc})")
-                    _gax.scatter(_mc_2d[_mc_vis_not_ood, 0], _mc_2d[_mc_vis_not_ood, 1],
-                                 s=8, alpha=0.50, color="#17becf", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in non-OOD territory ({_n_notood_mc_total}/{_N_mc})")
-                    _gax.add_patch(_plt_geom.Circle(
-                        (_anchor_2d[0], _anchor_2d[1]), sigma,
-                        fill=False, edgecolor="tab:blue", linewidth=2.5,
-                        linestyle=(0, (4, 2)), alpha=0.95, zorder=3,
-                        label=f"Iso circle r=σ={sigma}",
-                    ))
-                    _gax.add_patch(_Ellipse(
-                        (_anchor_2d[0], _anchor_2d[1]),
-                        width=2.0 * _ea1, height=2.0 * _ea2,
-                        fill=False, edgecolor="tab:orange", linewidth=2.5,
-                        linestyle="solid", alpha=0.95, zorder=3,
-                        label=f"Mani ellipse a1={_ea1:.4f} a2={_ea2:.4f}",
-                    ))
-                    _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
-                                 c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
-                    if _zr is None:
-                        _gax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
-                        _gax.set_ylim(float(np.min(_y_all)) - _pad, float(np.max(_y_all)) + _pad)
-                    else:
-                        _gax.set_xlim(_anchor_2d[0] - _zr, _anchor_2d[0] + _zr)
-                        _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
-                    _gax.set_aspect("equal")
-                    _gax.set_title(_gtitle, fontsize=8.5)
-                    _gax.set_xlabel(f"PC1 (std={_pc1_std:.2f})")
-                    _gax.set_ylabel("PC2")
-                    _gax.grid(alpha=0.25)
-                    _gax.legend(fontsize=7, loc="upper right")
-
-                _ood_tag_lat = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
-                _gfig.suptitle(
-                    f"Latent Manifold: Circle + Ellipse Geometry (idx={sample_idx})  "
-                    f"| λ_max={_lambda_max_lat:.4f}  √λ_max={_sqrt_lambda_max_lat:.4f}  "
-                    f"|  α=σ/√λ_max={alpha_display:.4f}  (α/σ={alpha_display/sigma:.4f})\n"
-                    f"σ={sigma}  |  K={manifold_sm_latent.knn_k if hasattr(manifold_sm_latent, 'knn_k') else '?'}  |  PC1 std={_pc1_std:.3f}{_ood_tag_lat}",
-                    fontsize=11, y=1.02,
+                _draw_geometry_figure(
+                    pca_obj=_cached_latent_pca.pca,
+                    nbrs=_cached_latent_pca.neighbors,
+                    query_vec=query_vec,
+                    smoother=manifold_sm_latent,
+                    cached_pca=_cached_latent_pca,
+                    sigma=sigma,
+                    n_mc=cfg.smoothing.n_samples,
+                    save_path=viz_dir / f"sample_{sample_idx:04d}_geometry_latent.png",
+                    sample_idx=sample_idx,
+                    space_label="Latent",
+                    ood_attr_name=getattr(cfg.dataset, "ood_attribute", None) or "",
+                    ood_attr_map=ood_attr_map,
+                    index=index,
                 )
-                _plt_geom.tight_layout()
-                _geom_lat_path = viz_dir / f"sample_{sample_idx:04d}_geometry_latent.png"
-                _gfig.savefig(_geom_lat_path, dpi=150, bbox_inches="tight")
-                _plt_geom.close(_gfig)
             except Exception as _geom_err_lat:
                 _log(f"Latent geometry figure skipped for sample {sample_idx}: {_geom_err_lat}")
 
@@ -1726,17 +1644,6 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 _parts_g = _row_g.split()
                 _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
 
-    # Precompute a fast int8 label array indexed by Annoy ID for mc_ood_count.
-    # Avoids per-sample Python dict + Path() overhead inside the tight MC loop.
-    _pixel_ood_labels: Optional[np.ndarray] = None  # shape (N_train,) int8
-    if (_ood_attr_map_global is not None
-            and pixel_index is not None
-            and hasattr(pixel_index, "filenames")):
-        _pixel_ood_labels = np.array(
-            [_ood_attr_map_global.get(Path(fn).name, 0) for fn in pixel_index.filenames],
-            dtype=np.int8,
-        )
-
     for idx in tqdm(range(start_idx, len(test_samples)), desc="Certifying (test)", initial=start_idx, total=len(test_samples)):
         img_path, label = test_samples[idx]
         img = Image.open(img_path).convert("RGB")
@@ -1754,16 +1661,16 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         # Determine which smoother to use for this sample
         _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
 
-        # Collect raw MC samples when doing OOD runs (ood_attribute set) for both iso and
-        # manifold — lets you compare how often each noise type lands in OOD territory.
-        # In normal certification ood_attribute is None so _collect=False and this is free.
         _is_iso = not cfg.smoothing.use_manifold
-        _collect = (_ood_attr_map_global is not None
-                    and pixel_index is not None
-                    and hasattr(pixel_index, "index")
-                    and hasattr(pixel_index.index, "get_nns_by_vector")
-                    and hasattr(pixel_index, "filenames"))
-        cert, _cert_raw_samples = certify_single_sample(
+        # MC OOD tracking disabled — to re-enable: set collect_n_samples=_collect,
+        # restore _collect flag, _pixel_ood_labels precompute, and MC hit loop below
+        # _collect = (_ood_attr_map_global is not None
+        #             and pixel_index is not None
+        #             and hasattr(pixel_index, "index")
+        #             and hasattr(pixel_index.index, "get_nns_by_vector")
+        #             and hasattr(pixel_index, "filenames"))
+        # cert, _cert_raw_samples = certify_single_sample(..., collect_n_samples=_collect)
+        cert, _ = certify_single_sample(
             classifier=classifier,
             img_tensor=img_tensor,
             smoother=_active_smoother,
@@ -1773,11 +1680,8 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             device=device,
             alpha_conf=cfg.alpha_conf,
             sigma=cfg.smoothing.sigma,
-            # Iso: pass sample_fn=None → GPU batch path (fast). Exact cert samples are
-            # collected directly from x_noisy inside certify_single_sample (memcpy only).
-            # Manifold: must pass sample_fn → CPU loop (PCA cached, unavoidable).
             sample_fn=None if _is_iso else sample_fn,
-            collect_n_samples=_collect,
+            collect_n_samples=False,
         )
         
         result = {
@@ -1792,11 +1696,14 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "correct": (cert.pred == label) if not cert.abstained else False,
             "certified_correct": (cert.pred == label and not cert.abstained),
             "ood_attribute": ood_attr if ood_attr else None,
-            "ood_attr_value": 1 if ood_attr else None,  # all certified images have attr=1
+            "ood_attr_value": 1 if ood_attr else None,
+            "nn_ood_count": None,
+            "nn_ood_frac": None,
+            "mc_ood_count": None,   # disabled — kept for notebook compatibility
+            "mc_ood_frac": None,    # disabled — kept for notebook compatibility
         }
 
-        # KNN neighbour OOD fraction: how many of the k neighbours have ood_attr == 1
-        # Works for both manifold and isotropic runs whenever an index is available.
+        # KNN neighbour OOD fraction
         result["nn_ood_count"] = None
         result["nn_ood_frac"]  = None
         if _ood_attr_map_global is not None:
@@ -1818,24 +1725,21 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 result["nn_ood_count"] = int(_nn_ood_count)
                 result["nn_ood_frac"]  = float(_nn_ood_count) / len(_nn_ids) if _nn_ids else None
 
-        # MC OOD fraction from actual certification n-phase samples.
-        # Each raw sample is looked up in pixel_index (Annoy) → inherits OOD label of nearest neighbour.
-        result["mc_ood_count"] = None
-        result["mc_ood_frac"]  = None
-        if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
-                and _pixel_ood_labels is not None
-                and pixel_index is not None
-                and hasattr(pixel_index, "index")):
-            # Stack all MC samples into one matrix and batch-query Annoy
-            _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
-                                for _rs in _cert_raw_samples])  # (N, D)
-            _nn_ids = np.array([
-                pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
-                for _i in range(len(_mc_mat))
-            ], dtype=np.int32)
-            _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
-            result["mc_ood_count"] = _mc_hits
-            result["mc_ood_frac"]  = float(_mc_hits) / len(_cert_raw_samples)
+        # MC OOD fraction — disabled (per-sample Annoy queries slow; re-enable if needed)
+        # Each raw MC sample is looked up in pixel_index → inherits OOD label of nearest neighbour
+        # if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
+        #         and _pixel_ood_labels is not None
+        #         and pixel_index is not None
+        #         and hasattr(pixel_index, "index")):
+        #     _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
+        #                         for _rs in _cert_raw_samples])  # (N, D)
+        #     _nn_ids_mc = np.array([
+        #         pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
+        #         for _i in range(len(_mc_mat))
+        #     ], dtype=np.int32)
+        #     _mc_hits = int(_pixel_ood_labels[_nn_ids_mc].sum())
+        #     result["mc_ood_count"] = _mc_hits
+        #     result["mc_ood_frac"]  = float(_mc_hits) / len(_cert_raw_samples)
 
         # Volume computation: extract eigenvalues, lambda_max and alpha from manifold smoother
         if isinstance(pixel_smoother, ManifoldSmoother) and cfg.smoothing.mode == "pixel":
@@ -1944,23 +1848,15 @@ def run_certification(cfg: CertifyConfig) -> Dict:
         metrics[f"class_{cls_name}_accuracy"] = cls_correct / len(cls_results) if cls_results else 0.0
         metrics[f"class_{cls_name}_mean_radius"] = float(np.mean(cls_radii)) if cls_radii else 0.0
 
-    # ── OOD neighbour + MC hit-rate aggregates (reported for both iso and manifold) ──
-    _nn_fracs = [r["nn_ood_frac"] for r in results if r.get("nn_ood_frac") is not None]
-    _mc_fracs = [r["mc_ood_frac"] for r in results if r.get("mc_ood_frac") is not None]
+    # ── OOD neighbour stats (KNN only — MC index queries disabled) ───────────
+    _nn_fracs  = [r["nn_ood_frac"]  for r in results if r.get("nn_ood_frac")  is not None]
     _nn_counts = [r["nn_ood_count"] for r in results if r.get("nn_ood_count") is not None]
-    _mc_counts = [r["mc_ood_count"] for r in results if r.get("mc_ood_count") is not None]
     metrics["ood_stats"] = {
         "ood_attribute": ood_attr if ood_attr else None,
-        # KNN neighbour OOD fraction (how many of k nearest neighbours have ood_attr=1)
         "nn_samples_with_data": len(_nn_fracs),
-        "mean_nn_ood_frac":   float(np.mean(_nn_fracs))   if _nn_fracs   else None,
-        "median_nn_ood_frac": float(np.median(_nn_fracs)) if _nn_fracs   else None,
-        "mean_nn_ood_count":  float(np.mean(_nn_counts))  if _nn_counts  else None,
-        # MC sample OOD hit-rate (fraction of n-phase certification samples landing in OOD territory)
-        "mc_samples_with_data": len(_mc_fracs),
-        "mean_mc_ood_frac":   float(np.mean(_mc_fracs))   if _mc_fracs   else None,
-        "median_mc_ood_frac": float(np.median(_mc_fracs)) if _mc_fracs   else None,
-        "mean_mc_ood_count":  float(np.mean(_mc_counts))  if _mc_counts  else None,
+        "mean_nn_ood_frac":   float(np.mean(_nn_fracs))   if _nn_fracs  else None,
+        "median_nn_ood_frac": float(np.median(_nn_fracs)) if _nn_fracs  else None,
+        "mean_nn_ood_count":  float(np.mean(_nn_counts))  if _nn_counts else None,
     }
 
     # Print results
@@ -2166,16 +2062,16 @@ def run_certification(cfg: CertifyConfig) -> Dict:
 
     # Log OOD stats summary
     _ood_s = metrics.get("ood_stats", {})
-    if _ood_s.get("mean_nn_ood_frac") is not None or _ood_s.get("mean_mc_ood_frac") is not None:
+    if _ood_s.get("mean_nn_ood_frac") is not None:
         _log(f"OOD stats  [{_ood_s.get('ood_attribute')}=1]:")
-        if _ood_s.get("mean_nn_ood_frac") is not None:
-            _log(f"  KNN neighbour OOD frac: mean={_ood_s['mean_nn_ood_frac']:.3f}  "
-                 f"median={_ood_s['median_nn_ood_frac']:.3f}  "
-                 f"(n={_ood_s['nn_samples_with_data']})")
-        if _ood_s.get("mean_mc_ood_frac") is not None:
-            _log(f"  MC sample   OOD frac:   mean={_ood_s['mean_mc_ood_frac']:.3f}  "
-                 f"median={_ood_s['median_mc_ood_frac']:.3f}  "
-                 f"(n={_ood_s['mc_samples_with_data']})")
+        _log(f"  KNN neighbour OOD frac: mean={_ood_s['mean_nn_ood_frac']:.3f}  "
+             f"median={_ood_s['median_nn_ood_frac']:.3f}  "
+             f"(n={_ood_s['nn_samples_with_data']})")
+        # MC OOD logging disabled — uncomment to re-enable
+        # if _ood_s.get("mean_mc_ood_frac") is not None:
+        #     _log(f"  MC sample OOD frac: mean={_ood_s['mean_mc_ood_frac']:.3f}  "
+        #          f"median={_ood_s['median_mc_ood_frac']:.3f}  "
+        #          f"(n={_ood_s['mc_samples_with_data']})")
 
     # Save results
     if cfg.output.save_results:
@@ -2484,12 +2380,13 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                 _parts_g = _row_g.split()
                 _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
 
-    _pixel_ood_labels: Optional[np.ndarray] = None
-    if (_ood_attr_map_global is not None and pixel_index is not None and hasattr(pixel_index, "filenames")):
-        _pixel_ood_labels = np.array(
-            [_ood_attr_map_global.get(Path(fn).name, 0) for fn in pixel_index.filenames],
-            dtype=np.int8,
-        )
+    # MC OOD tracking disabled — uncomment to re-enable per-sample index queries
+    # _pixel_ood_labels: Optional[np.ndarray] = None
+    # if (_ood_attr_map_global is not None and pixel_index is not None and hasattr(pixel_index, "filenames")):
+    #     _pixel_ood_labels = np.array(
+    #         [_ood_attr_map_global.get(Path(fn).name, 0) for fn in pixel_index.filenames],
+    #         dtype=np.int8,
+    #     )
 
     # ── per-sigma state — load partial checkpoints, skip completed ────────────
     def _sigma_experiment_dir(sigma: float) -> Path:
@@ -2653,7 +2550,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
             else:
                 _sample_fn = None  # isotropic → GPU batch path in certify_single_sample
 
-            cert, _cert_raw_samples = certify_single_sample(
+            cert, _ = certify_single_sample(
                 classifier=classifier,
                 img_tensor=img_tensor,
                 smoother=_active_smoother,
@@ -2664,7 +2561,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                 alpha_conf=cfg.alpha_conf,
                 sigma=sigma,
                 sample_fn=_sample_fn,
-                collect_n_samples=_collect,
+                collect_n_samples=False,
             )
 
             result = {
@@ -2682,23 +2579,23 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                 "ood_attr_value": 1 if ood_attr else None,
                 "nn_ood_count": _nn_ood_count,
                 "nn_ood_frac": _nn_ood_frac,
-                "mc_ood_count": None,
-                "mc_ood_frac": None,
+                "mc_ood_count": None,   # disabled — kept for notebook compatibility
+                "mc_ood_frac": None,    # disabled — kept for notebook compatibility
             }
 
-            # MC OOD fraction
-            if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
-                    and _pixel_ood_labels is not None and pixel_index is not None
-                    and hasattr(pixel_index, "index")):
-                _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
-                                    for _rs in _cert_raw_samples])
-                _nn_ids = np.array([
-                    pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
-                    for _i in range(len(_mc_mat))
-                ], dtype=np.int32)
-                _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
-                result["mc_ood_count"] = _mc_hits
-                result["mc_ood_frac"] = float(_mc_hits) / len(_cert_raw_samples)
+            # MC OOD fraction — disabled (per-sample index queries slow; re-enable if needed)
+            # if (_cert_raw_samples is not None and len(_cert_raw_samples) > 0
+            #         and _pixel_ood_labels is not None and pixel_index is not None
+            #         and hasattr(pixel_index, "index")):
+            #     _mc_mat = np.stack([_rs.numpy().flatten().astype(np.float32)
+            #                         for _rs in _cert_raw_samples])
+            #     _nn_ids = np.array([
+            #         pixel_index.index.get_nns_by_vector(_mc_mat[_i].tolist(), 1, include_distances=False)[0]
+            #         for _i in range(len(_mc_mat))
+            #     ], dtype=np.int32)
+            #     _mc_hits = int(_pixel_ood_labels[_nn_ids].sum())
+            #     result["mc_ood_count"] = _mc_hits
+            #     result["mc_ood_frac"] = float(_mc_hits) / len(_cert_raw_samples)
 
             # Eigenvalue / geometry (reuse cached PCA — no recompute)
             if _pca_cached is not None:
@@ -2814,19 +2711,20 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
             metrics[f"class_{cls_name}_mean_radius"] = float(np.mean(cls_radii)) if cls_radii else 0.0
 
         _nn_fracs  = [r["nn_ood_frac"]  for r in results if r.get("nn_ood_frac")  is not None]
-        _mc_fracs  = [r["mc_ood_frac"]  for r in results if r.get("mc_ood_frac")  is not None]
         _nn_counts = [r["nn_ood_count"] for r in results if r.get("nn_ood_count") is not None]
-        _mc_counts = [r["mc_ood_count"] for r in results if r.get("mc_ood_count") is not None]
+        # MC OOD tracking disabled — uncomment to re-enable
+        # _mc_fracs  = [r["mc_ood_frac"]  for r in results if r.get("mc_ood_frac")  is not None]
+        # _mc_counts = [r["mc_ood_count"] for r in results if r.get("mc_ood_count") is not None]
         metrics["ood_stats"] = {
             "ood_attribute": ood_attr if ood_attr else None,
             "nn_samples_with_data":  len(_nn_fracs),
-            "mean_nn_ood_frac":      float(np.mean(_nn_fracs))   if _nn_fracs   else None,
-            "median_nn_ood_frac":    float(np.median(_nn_fracs)) if _nn_fracs   else None,
-            "mean_nn_ood_count":     float(np.mean(_nn_counts))  if _nn_counts  else None,
-            "mc_samples_with_data":  len(_mc_fracs),
-            "mean_mc_ood_frac":      float(np.mean(_mc_fracs))   if _mc_fracs   else None,
-            "median_mc_ood_frac":    float(np.median(_mc_fracs)) if _mc_fracs   else None,
-            "mean_mc_ood_count":     float(np.mean(_mc_counts))  if _mc_counts  else None,
+            "mean_nn_ood_frac":      float(np.mean(_nn_fracs))   if _nn_fracs  else None,
+            "median_nn_ood_frac":    float(np.median(_nn_fracs)) if _nn_fracs  else None,
+            "mean_nn_ood_count":     float(np.mean(_nn_counts))  if _nn_counts else None,
+            # "mc_samples_with_data":  len(_mc_fracs),
+            # "mean_mc_ood_frac":      float(np.mean(_mc_fracs))   if _mc_fracs   else None,
+            # "median_mc_ood_frac":    float(np.median(_mc_fracs)) if _mc_fracs   else None,
+            # "mean_mc_ood_count":     float(np.mean(_mc_counts))  if _mc_counts  else None,
         }
 
         # Volume + geometry metrics (same logic as run_certification)
