@@ -793,9 +793,13 @@ def _draw_geometry_figure(
         _ax.set_xlabel(f"PC1  (std={_pc1_std:.2f})", fontsize=8)
         _ax.set_ylabel("PC2", fontsize=8)
         _ax.grid(alpha=0.25)
-        # Legend outside the plot area (right side) — same position for all panels
-        _ax.legend(fontsize=6.5, loc="upper left", bbox_to_anchor=(1.01, 1.0),
-                   borderaxespad=0, framealpha=0.85)
+        # No per-axis legend — shared one drawn below
+
+    # Single shared horizontal legend at bottom (same handles for all subplots)
+    _handles, _labels = _axes[0].get_legend_handles_labels()
+    _fig.legend(_handles, _labels, loc="lower center", ncol=len(_handles),
+                fontsize=7.5, framealpha=0.9,
+                bbox_to_anchor=(0.5, -0.08), borderaxespad=0)
 
     _ood_tag = f"  |  OOD: {ood_attr_name}=1" if ood_attr_name else ""
     _fig.suptitle(
@@ -994,25 +998,22 @@ def save_sample_visualization(
                 (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
             ]
 
-            # ── OOD label per ISO MC sample via nearest pixel-index neighbour ──
-            # Each MC sample is assigned the OOD status of its nearest training neighbour.
-            # Green = lands in OOD territory (nearest neighbour has ood_attr=1)
-            # Teal  = lands in non-OOD territory (nearest neighbour has ood_attr=0)
-            _iso_mc_is_ood = np.zeros(len(_mc_flat), dtype=bool)
-            if (ood_attr_map is not None and index is not None
-                    and hasattr(index, "index") and hasattr(index.index, "get_nns_by_vector")
-                    and hasattr(index, "filenames")):
-                for _mi, _ms in enumerate(_mc_flat):
-                    _nid = index.index.get_nns_by_vector(_ms.tolist(), 1, include_distances=False)
-                    if _nid:
-                        _fname = Path(index.filenames[_nid[0]]).name
-                        _iso_mc_is_ood[_mi] = bool(ood_attr_map.get(_fname, 0))
+            # MC OOD colouring — disabled (per-sample Annoy queries slow); re-enable if needed
+            # _iso_mc_is_ood = np.zeros(len(_mc_flat), dtype=bool)
+            # if (ood_attr_map is not None and index is not None
+            #         and hasattr(index, "index") and hasattr(index.index, "get_nns_by_vector")
+            #         and hasattr(index, "filenames")):
+            #     for _mi, _ms in enumerate(_mc_flat):
+            #         _nid = index.index.get_nns_by_vector(_ms.tolist(), 1, include_distances=False)
+            #         if _nid:
+            #             _fname = Path(index.filenames[_nid[0]]).name
+            #             _iso_mc_is_ood[_mi] = bool(ood_attr_map.get(_fname, 0))
 
             _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
             _mc_pad = 0.05 * max(float(np.ptp(_mc_2d[:, 0])), float(np.ptp(_mc_2d[:, 1])), 1e-6)
-            # Total counts over all N_mc samples (independent of zoom) — shown in legend
-            _n_iso_ood_total     = int(_iso_mc_is_ood.sum())
-            _n_iso_not_ood_total = int((~_iso_mc_is_ood).sum())
+            # Total counts — only needed when OOD split is re-enabled above
+            # _n_iso_ood_total     = int(_iso_mc_is_ood.sum())
+            # _n_iso_not_ood_total = int((~_iso_mc_is_ood).sum())
 
             for _gax, (_zr, _gtitle) in zip(_gaxes, _zoom_specs):
                 if _zr is None:
@@ -1023,28 +1024,30 @@ def save_sample_visualization(
                         (np.abs(_mc_2d[:, 1] - _anchor_2d[1]) <= _zr)
                     )
 
-                # Iso MC noisy samples — coloured by OOD territory of nearest index neighbour
-                _iso_vis_ood     = _mask_mc & _iso_mc_is_ood
-                _iso_vis_not_ood = _mask_mc & ~_iso_mc_is_ood
-                if not _iso_vis_ood.any() and not _iso_vis_not_ood.any():
-                    # Fallback: no OOD map available — plain blue
-                    _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                                 s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
-                                 zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
-                else:
-                    # Always plot both — legend shows TOTAL count across all N_mc, not just in-zoom
-                    _gax.scatter(_mc_2d[_iso_vis_ood, 0], _mc_2d[_iso_vis_ood, 1],
-                                 s=6, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in OOD territory ({_n_iso_ood_total}/{_N_mc})")
-                    _gax.scatter(_mc_2d[_iso_vis_not_ood, 0], _mc_2d[_iso_vis_not_ood, 1],
-                                 s=6, alpha=0.50, color="#17becf", marker="o", linewidths=0,
-                                 zorder=3, label=f"MC in non-OOD territory ({_n_iso_not_ood_total}/{_N_mc})")
+                # MC OOD split — disabled; uncomment to re-enable
+                # _iso_vis_ood     = _mask_mc & _iso_mc_is_ood
+                # _iso_vis_not_ood = _mask_mc & ~_iso_mc_is_ood
+                # if not _iso_vis_ood.any() and not _iso_vis_not_ood.any():
+                #     _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                #                  s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                #                  zorder=3, label=f"Iso MC samples (n={_mask_mc.sum()})")
+                # else:
+                #     _gax.scatter(_mc_2d[_iso_vis_ood, 0], _mc_2d[_iso_vis_ood, 1],
+                #                  s=6, alpha=0.50, color="#2ca02c", marker="o", linewidths=0,
+                #                  zorder=3, label=f"MC in OOD territory ({_n_iso_ood_total}/{_N_mc})")
+                #     _gax.scatter(_mc_2d[_iso_vis_not_ood, 0], _mc_2d[_iso_vis_not_ood, 1],
+                #                  s=6, alpha=0.50, color="#17becf", marker="o", linewidths=0,
+                #                  zorder=3, label=f"MC in non-OOD territory ({_n_iso_not_ood_total}/{_N_mc})")
 
+                # MC samples — single colour, no OOD split
+                _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                             s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                             zorder=3, label=f"Iso MC samples (n={_N_mc})")
                 # iso circle
                 _gax.add_patch(_plt_geom.Circle(
                     (_anchor_2d[0], _anchor_2d[1]), sigma,
                     fill=False, edgecolor="tab:blue", linewidth=2,
-                    linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle r={sigma}",
+                    linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle  r={sigma}",
                 ))
                 _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
                              c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
@@ -1056,21 +1059,27 @@ def save_sample_visualization(
                     _gax.set_ylim(_anchor_2d[1] - _zr, _anchor_2d[1] + _zr)
                 _gax.set_aspect("equal")
                 _gax.set_title(_gtitle, fontsize=9)
-                _gax.set_xlabel(f"PC1 (MC std={_pc1_std:.4f})")
-                _gax.set_ylabel(f"PC2 (MC std={_pc2_std:.4f})")
+                _gax.set_xlabel(f"PC1  (std={_pc1_std:.4f})", fontsize=8)
+                _gax.set_ylabel(f"PC2  (std={_pc2_std:.4f})", fontsize=8)
                 _gax.grid(alpha=0.25)
-                _gax.legend(fontsize=7, loc="upper right")
+                _gax.get_legend_handles_labels()  # collect but don't draw per-axis
 
-                _ood_tag = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
-                _gfig.suptitle(
-                    f"Isotropic: Circle Geometry (idx={sample_idx})\n"
-                    f"σ={sigma}  |  MC samples={_N_mc}  |  PC1 std={_pc1_std:.4f}  |  PC2 std={_pc2_std:.4f}{_ood_tag}",
-                    fontsize=11,
-                )
-                _plt_geom.tight_layout()
-                _geom_iso_path = viz_dir / f"sample_{sample_idx:04d}_geometry_iso.png"
-                _gfig.savefig(_geom_iso_path, dpi=150, bbox_inches="tight")
-                _plt_geom.close(_gfig)
+            # Single shared horizontal legend at bottom
+            _handles, _labels = _gaxes[0].get_legend_handles_labels()
+            _gfig.legend(_handles, _labels, loc="lower center", ncol=len(_handles),
+                         fontsize=8, framealpha=0.9,
+                         bbox_to_anchor=(0.5, -0.08), borderaxespad=0)
+
+            _ood_tag = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
+            _gfig.suptitle(
+                f"Isotropic Circle Geometry  (idx={sample_idx})"
+                f"  |  σ={sigma}  |  MC samples={_N_mc}{_ood_tag}",
+                fontsize=11,
+            )
+            _plt_geom.tight_layout()
+            _geom_iso_path = viz_dir / f"sample_{sample_idx:04d}_geometry_iso.png"
+            _gfig.savefig(_geom_iso_path, dpi=150, bbox_inches="tight")
+            _plt_geom.close(_gfig)
         except Exception as _geom_err_iso:
             _log(f"Isotropic geometry figure skipped for sample {sample_idx}: {_geom_err_iso}")
 
