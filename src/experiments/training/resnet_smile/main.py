@@ -584,6 +584,8 @@ def main() -> None:
                         help="Override checkpoint.base_dir (used by sweep script)")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Override output_dir")
+    parser.add_argument("--ood_attr", type=str, default=None,
+                        help="OOD attribute to exclude from training (e.g. Wearing_Hat)")
     args = parser.parse_args()
 
     cfg = load_smile_training_config(args.config)
@@ -601,6 +603,8 @@ def main() -> None:
         cfg.checkpoint.base_dir = args.ckpt_dir
     if args.output_dir is not None:
         cfg.output_dir = args.output_dir
+    if args.ood_attr is not None:
+        cfg.dataset.ood_exclude_attribute = args.ood_attr
 
     print(f"Experiment : {cfg.experiment_name}")
     print(f"Dataset    : {cfg.dataset.name}")
@@ -608,6 +612,8 @@ def main() -> None:
     print(f"Epochs     : {cfg.train.epochs}  lr={cfg.train.lr}")
     if cfg.smoothing_aug.enabled:
         print(f"Aug        : mode={cfg.smoothing_aug.mode}  σ={cfg.smoothing_aug.sigma}")
+    if cfg.dataset.ood_exclude_attribute:
+        print(f"OOD exclude: {cfg.dataset.ood_exclude_attribute}=1 removed from all splits")
 
     train(cfg)
 
