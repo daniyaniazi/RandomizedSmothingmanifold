@@ -1675,6 +1675,9 @@ def run_certification(cfg: CertifyConfig) -> Dict:
                 _parts_g = _row_g.split()
                 _ood_attr_map_global[_parts_g[0]] = 1 if int(_parts_g[1 + _aidx_g]) == 1 else 0
 
+    import time as _time
+    _certify_start = _time.time()
+
     for idx in tqdm(range(start_idx, len(test_samples)), desc="Certifying (test)", initial=start_idx, total=len(test_samples)):
         img_path, label = test_samples[idx]
         img = Image.open(img_path).convert("RGB")
@@ -1842,17 +1845,79 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     # ─────────────────────────────────────────────────────────────────────────
     # Compute metrics
     # ─────────────────────────────────────────────────────────────────────────
+    _certify_elapsed = _time.time() - _certify_start
     total = len(test_samples)
+    _samples_processed = total - start_idx  # excludes resumed-over samples
     metrics = {
+        # ── Identity ──────────────────────────────────────────────────────────
         "experiment": cfg.experiment_name,
         "dataset": cfg.dataset.name,
-        "smoothing_mode": cfg.smoothing.mode,
-        "use_manifold": cfg.smoothing.use_manifold,
-        "sigma": cfg.smoothing.sigma,
-        "n0_samples": int(cfg.smoothing.n0_samples),
-        "n_samples": cfg.smoothing.n_samples,
-        "total_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
-        "knn_k": cfg.smoothing.knn_k,
+        "output_dir": str(paths.experiment_dir),
+
+        # ── Classifier ────────────────────────────────────────────────────────
+        "classifier": {
+            "model": cfg.model.name,
+            "checkpoint": resolve_classifier_checkpoint(cfg),
+            "input_size": cfg.model.input_size,
+            "dropout": cfg.model.dropout,
+            "use_ood_classifier": getattr(cfg.model, "use_ood_classifier", True),
+        },
+
+        # ── Smoothing config ──────────────────────────────────────────────────
+        "smoothing": {
+            "mode": cfg.smoothing.mode,
+            "use_manifold": cfg.smoothing.use_manifold,
+            "sigma": cfg.smoothing.sigma,
+            "n0_samples": int(cfg.smoothing.n0_samples),
+            "n_samples": int(cfg.smoothing.n_samples),
+            "total_mc_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
+            "knn_k": cfg.smoothing.knn_k,
+            "eps_eig": cfg.smoothing.eps_eig,
+            "alpha_conf": cfg.alpha_conf,
+        },
+
+        # ── VAE (latent mode) ─────────────────────────────────────────────────
+        "vae": {
+            "enabled": cfg.vae.enabled,
+            "checkpoint": cfg.vae.checkpoint_path if cfg.vae.enabled else None,
+            "image_size": cfg.vae.image_size if cfg.vae.enabled else None,
+            "latent_dim": cfg.vae.latent_dim if cfg.vae.enabled else None,
+        },
+
+        # ── Index ─────────────────────────────────────────────────────────────
+        "index": {
+            "backend": cfg.index.backend,
+            "metric": cfg.index.metric,
+            "n_trees": cfg.index.n_trees,
+            "split": "train",
+            "n_train_samples": len(train_samples),
+        },
+
+        # ── Dataset / split ───────────────────────────────────────────────────
+        "dataset_info": {
+            "name": cfg.dataset.name,
+            "root_dir": cfg.dataset.root_dir,
+            "train_samples": len(train_samples),
+            "test_samples": total,
+            "split_seed": cfg.dataset.split_seed,
+            "train_ratio": cfg.dataset.train_ratio,
+            "val_ratio": cfg.dataset.val_ratio,
+            "ood_attribute": ood_attr if ood_attr else None,
+            "ood_attr_value": 1 if ood_attr else None,
+            "ood_balanced": cfg.dataset.ood_balanced if ood_attr else None,
+        },
+
+        # ── Runtime ───────────────────────────────────────────────────────────
+        "runtime": {
+            "certify_seconds": round(_certify_elapsed, 2),
+            "certify_minutes": round(_certify_elapsed / 60, 2),
+            "samples_processed": _samples_processed,
+            "seconds_per_sample": round(_certify_elapsed / max(_samples_processed, 1), 4),
+            "device": str(device),
+            "resumed_from_sample": start_idx if start_idx > 0 else None,
+        },
+
+        # ── Results ───────────────────────────────────────────────────────────
         "index_split": "train",
         "certify_split": "test",
         "total_test_samples": total,
@@ -2478,6 +2543,9 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
     global_start = min(s["start_idx"] for s in sigma_states.values())
     checkpoint_every = cfg.checkpoint.checkpoint_every if cfg.checkpoint.enabled else 0
 
+    import time as _time
+    _certify_start = _time.time()
+
     _log(f"Active sigmas: {active_sigmas}  (global_start={global_start})")
 
     # ── main loop — one pass over test samples ────────────────────────────────
@@ -2708,16 +2776,78 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
         _cfg_s = _copy3.deepcopy(cfg)
         _cfg_s.smoothing.sigma = sigma
 
+        _sigma_elapsed = _time.time() - _certify_start
+        _samples_processed = total - sigma_states[sigma].get("start_idx", 0)
         metrics = {
+            # ── Identity ──────────────────────────────────────────────────────
             "experiment": cfg.experiment_name,
             "dataset": cfg.dataset.name,
-            "smoothing_mode": cfg.smoothing.mode,
-            "use_manifold": cfg.smoothing.use_manifold,
-            "sigma": sigma,
-            "n0_samples": int(cfg.smoothing.n0_samples),
-            "n_samples": cfg.smoothing.n_samples,
-            "total_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
-            "knn_k": cfg.smoothing.knn_k,
+            "output_dir": str(exp_dir),
+
+            # ── Classifier ────────────────────────────────────────────────────
+            "classifier": {
+                "model": cfg.model.name,
+                "checkpoint": resolve_classifier_checkpoint(cfg),
+                "input_size": cfg.model.input_size,
+                "dropout": cfg.model.dropout,
+                "use_ood_classifier": getattr(cfg.model, "use_ood_classifier", True),
+            },
+
+            # ── Smoothing config ──────────────────────────────────────────────
+            "smoothing": {
+                "mode": cfg.smoothing.mode,
+                "use_manifold": cfg.smoothing.use_manifold,
+                "sigma": sigma,
+                "n0_samples": int(cfg.smoothing.n0_samples),
+                "n_samples": int(cfg.smoothing.n_samples),
+                "total_mc_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
+                "knn_k": cfg.smoothing.knn_k,
+                "eps_eig": cfg.smoothing.eps_eig,
+                "alpha_conf": cfg.alpha_conf,
+            },
+
+            # ── VAE ───────────────────────────────────────────────────────────
+            "vae": {
+                "enabled": cfg.vae.enabled,
+                "checkpoint": cfg.vae.checkpoint_path if cfg.vae.enabled else None,
+                "image_size": cfg.vae.image_size if cfg.vae.enabled else None,
+                "latent_dim": cfg.vae.latent_dim if cfg.vae.enabled else None,
+            },
+
+            # ── Index ─────────────────────────────────────────────────────────
+            "index": {
+                "backend": cfg.index.backend,
+                "metric": cfg.index.metric,
+                "n_trees": cfg.index.n_trees,
+                "split": "train",
+                "n_train_samples": len(train_samples),
+            },
+
+            # ── Dataset / split ───────────────────────────────────────────────
+            "dataset_info": {
+                "name": cfg.dataset.name,
+                "root_dir": cfg.dataset.root_dir,
+                "train_samples": len(train_samples),
+                "test_samples": total,
+                "split_seed": cfg.dataset.split_seed,
+                "train_ratio": cfg.dataset.train_ratio,
+                "val_ratio": cfg.dataset.val_ratio,
+                "ood_attribute": ood_attr if ood_attr else None,
+                "ood_attr_value": 1 if ood_attr else None,
+                "ood_balanced": cfg.dataset.ood_balanced if ood_attr else None,
+            },
+
+            # ── Runtime ───────────────────────────────────────────────────────
+            "runtime": {
+                "certify_seconds": round(_sigma_elapsed, 2),
+                "certify_minutes": round(_sigma_elapsed / 60, 2),
+                "samples_processed": _samples_processed,
+                "seconds_per_sample": round(_sigma_elapsed / max(_samples_processed, 1), 4),
+                "device": str(device),
+                "n_active_sigmas": len(active_sigmas),
+            },
+
+            # ── Results ───────────────────────────────────────────────────────
             "index_split": "train",
             "certify_split": "test",
             "total_test_samples": total,
