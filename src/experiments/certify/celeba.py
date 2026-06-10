@@ -85,18 +85,36 @@ def _log(msg: str) -> None:
 def resolve_classifier_checkpoint(cfg) -> str:
     """Return the path to the classifier checkpoint.
 
+    OOD auto-resolution (applies to both explicit and smoothed paths):
+        If cfg.dataset.ood_attribute is set, the checkpoint is loaded from
+        the OOD-specific classifier directory:
+            .../smile_resnet_celeba_ood_<attr>/best.pt
+        This overrides the standard checkpoint_path so you never need to
+        manually edit the certify config when switching OOD attributes.
+
     If cfg.model.use_smoothed_classifier is True the path is auto-built as:
         {base_dir}/{mode}/{dataset}/smile_resnet_{dataset}_sigma_{s}/best.pt
 
-    where
-        mode    = "manifold" or "isotropic"  (from cfg.smoothing.use_manifold)
-        dataset = cfg.dataset.name lowercased / cleaned  (e.g. "celeba", "celebahq")
-        s       = cfg.smoothing.sigma formatted as "0_25"
-
-    Otherwise cfg.model.checkpoint_path is returned unchanged.
+    Otherwise cfg.model.checkpoint_path is returned (with OOD suffix if needed).
     """
+    ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+
     if not cfg.model.use_smoothed_classifier:
-        return cfg.model.checkpoint_path
+        ckpt = Path(cfg.model.checkpoint_path)
+        if ood_attr:
+            # e.g. output/pretrained_model/smile_resnet_celeba/best.pt
+            #   → output/pretrained_model/smile_resnet_celeba_ood_wearing_hat/best.pt
+            ood_tag = f"_ood_{ood_attr.lower()}"
+            ckpt = ckpt.parent.parent / (ckpt.parent.name + ood_tag) / ckpt.name
+            _log(f"OOD classifier checkpoint: {ckpt}")
+            if not ckpt.exists():
+                raise FileNotFoundError(
+                    f"OOD classifier not found: {ckpt}\n"
+                    f"Train it first with:\n"
+                    f"  ./server_scripts/submit_smile_celeba_ood_classifiers.sh "
+                    f"--attrs \"{ood_attr}\""
+                )
+        return str(ckpt)
 
     mode = "manifold" if cfg.smoothing.use_manifold else "isotropic"
     dataset_tag = cfg.dataset.name.lower().replace("-", "").replace("_", "")
