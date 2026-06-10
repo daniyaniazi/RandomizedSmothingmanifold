@@ -262,6 +262,8 @@ def run_epoch(
 ):
     model.train(train)
     total_loss, total_acc, n_batches = 0.0, 0.0, 0
+    class_correct = {0: 0, 1: 0}
+    class_total   = {0: 0, 1: 0}
 
     with torch.set_grad_enabled(train):
         for step, batch in enumerate(tqdm(loader, leave=False)):
@@ -296,10 +298,25 @@ def run_epoch(
             total_acc += compute_accuracy(logits, labels)
             n_batches += 1
 
+            preds = (torch.sigmoid(logits) >= 0.5).long().cpu()
+            lbls  = labels.long().cpu()
+            for cls in [0, 1]:
+                mask = lbls == cls
+                class_total[cls]   += int(mask.sum())
+                class_correct[cls] += int((preds[mask] == cls).sum())
+
             if train and (step + 1) % log_every == 0:
                 print(f"  step {step+1:4d}  loss={total_loss/n_batches:.4f}  acc={total_acc/n_batches:.4f}")
 
-    return total_loss / n_batches, total_acc / n_batches
+    smile_acc    = class_correct[1] / class_total[1] if class_total[1] > 0 else 0.0
+    no_smile_acc = class_correct[0] / class_total[0] if class_total[0] > 0 else 0.0
+    return (
+        total_loss / n_batches,
+        total_acc  / n_batches,
+        smile_acc,    no_smile_acc,
+        class_correct[1], class_total[1],
+        class_correct[0], class_total[0],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -409,30 +426,48 @@ def train(cfg: SmileTrainingConfig) -> None:
     for epoch in range(start_epoch, cfg.train.epochs + 1):
         print(f"\n── Epoch {epoch}/{cfg.train.epochs} ──────────────")
 
-        train_loss, train_acc = run_epoch(
+        (train_loss, train_acc,
+         train_smile_acc, train_no_smile_acc,
+         train_smile_correct, train_smile_total,
+         train_no_smile_correct, train_no_smile_total) = run_epoch(
             model, data.train_loader, optimizer, criterion, device,
             train=True, log_every=cfg.logging.log_every_n_steps,
             aug_mode=aug_mode_active,
             sigma=aug.sigma,
             gpu_cache=gpu_cache,
         )
-        val_loss, val_acc = run_epoch(
+        (val_loss, val_acc,
+         val_smile_acc, val_no_smile_acc,
+         val_smile_correct, val_smile_total,
+         val_no_smile_correct, val_no_smile_total) = run_epoch(
             model, data.val_loader, optimizer, criterion, device,
             train=False, log_every=999,
         )
 
-        print(f"  Train loss={train_loss:.4f}  acc={train_acc:.4f}")
-        print(f"  Val   loss={val_loss:.4f}  acc={val_acc:.4f}")
+        print(f"  Train  loss={train_loss:.4f}  acc={train_acc:.4f}  smile={train_smile_acc:.4f}  no-smile={train_no_smile_acc:.4f}")
+        print(f"  Val    loss={val_loss:.4f}  acc={val_acc:.4f}  smile={val_smile_acc:.4f}  no-smile={val_no_smile_acc:.4f}")
 
-        row = {"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc,
-               "val_loss": val_loss, "val_acc": val_acc}
+        row = {
+            "epoch": epoch,
+            "train_loss": train_loss, "train_acc": train_acc,
+            "train_smile_acc": train_smile_acc, "train_smile_correct": train_smile_correct, "train_smile_total": train_smile_total,
+            "train_no_smile_acc": train_no_smile_acc, "train_no_smile_correct": train_no_smile_correct, "train_no_smile_total": train_no_smile_total,
+            "val_loss": val_loss, "val_acc": val_acc,
+            "val_smile_acc": val_smile_acc, "val_smile_correct": val_smile_correct, "val_smile_total": val_smile_total,
+            "val_no_smile_acc": val_no_smile_acc, "val_no_smile_correct": val_no_smile_correct, "val_no_smile_total": val_no_smile_total,
+        }
         history.append(row)
 
         history_path.write_text(json.dumps(history, indent=2))
 
         if wandb_run is not None:
-            wandb_run.log({"epoch": epoch, "train/loss": train_loss, "train/acc": train_acc,
-                           "val/loss": val_loss, "val/acc": val_acc})
+            wandb_run.log({
+                "epoch": epoch,
+                "train/loss": train_loss, "train/acc": train_acc,
+                "train/smile_acc": train_smile_acc, "train/no_smile_acc": train_no_smile_acc,
+                "val/loss": val_loss, "val/acc": val_acc,
+                "val/smile_acc": val_smile_acc, "val/no_smile_acc": val_no_smile_acc,
+            })
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -462,18 +497,63 @@ def train(cfg: SmileTrainingConfig) -> None:
 
     # Final evaluation on the test set
     print("\n── Test set evaluation ──────────────")
-    test_loss, test_acc = run_epoch(
+    (test_loss, test_acc,
+     test_smile_acc, test_no_smile_acc,
+     test_smile_correct, test_smile_total,
+     test_no_smile_correct, test_no_smile_total) = run_epoch(
         model, data.test_loader, optimizer, criterion, device,
         train=False, log_every=999,
     )
-    print(f"  Test  loss={test_loss:.4f}  acc={test_acc:.4f}")
-    history.append({"epoch": "test", "test_loss": test_loss, "test_acc": test_acc})
+    print(f"  Test   loss={test_loss:.4f}  acc={test_acc:.4f}  smile={test_smile_acc:.4f}  no-smile={test_no_smile_acc:.4f}")
+    history.append({
+        "epoch": "test",
+        "test_loss": test_loss, "test_acc": test_acc,
+        "test_smile_acc": test_smile_acc, "test_smile_correct": test_smile_correct, "test_smile_total": test_smile_total,
+        "test_no_smile_acc": test_no_smile_acc, "test_no_smile_correct": test_no_smile_correct, "test_no_smile_total": test_no_smile_total,
+    })
     history_path.write_text(json.dumps(history, indent=2))
 
     if wandb_run is not None:
-        wandb_run.log({"test/loss": test_loss, "test/acc": test_acc})
+        wandb_run.log({
+            "test/loss": test_loss, "test/acc": test_acc,
+            "test/smile_acc": test_smile_acc, "test/no_smile_acc": test_no_smile_acc,
+        })
 
-    print(f"\nTraining complete. Best val acc: {best_val_acc:.4f}  |  Test acc: {test_acc:.4f}")
+    print(f"\nTraining complete. Best val acc: {best_val_acc:.4f}  |  Test acc: {test_acc:.4f}"
+          f"  |  Smile: {test_smile_acc:.4f}  No-smile: {test_no_smile_acc:.4f}")
+
+    # Best val epoch stats (for reference in metrics.json)
+    best_epoch_row = next(
+        (r for r in reversed(history) if isinstance(r.get("epoch"), int) and r.get("val_acc") == best_val_acc),
+        {}
+    )
+    metrics = {
+        "experiment": cfg.experiment_name,
+        "dataset": cfg.dataset.name,
+        "model": cfg.model.name,
+        "epochs_trained": cfg.train.epochs,
+        "best_val_acc": best_val_acc,
+        "best_val_epoch": best_epoch_row.get("epoch"),
+        "best_val_smile_acc": best_epoch_row.get("val_smile_acc"),
+        "best_val_no_smile_acc": best_epoch_row.get("val_no_smile_acc"),
+        "test_loss": test_loss,
+        "test_acc": test_acc,
+        "test_smile_acc": test_smile_acc,
+        "test_smile_correct": test_smile_correct,
+        "test_smile_total": test_smile_total,
+        "test_no_smile_acc": test_no_smile_acc,
+        "test_no_smile_correct": test_no_smile_correct,
+        "test_no_smile_total": test_no_smile_total,
+        "smoothing_aug": {
+            "enabled": aug.enabled,
+            "mode": aug.mode if aug.enabled else None,
+            "sigma": aug.sigma if aug.enabled else None,
+        },
+    }
+    metrics_path = output_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2))
+    print(f"Metrics saved: {metrics_path}")
+
     if wandb_run is not None:
         wandb_run.finish()
 
