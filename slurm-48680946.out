@@ -1,0 +1,17 @@
+Submitting index build jobs: all
+
+Submitted batch job 48680947
+  ✅ idx-celeba-pixel (mem-per-cpu=32G, metric=from_config)
+Submitted batch job 48680948
+  ✅ idx-celeba-latent (mem-per-cpu=8G, metric=from_config)
+Submitted batch job 48680949
+  ✅ idx-celebahq-pixel (mem-per-cpu=32G, metric=from_config)
+Submitted batch job 48680950
+  ✅ idx-celebahq-latent (mem-per-cpu=8G, metric=from_config)
+
+══════════════════════════════════════════
+4 index-build jobs submitted.
+Wait for completion, then run:
+  ./submit_chained.sh celeba
+  ./submit_chained.sh celebahq
+══════════════════════════════════════════
