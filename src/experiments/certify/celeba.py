@@ -101,7 +101,8 @@ def resolve_classifier_checkpoint(cfg) -> str:
 
     if not cfg.model.use_smoothed_classifier:
         ckpt = Path(cfg.model.checkpoint_path)
-        if ood_attr:
+        use_ood_clf = getattr(cfg.model, "use_ood_classifier", True)
+        if ood_attr and use_ood_clf:
             # e.g. output/pretrained_model/smile_resnet_celeba/best.pt
             #   → output/pretrained_model/smile_resnet_celeba_ood_wearing_hat/best.pt
             ood_tag = f"_ood_{ood_attr.lower()}"
@@ -114,6 +115,9 @@ def resolve_classifier_checkpoint(cfg) -> str:
                     f"  ./server_scripts/submit_smile_celeba_ood_classifiers.sh "
                     f"--attrs \"{ood_attr}\""
                 )
+        else:
+            _log(f"Standard classifier checkpoint: {ckpt}"
+                 + (f"  (baseline: use_ood_classifier=False)" if ood_attr else ""))
         return str(ckpt)
 
     mode = "manifold" if cfg.smoothing.use_manifold else "isotropic"

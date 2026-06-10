@@ -40,6 +40,12 @@ class CertifyModelConfig:
     #   {smoothed_classifier_base_dir}/{iso|manifold}/smile_resnet_{dataset}_sigma_{s}/best.pt
     use_smoothed_classifier: bool = False
     smoothed_classifier_base_dir: str = "output/pretrained_model"
+    # ── OOD classifier auto-resolution ─────────────────────────────────────
+    # When True (default) and dataset.ood_attribute is set, checkpoint_path is
+    # automatically redirected to the OOD-specific classifier:
+    #   .../smile_resnet_celeba_ood_<attr>/best.pt
+    # Set False to use the standard classifier on OOD test samples (baseline).
+    use_ood_classifier: bool = True
 
 
 @dataclass
