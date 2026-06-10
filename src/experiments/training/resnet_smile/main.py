@@ -327,8 +327,18 @@ def train(cfg: SmileTrainingConfig) -> None:
     set_seed(cfg.train.seed)
     device = device_from_cfg(cfg.train.device)
 
-    output_dir = Path(cfg.output_dir)
-    ckpt_dir = Path(cfg.checkpoint.base_dir)
+    # Auto-suffix output/checkpoint dirs and experiment name for OOD classifiers
+    ood_attr = getattr(cfg.dataset, "ood_exclude_attribute", None)
+    if ood_attr:
+        ood_tag = f"_ood_{ood_attr.lower()}"
+        if not cfg.experiment_name.endswith(ood_tag):
+            cfg.experiment_name = cfg.experiment_name + ood_tag
+        output_dir = Path(cfg.output_dir + ood_tag)
+        ckpt_dir   = Path(cfg.checkpoint.base_dir + ood_tag)
+        print(f"OOD classifier: excluding '{ood_attr}=1'  →  {ckpt_dir}")
+    else:
+        output_dir = Path(cfg.output_dir)
+        ckpt_dir   = Path(cfg.checkpoint.base_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # Save resolved config
@@ -531,6 +541,7 @@ def train(cfg: SmileTrainingConfig) -> None:
         "experiment": cfg.experiment_name,
         "dataset": cfg.dataset.name,
         "model": cfg.model.name,
+        "ood_exclude_attribute": ood_attr if ood_attr else None,
         "epochs_trained": cfg.train.epochs,
         "best_val_acc": best_val_acc,
         "best_val_epoch": best_epoch_row.get("epoch"),

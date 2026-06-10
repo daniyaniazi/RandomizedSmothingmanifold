@@ -238,6 +238,33 @@ def build_smile_dataloaders(
             seed=dataset_cfg.split_seed,
         )
 
+    # OOD exclusion: remove images where ood_exclude_attribute=1 from all splits.
+    # The OOD classifier is trained on the non-OOD population only.
+    ood_attr = getattr(dataset_cfg, "ood_exclude_attribute", None)
+    if ood_attr:
+        attr_path = root_dir / dataset_cfg.annotation_file
+        attr_lines = [l.strip() for l in attr_path.read_text().splitlines() if l.strip()]
+        attr_names = attr_lines[1].split()
+        if ood_attr not in attr_names:
+            raise ValueError(f"ood_exclude_attribute '{ood_attr}' not found in {attr_path}. "
+                             f"Available: {attr_names}")
+        attr_idx = attr_names.index(ood_attr)
+        attr_map: Dict[str, int] = {}
+        for row in attr_lines[2:]:
+            parts = row.split()
+            attr_map[parts[0]] = int(parts[1 + attr_idx])  # -1 or 1
+
+        def _keep(sample: Sample) -> bool:
+            return attr_map.get(Path(sample[0]).name, -1) != 1
+
+        n_before = len(train_samples) + len(val_samples) + len(test_samples)
+        train_samples = [s for s in train_samples if _keep(s)]
+        val_samples   = [s for s in val_samples   if _keep(s)]
+        test_samples  = [s for s in test_samples  if _keep(s)]
+        n_after = len(train_samples) + len(val_samples) + len(test_samples)
+        print(f"OOD exclusion '{ood_attr}=1': {n_before - n_after} samples removed  "
+              f"(train={len(train_samples)}, val={len(val_samples)}, test={len(test_samples)})")
+
     train_transform, eval_transform = _build_transforms(model_cfg.input_size)
     train_dataset = SmileImageDataset(train_samples, transform=train_transform)
     val_dataset = SmileImageDataset(val_samples, transform=eval_transform)

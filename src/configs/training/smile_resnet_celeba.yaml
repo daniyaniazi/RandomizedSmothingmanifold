@@ -16,6 +16,7 @@ dataset:
   test_ratio: 0.1
   split_seed: 73
   num_workers: 8
+  ood_exclude_attribute: null   # e.g. "Wearing_Hat" — excludes attr=1 from all splits
 
 dataloader:
   batch_size: 128

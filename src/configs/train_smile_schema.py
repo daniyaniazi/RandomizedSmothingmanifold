@@ -20,6 +20,10 @@ class SmileDatasetConfig:
     test_ratio: float = 0.1
     split_seed: int = 73
     num_workers: int = 4
+    # OOD classifier: exclude samples where this attribute=1 from all splits.
+    # e.g. "Wearing_Hat" — train/val/test will only contain Wearing_Hat=0 images.
+    # Set null for standard (non-OOD) training.
+    ood_exclude_attribute: Optional[str] = None
 
 
 @dataclass
