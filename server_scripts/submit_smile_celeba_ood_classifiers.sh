@@ -30,12 +30,14 @@ OOD_ATTRS=(
     "Wearing_Hat"
     "Eyeglasses"
     "Male"
-    "Young"
-    "Bald"
-    "Wearing_Necktie"
+    "Wearing_Lipstick"
     "Mouth_Slightly_Open"
     "High_Cheekbones"
-    "Smiling"
+    "Big_Lips"
+    "Narrow_Eyes"
+    "Mustache"
+    "No_Beard"
+    "Rosy_Cheeks"
 )
 
 while [[ $# -gt 0 ]]; do
