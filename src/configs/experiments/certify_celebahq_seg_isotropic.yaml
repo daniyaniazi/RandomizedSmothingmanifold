@@ -1,0 +1,52 @@
+experiment_name: celebahq_seg_isotropic
+seed: 73
+device: cuda
+alpha_conf: 0.05   # FWER level α for Holm correction
+
+dataset:
+  name: CelebAMask-HQ
+  root_dir: /BS/dniazi_thesis/static00/CelebAMask-HQ/CelebAMask-HQ
+  image_dir: CelebA-HQ-img
+  mask_dir: CelebAMask-HQ-mask-anno
+  file_extension: .jpg
+  image_size: 512
+  n_classes: 19
+  num_workers: 4
+  train_ratio: 0.8
+  val_ratio: 0.1
+  use_official_split: true   # train=0-27999, test=28000-29999 (matches pretrained model)
+  split_seed: 73
+  subset_size: null          # set e.g. 100 for fast testing on subset of test set
+
+model:
+  n_classes: 19
+  checkpoint_path: output/pretrained_model/bisenet_celebahq/bisenet.pth
+  input_size: 512
+
+smoothing:
+  mode: pixel
+  use_manifold: false
+  sigma: 0.25
+  sigma_values: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50]
+  tau: 0.75        # SEGCERTIFY threshold τ
+  n0_samples: 10   # pilot samples for class selection
+  n_samples: 100   # MC samples for Holm binomial test
+  knn_k: 500
+  eps_eig: 1.0e-6
+
+index:
+  backend: annoy
+  metric: euclidean
+  n_trees: 50
+
+output:
+  output_dir: output
+  save_results: true
+  save_per_sample: true
+  save_visualizations: true
+  num_viz_samples: 5
+
+checkpoint:
+  enabled: true
+  checkpoint_every: 20
+  resume: true
