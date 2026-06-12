@@ -44,12 +44,15 @@ _BISENET_DIR = str(_ROOT / "src" / "models" / "BiseNet")
 if _BISENET_DIR not in sys.path:
     sys.path.insert(0, _BISENET_DIR)
 
+from PIL import Image
 from src.dataloaders.celebahq_seg import (
     CelebAHQSegDataset, build_seg_transform,
     OFFICIAL_TEST_IDS, CLASS_NAMES,
+    _load_mask,
 )
-from src.experiments.certify.celebahq_segmentation import load_bisenet
-
+from src.experiments.certify.celebahq_segmentation import (
+    load_bisenet, SEG_PALETTE, _mask_to_rgb, _tensor_to_pil,
+)
 from torch.utils.data import DataLoader
 
 # BiSeNet was trained with ImageNet normalisation — apply only before forward pass.
@@ -62,6 +65,45 @@ _BISENET_STD  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+def save_viz_samples(net, test_samples, mask_dir, image_size, device, viz_dir, n_viz):
+    """Save side-by-side (original | GT mask | predicted mask) for first n_viz images."""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        _log("matplotlib not available — skipping visualizations")
+        return
+
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    tf = build_seg_transform(image_size)
+
+    _log(f"Saving {n_viz} visualization samples to {viz_dir} …")
+    for img_path, image_id in test_samples[:n_viz]:
+        img = Image.open(img_path).convert("RGB")
+        img_t = tf(img)                                    # (C, H, W) [0,1]
+        inp = ((img_t - _BISENET_MEAN) / _BISENET_STD).unsqueeze(0).to(device)
+        with torch.no_grad():
+            out, _, _ = net(inp)
+            pred = out.argmax(1).squeeze(0).cpu().numpy().astype("int32")
+
+        gt = _load_mask(mask_dir, image_id, image_size).numpy().astype("int32")
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        axes[0].imshow(_tensor_to_pil(img_t))
+        axes[0].set_title("Original", fontsize=11)
+        axes[1].imshow(Image.fromarray(_mask_to_rgb(gt)))
+        axes[1].set_title("GT mask", fontsize=11)
+        axes[2].imshow(Image.fromarray(_mask_to_rgb(pred)))
+        axes[2].set_title("Predicted mask", fontsize=11)
+        for ax in axes:
+            ax.axis("off")
+        fig.suptitle(f"Image ID: {image_id}", fontsize=12, fontweight="bold")
+        plt.tight_layout()
+        fig.savefig(viz_dir / f"sample_{image_id}.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+
+    _log(f"Saved {n_viz} visualizations.")
 
 
 def evaluate(net, test_samples, mask_dir, image_size, n_classes, device):
@@ -128,6 +170,8 @@ def main():
     p.add_argument("--subset",      type=int, default=None,
                    help="First N test images (default: all 2000)")
     p.add_argument("--output-dir",  default="output/segmentation/celebahq/baseline")
+    p.add_argument("--num-viz",     type=int, default=10,
+                   help="Save this many sample visualizations (0 to skip)")
     p.add_argument("--device",      default="cuda")
     args = p.parse_args()
 
@@ -154,6 +198,11 @@ def main():
             n_classes = args.n_classes
             checkpoint_path = args.checkpoint
     net = load_bisenet(_FakeCfg(), device)
+
+    # Visualizations first (fast, single-image loop)
+    if args.num_viz > 0:
+        save_viz_samples(net, test_samples, mask_dir, args.image_size, device,
+                         out_dir / "visualizations", args.num_viz)
 
     _log("Running inference …")
     conf = evaluate(net, test_samples, mask_dir, args.image_size, args.n_classes, device)

@@ -1,0 +1,10 @@
+checkpoint:  output/pretrained_model/bisenet_celebahq/79999_iter.pth
+data_root:   /BS/dniazi_thesis/static00/CelebAMask-HQ/CelebAMask-HQ
+image_dir:   CelebA-HQ-img
+mask_dir:    CelebAMask-HQ-mask-anno
+image_size:  512
+n_classes:   19
+subset:      100        # null = full 2000-image test set; set e.g. 100 for fast test
+output_dir:  output/segmentation/celebahq/baseline
+num_viz:     10          # number of sample visualizations to save
+device:      cuda
