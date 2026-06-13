@@ -323,8 +323,7 @@ def save_seg_visualization(
     gt_mask: torch.Tensor,          # (H, W)
     pred_mask: np.ndarray,          # (H, W) majority vote
     cert_result: SegCertResult,
-    nn_imgs: List[torch.Tensor],    # neighbour raw images
-    nn_masks: List[np.ndarray],     # neighbour predicted masks (from BiSeNet)
+    nn_imgs: List[torch.Tensor],    # neighbour raw images (no masks — not needed)
     noisy_imgs: List[torch.Tensor], # noisy samples for display
     noisy_masks: List[np.ndarray],  # masks for noisy samples
     is_manifold: bool,
@@ -361,9 +360,9 @@ def save_seg_visualization(
     n_nn   = len(nn_imgs)      # pass exactly 4 (manifold) or 0 (iso)
 
     # Row count
-    # manifold: row0 + row1(recon) + row_noisy_masks + row_noisy_imgs + row_nn_masks + row_nn_imgs
+    # manifold: row0 + row1(recon) + row_noisy_masks + row_noisy_imgs + row_nn_imgs
     # iso:      row0 + row1(clean pred) + row_noisy_masks + row_noisy_imgs
-    n_rows = 4 + (2 if n_nn > 0 else 0)
+    n_rows = 4 + (1 if n_nn > 0 else 0)
 
     fig, axes = plt.subplots(n_rows, N_COLS,
                              figsize=(3.5 * N_COLS, 3.2 * n_rows),
@@ -430,17 +429,12 @@ def save_seg_visualization(
             _show(axes[3, j], _tensor_to_pil(noisy_imgs[j]),
                   f"MC img {j+1}  σ={sigma}", "#4c78a8")
 
-    # ── Rows 4-5: NN segs and NN images (manifold only) ───────────────────────
+    # ── Row 4: NN images (manifold only, no masks) ────────────────────────────
     if n_nn > 0:
-        _lbl(4, "Row 4\nNN segs")
-        for j in range(N_COLS):
-            if j < len(nn_masks):
-                _show(axes[4, j], Image.fromarray(_mask_to_rgb(nn_masks[j])),
-                      f"NN-{j+1} seg", "#e07b54")
-        _lbl(5, "Row 5\nNN imgs")
+        _lbl(4, "Row 4\nNN imgs")
         for j in range(N_COLS):
             if j < len(nn_imgs):
-                _show(axes[5, j], _tensor_to_pil(nn_imgs[j]),
+                _show(axes[4, j], _tensor_to_pil(nn_imgs[j]),
                       f"NN-{j+1}", "#e07b54")
 
     fig.suptitle(
@@ -789,20 +783,14 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
                     nm = nm_out.argmax(1).squeeze(0).cpu().numpy()
                 noisy_masks.append(nm)
 
-            # Nearest neighbours from index
-            nn_imgs, nn_masks = [], []
+            # Nearest neighbours from index (images only — no mask inference needed)
+            nn_imgs = []
             if pixel_index is not None and hasattr(pixel_index, "index"):
                 qvec = img_tensor.numpy().flatten().astype(np.float32)
                 nn_ids = pixel_index.index.get_nns_by_vector(qvec.tolist(), 4, include_distances=False)
-                for nid in nn_ids[:3]:
+                for nid in nn_ids[:4]:
                     if hasattr(pixel_index, "filenames"):
-                        nn_path = pixel_index.filenames[nid]
-                        nn_img_t = tf(Image.open(nn_path).convert("RGB"))
-                        nn_imgs.append(nn_img_t)
-                        x_nn = (((nn_img_t - _mean_n) / _std_n).unsqueeze(0).to(device))
-                        with torch.no_grad():
-                            nn_out, _, _ = net(x_nn)
-                            nn_masks.append(nn_out.argmax(1).squeeze(0).cpu().numpy())
+                        nn_imgs.append(tf(Image.open(pixel_index.filenames[nid]).convert("RGB")))
 
             save_seg_visualization(
                 viz_dir=paths.experiment_dir / "visualizations",
@@ -812,7 +800,6 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
                 pred_mask=cert.pred_mask,
                 cert_result=cert,
                 nn_imgs=nn_imgs,
-                nn_masks=nn_masks,
                 noisy_imgs=noisy_imgs,
                 noisy_masks=noisy_masks,
                 is_manifold=cfg.smoothing.use_manifold,
@@ -1063,7 +1050,7 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
                     viz_dir=state["paths"].experiment_dir / "visualizations",
                     sample_idx=idx, img_tensor=img_tensor, gt_mask=gt_mask,
                     pred_mask=cert.pred_mask, cert_result=cert,
-                    nn_imgs=[], nn_masks=[],
+                    nn_imgs=[],
                     noisy_imgs=noisy_imgs, noisy_masks=noisy_masks,
                     is_manifold=cfg.smoothing.use_manifold, sigma=sigma,
                     pca_cached=cached_pca, pixel_index=pixel_index,
