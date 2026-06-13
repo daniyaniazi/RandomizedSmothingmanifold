@@ -29,6 +29,7 @@ CPUS=8
 MEM_PER_CPU="8G"
 MAX_CONCURRENT=20
 DRY_RUN=false
+VIZ_ONLY=false
 STRATEGY=""   # multi | array | "" (auto)
 
 ISO_CFG="src/configs/experiments/certify_celebahq_seg_isotropic.yaml"
@@ -37,12 +38,13 @@ MANI_CFG="src/configs/experiments/certify_celebahq_seg_manifold.yaml"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)         DRY_RUN=true;          shift ;;
+        --viz-only)        VIZ_ONLY=true;         shift ;;
         --max-concurrent)  MAX_CONCURRENT="$2";    shift 2 ;;
         --strategy)        STRATEGY="$2";           shift 2 ;;
         --partition)       PARTITION="$2";          shift 2 ;;
         --time)            TIME="$2";               shift 2 ;;
         *)
-            echo "Usage: $0 [--dry-run] [--max-concurrent N] [--strategy multi|array|auto]"
+            echo "Usage: $0 [--dry-run] [--viz-only] [--max-concurrent N] [--strategy multi|array|auto]"
             exit 1 ;;
     esac
 done
@@ -189,11 +191,13 @@ conda activate smoothing
 # Both multi and array route to the same entry point — Python handles single vs multi sigma
 python -m src.experiments.certify.celebahq_segmentation \
     --config "$TASK_CFG" \
-    --sigmas $TASK_SIGMAS
+    --sigmas $TASK_SIGMAS VIZ_ONLY_PLACEHOLDER
 JOBEOF
 
 sed -i "s|TASK_FILE_PLACEHOLDER|${TASK_FILE}|g"     "$JOB_SCRIPT"
 sed -i "s|PROJECT_ROOT_PLACEHOLDER|${PROJECT_ROOT}|g" "$JOB_SCRIPT"
+VIZ_ARG=""; $VIZ_ONLY && VIZ_ARG="--viz-only"
+sed -i "s|VIZ_ONLY_PLACEHOLDER|${VIZ_ARG}|g" "$JOB_SCRIPT"
 chmod +x "$JOB_SCRIPT"
 
 SBATCH_CMD="sbatch \

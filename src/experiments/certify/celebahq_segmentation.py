@@ -1128,6 +1128,115 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
     return all_outputs
 
 
+def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
+    """Re-generate visualizations only for existing completed sigma runs.
+
+    Skips certification entirely — reads existing metrics.json to confirm
+    the run is done, then re-runs SEGCERTIFY on the first num_viz_samples
+    test images and saves fresh visualizations.
+
+    Useful after layout/colour changes without re-running full certification.
+    """
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    _log(f"VIZ-ONLY mode  device={device}  sigmas={sigma_values}")
+
+    data = build_seg_dataloaders(cfg)
+    train_samples = data["train_samples"]
+    test_samples  = data["test_samples"]
+    mask_dir      = data["mask_dir"]
+    image_size    = data["image_size"]
+    tf = _build_transform(image_size)
+
+    net = load_bisenet(cfg, device)
+
+    _mean_n = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    _std_n  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    n_viz = cfg.output.num_viz_samples
+
+    for sigma in sorted(set(float(s) for s in sigma_values)):
+        paths = SegPaths.from_config(cfg, sigma)
+
+        if not (paths.experiment_dir / "metrics.json").exists():
+            _log(f"SKIP sigma={sigma} — metrics.json not found (run certification first)")
+            continue
+
+        _log(f"sigma={sigma}  generating {n_viz} visualizations → {paths.experiment_dir / 'visualizations'}")
+
+        # Load index + smoother (needed for manifold PCA and NN lookup)
+        pixel_index = None
+        if cfg.smoothing.use_manifold:
+            pixel_index = load_or_build_pixel_index(
+                train_samples, image_size, paths.pixel_index_dir,
+                cfg.index.n_trees, cfg.index.metric,
+            )
+        if cfg.smoothing.use_manifold and pixel_index is not None:
+            smoother = ManifoldSmoother(sigma=sigma, index=pixel_index,
+                                        knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig)
+        else:
+            smoother = IsotropicSmoother(sigma=sigma)
+
+        for idx in range(min(n_viz, len(test_samples))):
+            img_path, image_id = test_samples[idx]
+            img_tensor = tf(Image.open(img_path).convert("RGB"))
+            gt_mask    = _load_mask(mask_dir, image_id, image_size)
+
+            cached_pca = None
+            if isinstance(smoother, ManifoldSmoother):
+                cached_pca = smoother.compute_pca(img_tensor.numpy().flatten().astype(np.float32))
+
+            counts_n0 = sample_counts(net, img_tensor, smoother, cfg.smoothing.n0_samples,
+                                      cfg.dataset.n_classes, image_size, device, cached_pca)
+            counts_n  = sample_counts(net, img_tensor, smoother, cfg.smoothing.n_samples,
+                                      cfg.dataset.n_classes, image_size, device, cached_pca)
+
+            cert = segcertify(counts_n0, counts_n, sigma, cfg.smoothing.tau,
+                              cfg.alpha_conf, correction="holm")
+
+            # Noisy display samples
+            noisy_imgs, noisy_masks = [], []
+            for _ in range(4):
+                ni = _sample_noisy(img_tensor, smoother, pixel_index)
+                noisy_imgs.append(ni)
+                x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    nm_out, _, _ = net(x_n)
+                    noisy_masks.append(nm_out.argmax(1).squeeze(0).cpu().numpy())
+
+            nn_imgs = []
+            if pixel_index is not None and hasattr(pixel_index, "index"):
+                qvec   = img_tensor.numpy().flatten().astype(np.float32)
+                nn_ids = pixel_index.index.get_nns_by_vector(qvec.tolist(), 5, include_distances=False)
+                for nid in nn_ids[:4]:
+                    if hasattr(pixel_index, "filenames"):
+                        nn_imgs.append(tf(Image.open(pixel_index.filenames[nid]).convert("RGB")))
+
+            save_seg_visualization(
+                viz_dir=paths.experiment_dir / "visualizations",
+                sample_idx=idx,
+                img_tensor=img_tensor,
+                gt_mask=gt_mask,
+                pred_mask=cert.pred_mask,
+                cert_result=cert,
+                nn_imgs=nn_imgs,
+                noisy_imgs=noisy_imgs,
+                noisy_masks=noisy_masks,
+                is_manifold=cfg.smoothing.use_manifold,
+                sigma=sigma,
+                pca_cached=cached_pca,
+                pixel_index=pixel_index,
+                smoother=smoother,
+                cfg=cfg,
+            )
+            _log(f"  sample {idx:04d} done")
+
+        _log(f"sigma={sigma} viz complete.")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -1135,6 +1244,9 @@ def parse_args():
     p.add_argument("--config", required=True)
     p.add_argument("--sigmas", type=float, nargs="+", default=None,
                    help="Override sigma_values from config. E.g. --sigmas 0.10 0.25 0.50")
+    p.add_argument("--viz-only", action="store_true",
+                   help="Re-generate visualizations only — skips certification, "
+                        "requires metrics.json to already exist for each sigma.")
     return p.parse_args()
 
 
@@ -1149,7 +1261,9 @@ if __name__ == "__main__":
     else:
         sigma_values = [cfg.smoothing.sigma]
 
-    if len(sigma_values) == 1:
+    if args.viz_only:
+        run_seg_viz_only(cfg, sigma_values)
+    elif len(sigma_values) == 1:
         run_seg_certification(cfg, sigma_values[0])
     else:
         run_seg_certification_multi_sigma(cfg, sigma_values)

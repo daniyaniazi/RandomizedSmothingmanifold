@@ -33,6 +33,7 @@ CPUS=8
 MEM_PER_CPU="8G"
 MAX_CONCURRENT=20
 DRY_RUN=false
+VIZ_ONLY=false
 DATASET_FILTER=""   # celeba | celebahq | ner | "" (all)
 SPACE_FILTER=""     # pixel | latent | "" (all)
 STRATEGY=""         # multi | array | "" (auto: manifold→multi, iso→array)
@@ -121,6 +122,10 @@ while [[ $# -gt 0 ]]; do
         --strategy)
             STRATEGY="$2"
             shift 2
+            ;;
+        --viz-only)
+            VIZ_ONLY=true
+            shift
             ;;
         --type)
             TYPE_FILTER="$2"
@@ -422,25 +427,24 @@ export PYTHONPATH=PROJECT_ROOT_PLACEHOLDER:${PYTHONPATH:-}
 . /BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh
 conda activate smoothing
 
+VIZ_FLAG="VIZ_ONLY_PLACEHOLDER"
+
 if [[ "$TASK_KIND" == ner_* ]]; then
-  # NER: always per-sigma (no multi-sigma runner for NER)
   CHECKPOINT=PROJECT_ROOT_PLACEHOLDER/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt
   for SIGMA in $TASK_SIGMAS; do
     python -m src.experiments.certify.ner --config "$TASK_CFG" --checkpoint "$CHECKPOINT" \
       --split test --resume --save-every-batches 5 --sigma "$SIGMA"
   done
-elif [[ "$TASK_STRATEGY" == "multi" ]]; then
-  # CelebA manifold: one-time PCA, all sigmas in one Python process
-  python -m src.experiments.certify.celeba --config "$TASK_CFG" --sigmas $TASK_SIGMAS
 else
-  # CelebA isotropic array: single sigma per task (TASK_SIGMAS is one value)
-  python -m src.experiments.certify.celeba --config "$TASK_CFG" --sigmas $TASK_SIGMAS
+  python -m src.experiments.certify.celeba --config "$TASK_CFG" --sigmas $TASK_SIGMAS $VIZ_FLAG
 fi
 JOBEOF
 
 # Substitute placeholders with real paths
 sed -i "s|TASK_FILE_PLACEHOLDER|${TASK_FILE}|g" "$JOB_SCRIPT"
 sed -i "s|PROJECT_ROOT_PLACEHOLDER|${PROJECT_ROOT}|g" "$JOB_SCRIPT"
+VIZ_ARG=""; $VIZ_ONLY && VIZ_ARG="--viz-only"
+sed -i "s|VIZ_ONLY_PLACEHOLDER|${VIZ_ARG}|g" "$JOB_SCRIPT"
 chmod +x "$JOB_SCRIPT"
 
 SBATCH_CMD="sbatch \

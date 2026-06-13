@@ -3073,6 +3073,150 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def run_viz_only(cfg: CertifyConfig, sigma_values: List[float]) -> None:
+    """Re-generate visualizations only for existing completed sigma runs.
+
+    Skips full certification — requires metrics.json to already exist.
+    Re-runs the smoother on the first num_viz_samples test images only.
+    """
+    import copy as _copy
+
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+
+    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    _log(f"VIZ-ONLY  device={device}  sigmas={sigma_values}")
+
+    train_samples, test_samples = get_train_test_samples(cfg)
+    test_samples = get_ood_test_samples(cfg, test_samples)
+    ood_attr = getattr(cfg.dataset, "ood_attribute", None)
+
+    # Classifier
+    classifier = build_resnet_classifier(
+        name=cfg.model.name, pretrained=False,
+        dropout=cfg.model.dropout, num_classes=cfg.model.num_classes,
+    ).to(device)
+    ckpt_path = resolve_classifier_checkpoint(cfg)
+    ckpt = torch.load(ckpt_path, map_location=device)
+    if "model_state_dict" in ckpt:       classifier.load_state_dict(ckpt["model_state_dict"])
+    elif "model_state" in ckpt:          classifier.load_state_dict(ckpt["model_state"])
+    else:                                classifier.load_state_dict(ckpt)
+    classifier.eval()
+
+    # VAE
+    vae = None
+    if cfg.vae.enabled and cfg.smoothing.mode in ("latent", "both"):
+        vae = ConvVAE(in_channels=cfg.vae.in_channels, image_size=cfg.vae.image_size,
+                      latent_dim=cfg.vae.latent_dim).to(device)
+        load_vae_checkpoint(vae, cfg.vae.checkpoint_path, device)
+        vae.eval()
+
+    # Indexes
+    pixel_size = cfg.model.input_size
+    _need_pixel = cfg.smoothing.use_manifold or (cfg.smoothing.mode in ("latent","both") and cfg.output.save_visualizations)
+    pixel_index = None
+    latent_index = None
+
+    # OOD attr map
+    _ood_attr_map: Optional[dict] = None
+    if ood_attr:
+        _attr_path = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
+        _lines = [l.strip() for l in _attr_path.read_text().splitlines() if l.strip()]
+        _attr_names = _lines[1].split()
+        if ood_attr in _attr_names:
+            _aidx = _attr_names.index(ood_attr)
+            _ood_attr_map = {}
+            for _row in _lines[2:]:
+                _parts = _row.split()
+                _ood_attr_map[_parts[0]] = 1 if int(_parts[1 + _aidx]) == 1 else 0
+
+    smooth_transform = transforms.Compose([
+        transforms.Resize((pixel_size, pixel_size)),
+        transforms.ToTensor(),
+    ])
+
+    n_viz = cfg.output.num_viz_samples
+
+    for sigma in sorted(set(float(s) for s in sigma_values)):
+        _cfg_s = _copy.deepcopy(cfg)
+        _cfg_s.smoothing.sigma = sigma
+        paths = CertifyPaths.from_config(_cfg_s)
+
+        if not (paths.experiment_dir / "metrics.json").exists():
+            _log(f"SKIP sigma={sigma} — metrics.json not found")
+            continue
+
+        _log(f"sigma={sigma}  generating {n_viz} viz → {paths.experiment_dir / 'visualizations'}")
+
+        # Build index and smoother for this sigma
+        if _need_pixel and pixel_index is None:
+            pixel_index = load_or_build_pixel_index(
+                train_samples, pixel_size, paths.pixel_index_dir,
+                cfg.index.n_trees, metric=cfg.index.metric,
+            )
+        if cfg.smoothing.mode in ("latent","both") and vae is not None and latent_index is None and cfg.smoothing.use_manifold:
+            latent_index = load_or_build_latent_index(
+                train_samples, vae, paths.latent_index_dir,
+                cfg.index.n_trees, device, metric=cfg.index.metric,
+            )
+
+        pixel_smoother = create_pixel_smoother(_cfg_s, pixel_index)
+        latent_smoother = create_latent_smoother(_cfg_s, latent_index)
+
+        current_index = latent_index if cfg.smoothing.mode == "latent" else pixel_index
+
+        for idx in range(min(n_viz, len(test_samples))):
+            img_path, label = test_samples[idx]
+            img_tensor = smooth_transform(Image.open(img_path).convert("RGB"))
+
+            if cfg.smoothing.mode == "pixel":
+                sample_fn = make_pixel_sample_fn(img_tensor, pixel_smoother)
+            elif cfg.smoothing.mode == "latent" and vae is not None:
+                sample_fn = make_latent_sample_fn(img_tensor, vae, latent_smoother, device)
+            else:
+                sample_fn = make_pixel_sample_fn(img_tensor, pixel_smoother)
+
+            _active_smoother = latent_smoother if cfg.smoothing.mode == "latent" and vae is not None else pixel_smoother
+            _is_iso = not cfg.smoothing.use_manifold
+            cert, _ = certify_single_sample(
+                classifier=classifier,
+                img_tensor=img_tensor,
+                smoother=_active_smoother,
+                n_samples=cfg.smoothing.n_samples,
+                n0_samples=int(cfg.smoothing.n0_samples),
+                classifier_transform=transforms.Compose([
+                    transforms.Resize((cfg.model.input_size, cfg.model.input_size)),
+                    transforms.ToTensor(),
+                ]),
+                device=device,
+                alpha_conf=cfg.alpha_conf,
+                sigma=sigma,
+                sample_fn=None if _is_iso else sample_fn,
+                collect_n_samples=False,
+            )
+
+            save_sample_visualization(
+                viz_dir=paths.experiment_dir / "visualizations",
+                sample_idx=idx,
+                img_tensor=img_tensor,
+                label=label,
+                pred=cert.pred,
+                radius=cert.radius,
+                abstained=cert.abstained,
+                index=current_index,
+                vae=vae,
+                cfg=_cfg_s,
+                device=device,
+                pixel_smoother=pixel_smoother,
+                latent_smoother=latent_smoother,
+                ood_attr_map=_ood_attr_map,
+            )
+            _log(f"  sample {idx:04d} done")
+
+        _log(f"sigma={sigma} viz complete.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="CelebA Certification Pipeline")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
@@ -3081,6 +3225,9 @@ def parse_args():
         help="Override sigma_values from config. E.g. --sigmas 0.10 0.25 0.50. "
              "If not given, reads sigma_values (or sigma) from config.",
     )
+    parser.add_argument("--viz-only", action="store_true",
+                        help="Re-generate visualizations only — skips certification, "
+                             "requires metrics.json to already exist for each sigma.")
     return parser.parse_args()
 
 
@@ -3094,7 +3241,9 @@ if __name__ == "__main__":
     else:
         sigma_values = cfg.smoothing.sigma_values if hasattr(cfg.smoothing, "sigma_values") and cfg.smoothing.sigma_values else [cfg.smoothing.sigma]
 
-    if len(sigma_values) == 1:
+    if args.viz_only:
+        run_viz_only(cfg, sigma_values)
+    elif len(sigma_values) == 1:
         # Single sigma — use original single-sigma path (no overhead)
         cfg.smoothing.sigma = sigma_values[0]
         run_certification(cfg)
