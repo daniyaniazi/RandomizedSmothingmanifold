@@ -281,6 +281,30 @@ def sample_counts(
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
 
+_VIZ_STYLE = {
+    'font.family':        'serif',
+    'font.size':          10,
+    'axes.titlesize':     10,
+    'axes.labelsize':     9,
+    'xtick.labelsize':    8,
+    'ytick.labelsize':    8,
+    'legend.fontsize':    7.5,
+    'figure.facecolor':   'white',
+    'axes.facecolor':     'white',
+    'axes.spines.top':    False,
+    'axes.spines.right':  False,
+    'axes.grid':          True,
+    'grid.alpha':         0.25,
+    'grid.linestyle':     '--',
+    'savefig.dpi':        150,
+    'savefig.bbox':       'tight',
+}
+
+def _apply_viz_style():
+    import matplotlib
+    matplotlib.rcParams.update(_VIZ_STYLE)
+
+
 # CelebAMask-HQ colour palette (19 classes)
 SEG_PALETTE = np.array([
     [0,   0,   0],    # 0 background
@@ -349,6 +373,7 @@ def save_seg_visualization(
       Row 2: Iso noisy seg 1 | Iso noisy seg 2 | Iso noisy seg 3 | Iso noisy seg 4
       Row 3: Iso noisy img 1 | Iso noisy img 2 | Iso noisy img 3 | Iso noisy img 4
     """
+    _apply_viz_style()
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -378,7 +403,7 @@ def save_seg_visualization(
 
     def _show(ax, img_arr, title="", border=None):
         ax.imshow(img_arr)
-        ax.set_title(title, fontsize=7, pad=2)
+        ax.set_title(title, fontsize=8, pad=3)
         ax.axis("off")
         if border:
             for sp in ax.spines.values():
@@ -557,6 +582,7 @@ def save_seg_comparison(
     Row 3: MANI noisy seg 1 | MANI noisy seg 2 | MANI noisy seg 3 | MANI noisy seg 4
     Row 4: MANI noisy img 1 | MANI noisy img 2 | MANI noisy img 3 | MANI noisy img 4
     """
+    _apply_viz_style()
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -581,7 +607,7 @@ def save_seg_comparison(
 
     def _show(ax, img_arr, title="", border=None):
         ax.imshow(img_arr)
-        ax.set_title(title, fontsize=7, pad=2)
+        ax.set_title(title, fontsize=8, pad=3)
         ax.axis("off")
         if border:
             for sp in ax.spines.values():

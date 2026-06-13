@@ -634,6 +634,29 @@ def make_latent_sample_fn(
 # Visualization
 # ─────────────────────────────────────────────────────────────────────────────
 
+_VIZ_STYLE = {
+    'font.family':        'serif',
+    'font.size':          10,
+    'axes.titlesize':     10,
+    'axes.labelsize':     9,
+    'xtick.labelsize':    8,
+    'ytick.labelsize':    8,
+    'legend.fontsize':    7.5,
+    'figure.facecolor':   'white',
+    'axes.facecolor':     'white',
+    'axes.spines.top':    False,
+    'axes.spines.right':  False,
+    'axes.grid':          True,
+    'grid.alpha':         0.25,
+    'grid.linestyle':     '--',
+    'savefig.dpi':        150,
+    'savefig.bbox':       'tight',
+}
+
+def _apply_viz_style():
+    import matplotlib
+    matplotlib.rcParams.update(_VIZ_STYLE)
+
 
 def _draw_geometry_figure(
     pca_obj,
@@ -669,6 +692,7 @@ def _draw_geometry_figure(
 
     Legend is placed outside the plot (right of each panel) to avoid overlap.
     """
+    _apply_viz_style()
     try:
         import matplotlib.pyplot as _plt
         from matplotlib.patches import Ellipse as _Ellipse
@@ -891,6 +915,7 @@ def save_sample_visualization(
         Row 5: Pixel Gaussian noise (for comparison)
         Row 6: k-NN Neighbours
     """
+    _apply_viz_style()
     try:
         import matplotlib.pyplot as plt
         import matplotlib.gridspec as gridspec
