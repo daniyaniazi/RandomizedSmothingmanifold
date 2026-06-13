@@ -948,7 +948,7 @@ def save_sample_visualization(
     # PIXEL ISOTROPIC
     # ------------------------------------------------------------------
     if not is_latent and not is_manifold:
-        row_labels = ["Row 0\nOriginal", "Row 1\nIsotropic\npixel noise σ"]
+        row_labels = ["Original", "Isotropic\npixel noise σ"]
         n_rows = 2
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
                                  figsize=(3 * n_noisy_samples, 3.2 * n_rows))
@@ -1088,9 +1088,9 @@ def save_sample_visualization(
     # ------------------------------------------------------------------
     elif is_latent and not is_manifold:
         row_labels = [
-            "Row 0\nOriginal",
-            "Row 1\nIsotropic\nlatent noise σ",
-            "Row 2\nIsotropic\npixel noise σ",
+            "Original",
+            "Isotropic\nlatent noise σ",
+            "Isotropic\npixel noise σ",
         ]
         n_rows = 3
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
@@ -1127,11 +1127,11 @@ def save_sample_visualization(
             alpha_display = sigma / np.sqrt(max(lambda_max, 1e-12))
 
         row_labels = [
-            "Row 0\nOriginal &\nPCA Recon",
-            f"Row 1\nManifold noise\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
-            f"Row 2\nManifold noise\nσ={sigma} unscaled\n(ref)",
-            f"Row 3\nIsotropic\npixel noise σ={sigma}",
-            "Row 4\nNeighbours",
+            "Original &\nPCA Recon",
+            f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
+            f"Manifold noise\nσ={sigma} unscaled\n(ref)",
+            f"Isotropic\npixel noise σ={sigma}",
+            "Neighbours",
         ]
         n_rows = 5
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
@@ -1244,13 +1244,13 @@ def save_sample_visualization(
             alpha_display = sigma / np.sqrt(max(lambda_max_lat, 1e-12))
 
         row_labels = [
-            "Row 0\nOriginal &\nPCA Recon (Latent)",
-            f"Row 1\nLatent manifold\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
-            f"Row 2\nLatent manifold\nσ={sigma} unscaled\n(ref)",
-            "Row 3\nPixel manifold\nα=σ/√λ_max (decoded)",
-            f"Row 4\nLatent iso\nnoise σ={sigma}",
-            f"Row 5\nPixel iso\nnoise σ={sigma}",
-            "Row 6\nNeighbours",
+            "Original &\nPCA Recon (Latent)",
+            f"Latent manifold\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
+            f"Latent manifold\nσ={sigma} unscaled\n(ref)",
+            "Pixel manifold\nα=σ/√λ_max (decoded)",
+            f"Latent iso\nnoise σ={sigma}",
+            f"Pixel iso\nnoise σ={sigma}",
+            "Neighbours",
         ]
         n_rows = 7
         fig, axes = plt.subplots(n_rows, n_noisy_samples,

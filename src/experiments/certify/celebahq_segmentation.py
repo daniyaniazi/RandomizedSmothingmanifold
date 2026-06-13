@@ -386,22 +386,14 @@ def save_seg_visualization(
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
 
-    # ── Row 0: Original | GT mask | Certified mask | Abstain overlay ──────────
-    _lbl(0, "Row 0\nOriginal &\nCertified")
+    # ── Row 0: Original | GT mask | — | — ─────────────────────────────────────
     _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original", "gold")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
-    cert_rgb = _mask_to_rgb(pred_mask.copy())
-    cert_rgb[~cert_result.certified] = [255, 255, 255]  # white = abstain (matches paper)
-    _show(axes[0, 2], Image.fromarray(cert_rgb),
-          f"Certified mask  R={cert_result.radius:.3f}")
-    overlay = np.array(_tensor_to_pil(img_tensor)).copy()
-    overlay[~cert_result.certified] = [255, 255, 255]  # white = abstain (matches paper)
-    _show(axes[0, 3], Image.fromarray(overlay),
-          f"Abstain {cert_result.abstain_rate*100:.1f}%")
 
-    # ── Row 1: PCA recon+mask (manifold)  OR  clean pred mask (iso) ───────────
+    # ── Row 1: PCA recon (mani) | Clean pred mask | Certified mask | — ────────
+    cert_rgb = _mask_to_rgb(pred_mask.copy())
+    cert_rgb[~cert_result.certified] = [255, 255, 255]  # white = abstain
     if is_manifold and pca_cached is not None:
-        _lbl(1, "Row 1\nPCA Recon")
         try:
             from src.smoothing.pca import whiten, unwhiten
             _qv = img_tensor.numpy().flatten().astype(np.float32)
@@ -410,20 +402,25 @@ def save_seg_visualization(
         except Exception:
             _recon_t = img_tensor
         _show(axes[1, 0], _tensor_to_pil(_recon_t), "PCA Recon")
-        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Recon seg mask")
+        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+        _show(axes[1, 2], Image.fromarray(cert_rgb),
+              f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
     else:
-        _lbl(1, "Row 1\nClean pred")
-        _show(axes[1, 0], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+        _lbl(1, "Clean pred &\nCertified")
+        _show(axes[1, 0], _tensor_to_pil(img_tensor), "Original (iso)")
+        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+        _show(axes[1, 2], Image.fromarray(cert_rgb),
+              f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
 
     # ── Row 2: Noisy segmentation masks (4 MC samples) ────────────────────────
-    _lbl(2, f"Row 2\n{mode_lbl}\nNoisy segs")
+    _lbl(2, f"{mode_lbl}\nNoisy segs")
     for j in range(N_COLS):
         if j < len(noisy_masks):
             _show(axes[2, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
                   f"MC seg {j+1}", "#4c78a8")
 
     # ── Row 3: Noisy images (4 MC samples) ────────────────────────────────────
-    _lbl(3, f"Row 3\n{mode_lbl}\nNoisy imgs")
+    _lbl(3, f"{mode_lbl}\nNoisy imgs")
     for j in range(N_COLS):
         if j < len(noisy_imgs):
             _show(axes[3, j], _tensor_to_pil(noisy_imgs[j]),
@@ -431,7 +428,7 @@ def save_seg_visualization(
 
     # ── Row 4: NN images (manifold only, no masks) ────────────────────────────
     if n_nn > 0:
-        _lbl(4, "Row 4\nNN imgs")
+        _lbl(4, "NN imgs")
         for j in range(N_COLS):
             if j < len(nn_imgs):
                 _show(axes[4, j], _tensor_to_pil(nn_imgs[j]),
@@ -591,7 +588,7 @@ def save_seg_comparison(
                 sp.set_edgecolor(border); sp.set_linewidth(2); sp.set_visible(True)
 
     # Row 0: Image | GT | ISO cert | MANI cert
-    _lbl(0, "Row 0\nImage & Certs")
+    _lbl(0, "Image & Certs")
     _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original", "gold")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
     iso_rgb  = _mask_to_rgb(iso_cert.pred_mask.copy())
@@ -604,28 +601,28 @@ def save_seg_comparison(
           f"MANI cert  abs={mani_cert.abstain_rate*100:.1f}%", "#e07b54")
 
     # Row 1: ISO noisy segs
-    _lbl(1, "Row 1\nISO noisy segs")
+    _lbl(1, "ISO noisy segs")
     for j in range(N_COLS):
         if j < len(iso_noisy_masks):
             _show(axes[1, j], Image.fromarray(_mask_to_rgb(iso_noisy_masks[j])),
                   f"ISO seg {j+1}", "#4c78a8")
 
     # Row 2: ISO noisy imgs
-    _lbl(2, "Row 2\nISO noisy imgs")
+    _lbl(2, "ISO noisy imgs")
     for j in range(N_COLS):
         if j < len(iso_noisy_imgs):
             _show(axes[2, j], _tensor_to_pil(iso_noisy_imgs[j]),
                   f"ISO img {j+1}  σ={sigma}", "#4c78a8")
 
     # Row 3: MANI noisy segs
-    _lbl(3, "Row 3\nMANI noisy segs")
+    _lbl(3, "MANI noisy segs")
     for j in range(N_COLS):
         if j < len(mani_noisy_masks):
             _show(axes[3, j], Image.fromarray(_mask_to_rgb(mani_noisy_masks[j])),
                   f"MANI seg {j+1}", "#e07b54")
 
     # Row 4: MANI noisy imgs
-    _lbl(4, "Row 4\nMANI noisy imgs")
+    _lbl(4, "MANI noisy imgs")
     for j in range(N_COLS):
         if j < len(mani_noisy_imgs):
             _show(axes[4, j], _tensor_to_pil(mani_noisy_imgs[j]),
@@ -774,7 +771,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
             noisy_imgs, noisy_masks = [], []
             _mean_n = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
             _std_n  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            for _ in range(3):
+            for _ in range(4):
                 ni = _sample_noisy(img_tensor, smoother, pixel_index)
                 noisy_imgs.append(ni)
                 x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
@@ -1039,7 +1036,7 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
             if (cfg.output.save_visualizations and idx < cfg.output.num_viz_samples
                     and sigma == active_sigmas[0]):
                 noisy_imgs, noisy_masks = [], []
-                for _ in range(3):
+                for _ in range(4):
                     ni = _sample_noisy(img_tensor, smoother, pixel_index)
                     noisy_imgs.append(ni)
                     x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
