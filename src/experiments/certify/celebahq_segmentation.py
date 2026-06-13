@@ -418,9 +418,6 @@ def save_seg_visualization(
         ax.imshow(img_arr)
         ax.set_title(title, fontsize=8, pad=3)
         ax.axis("off")
-        if border:
-            for sp in ax.spines.values():
-                sp.set_edgecolor(border); sp.set_linewidth(2); sp.set_visible(True)
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
 
@@ -626,9 +623,6 @@ def save_seg_comparison(
         ax.imshow(img_arr)
         ax.set_title(title, fontsize=8, pad=3)
         ax.axis("off")
-        if border:
-            for sp in ax.spines.values():
-                sp.set_edgecolor(border); sp.set_linewidth(2); sp.set_visible(True)
 
     # Row 0: Image | GT | ISO cert | MANI cert
     _lbl(0, "Image & Certs")
