@@ -1989,7 +1989,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
     _log(f"Certify split:      TEST ({total} samples)")
     _log(f"Smoothing:          {cfg.smoothing.mode} ({'manifold' if cfg.smoothing.use_manifold else 'isotropic'})")
     _log(f"Sigma:              {cfg.smoothing.sigma}")
-    _log(f"Sampling:           n0={metrics['n0_samples']}, n={metrics['n_samples']}, total={metrics['total_samples']}")
+    _log(f"Sampling:           n0={metrics['smoothing']['n0_samples']}, n={metrics['smoothing']['n_samples']}, total={metrics['smoothing']['total_mc_samples']}")
     _log(f"Certified accuracy: {100*metrics['certified_accuracy']:.2f}%")
     _log(f"Abstain rate:       {100*metrics['abstain_rate']:.2f}%")
     _log(f"Mean radius:        {metrics['mean_radius']:.4f}")
