@@ -75,7 +75,7 @@ class SegCertifyConfig:
     experiment_name: str = "celebahq_seg_certify"
     seed: int = 73
     device: str = "cuda"
-    alpha_conf: float = 0.05        # FWER level α for Holm correction
+    alpha_conf: float = 0.001       # FWER level α for Holm correction (paper uses 0.001)
 
     dataset: SegDatasetConfig = field(default_factory=SegDatasetConfig)
     model: SegModelConfig = field(default_factory=SegModelConfig)

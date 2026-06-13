@@ -1,7 +1,7 @@
 experiment_name: celebahq_seg_manifold
 seed: 73
 device: cuda
-alpha_conf: 0.05
+alpha_conf: 0.001   # paper value
 
 dataset:
   name: CelebAMask-HQ
@@ -27,7 +27,7 @@ smoothing:
   mode: pixel
   use_manifold: true
   sigma: 0.25
-  sigma_values: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50]
+  sigma_values: [0.10, 0.20,  0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
   tau: 0.75
   n0_samples: 10
   n_samples: 100
@@ -48,5 +48,5 @@ output:
 
 checkpoint:
   enabled: true
-  checkpoint_every: 20
+  checkpoint_every: 10
   resume: true

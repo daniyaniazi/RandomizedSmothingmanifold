@@ -324,37 +324,58 @@ def save_seg_visualization(
     pred_mask: np.ndarray,          # (H, W) majority vote
     cert_result: SegCertResult,
     nn_imgs: List[torch.Tensor],    # neighbour raw images
-    nn_masks: List[np.ndarray],     # neighbour predicted masks
-    noisy_imgs: List[torch.Tensor], # a few noisy samples for display
+    nn_masks: List[np.ndarray],     # neighbour predicted masks (from BiSeNet)
+    noisy_imgs: List[torch.Tensor], # noisy samples for display
     noisy_masks: List[np.ndarray],  # masks for noisy samples
     is_manifold: bool,
     sigma: float,
-    pca_cached=None,                # for geometry plot
+    pca_cached=None,
     pixel_index=None,
     smoother=None,
     cfg=None,
 ) -> None:
+    """CelebA-style row layout.
+
+    MANIFOLD:
+      Row 0: Original | GT mask | Certified mask (grey=abstain) | Abstain overlay
+      Row 1: PCA recon | Recon seg mask | — | —
+      Row 2: Mani noisy seg 1 | Mani noisy seg 2 | Mani noisy seg 3 | Mani noisy seg 4
+      Row 3: Mani noisy img 1 | Mani noisy img 2 | Mani noisy img 3 | Mani noisy img 4
+      Row 4: NN seg 1 | NN seg 2 | NN seg 3 | NN seg 4
+      Row 5: NN img 1 | NN img 2 | NN img 3 | NN img 4
+
+    ISOTROPIC:
+      Row 0: Original | GT mask | Certified mask (grey=abstain) | Abstain overlay
+      Row 1: Clean pred mask | — | — | —
+      Row 2: Iso noisy seg 1 | Iso noisy seg 2 | Iso noisy seg 3 | Iso noisy seg 4
+      Row 3: Iso noisy img 1 | Iso noisy img 2 | Iso noisy img 3 | Iso noisy img 4
+    """
     try:
         import matplotlib.pyplot as plt
     except ImportError:
         return
 
     viz_dir.mkdir(parents=True, exist_ok=True)
-    n_noisy = len(noisy_imgs)
 
-    # ── Layout:
-    # Row 0: Original | GT mask
-    # Row 1: PCA recon (manifold) | Certified mask
-    # Row 2..2+n_noisy-1: Noisy image | Noisy mask
-    # Row last: NN images | NN masks
+    N_COLS = 4   # always 4 columns
+    n_nn   = len(nn_imgs)      # pass exactly 4 (manifold) or 0 (iso)
 
-    n_nn = len(nn_imgs)
-    n_rows = 2 + n_noisy + (1 if n_nn > 0 else 0)
-    n_cols = max(2, n_nn, n_noisy)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 3.2 * n_rows))
+    # Row count
+    # manifold: row0 + row1(recon) + row_noisy_masks + row_noisy_imgs + row_nn_masks + row_nn_imgs
+    # iso:      row0 + row1(clean pred) + row_noisy_masks + row_noisy_imgs
+    n_rows = 4 + (2 if n_nn > 0 else 0)
+
+    fig, axes = plt.subplots(n_rows, N_COLS,
+                             figsize=(3.5 * N_COLS, 3.2 * n_rows),
+                             gridspec_kw={"wspace": 0.05, "hspace": 0.45})
     axes = np.atleast_2d(axes)
     for ax in axes.flat:
         ax.axis("off")
+
+    def _lbl(row, text):
+        axes[row, 0].text(-0.18, 0.5, text, transform=axes[row, 0].transAxes,
+                          fontsize=8, fontweight="bold", va="center", ha="right",
+                          clip_on=False)
 
     def _show(ax, img_arr, title="", border=None):
         ax.imshow(img_arr)
@@ -364,50 +385,75 @@ def save_seg_visualization(
             for sp in ax.spines.values():
                 sp.set_edgecolor(border); sp.set_linewidth(2); sp.set_visible(True)
 
-    # Row 0: original + GT
+    mode_lbl = "Manifold" if is_manifold else "Iso"
+
+    # ── Row 0: Original | GT mask | Certified mask | Abstain overlay ──────────
+    _lbl(0, "Row 0\nOriginal &\nCertified")
     _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original", "gold")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
-
-    # Row 1: certified mask (col 0) + abstain overlay (col 1)
-    cert_rgb = _mask_to_rgb(pred_mask)
-    cert_rgb[~cert_result.certified] = [128, 128, 128]   # grey = abstain
-    _show(axes[1, 0], Image.fromarray(cert_rgb),
+    cert_rgb = _mask_to_rgb(pred_mask.copy())
+    cert_rgb[~cert_result.certified] = [255, 255, 255]  # white = abstain (matches paper)
+    _show(axes[0, 2], Image.fromarray(cert_rgb),
           f"Certified mask  R={cert_result.radius:.3f}")
-    # Abstain overlay on original
     overlay = np.array(_tensor_to_pil(img_tensor)).copy()
-    overlay[~cert_result.certified] = [200, 200, 200]
-    _show(axes[1, 1], Image.fromarray(overlay),
-          f"Abstain: {cert_result.abstain_rate*100:.1f}%")
+    overlay[~cert_result.certified] = [255, 255, 255]  # white = abstain (matches paper)
+    _show(axes[0, 3], Image.fromarray(overlay),
+          f"Abstain {cert_result.abstain_rate*100:.1f}%")
 
-    # Rows 2+: noisy images + their masks
-    for i, (ni, nm) in enumerate(zip(noisy_imgs, noisy_masks)):
-        r = 2 + i
-        if r >= n_rows - (1 if n_nn > 0 else 0):
-            break
-        _show(axes[r, 0], _tensor_to_pil(ni), f"Noisy {i+1}  σ={sigma}", "#4c78a8")
-        _show(axes[r, 1], Image.fromarray(_mask_to_rgb(nm)), f"Seg {i+1}")
+    # ── Row 1: PCA recon+mask (manifold)  OR  clean pred mask (iso) ───────────
+    if is_manifold and pca_cached is not None:
+        _lbl(1, "Row 1\nPCA Recon")
+        try:
+            from src.smoothing.pca import whiten, unwhiten
+            _qv = img_tensor.numpy().flatten().astype(np.float32)
+            _rv = unwhiten(whiten(_qv, pca_cached.pca), pca_cached.pca)
+            _recon_t = torch.from_numpy(_rv.reshape(img_tensor.shape)).float()
+        except Exception:
+            _recon_t = img_tensor
+        _show(axes[1, 0], _tensor_to_pil(_recon_t), "PCA Recon")
+        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Recon seg mask")
+    else:
+        _lbl(1, "Row 1\nClean pred")
+        _show(axes[1, 0], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
 
-    # Last row: neighbours
+    # ── Row 2: Noisy segmentation masks (4 MC samples) ────────────────────────
+    _lbl(2, f"Row 2\n{mode_lbl}\nNoisy segs")
+    for j in range(N_COLS):
+        if j < len(noisy_masks):
+            _show(axes[2, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
+                  f"MC seg {j+1}", "#4c78a8")
+
+    # ── Row 3: Noisy images (4 MC samples) ────────────────────────────────────
+    _lbl(3, f"Row 3\n{mode_lbl}\nNoisy imgs")
+    for j in range(N_COLS):
+        if j < len(noisy_imgs):
+            _show(axes[3, j], _tensor_to_pil(noisy_imgs[j]),
+                  f"MC img {j+1}  σ={sigma}", "#4c78a8")
+
+    # ── Rows 4-5: NN segs and NN images (manifold only) ───────────────────────
     if n_nn > 0:
-        r = n_rows - 1
-        for j, (ni, nm) in enumerate(zip(nn_imgs, nn_masks)):
-            if j >= n_cols:
-                break
-            _show(axes[r, j], _tensor_to_pil(ni), f"NN-{j+1}", "#e07b54")
+        _lbl(4, "Row 4\nNN segs")
+        for j in range(N_COLS):
+            if j < len(nn_masks):
+                _show(axes[4, j], Image.fromarray(_mask_to_rgb(nn_masks[j])),
+                      f"NN-{j+1} seg", "#e07b54")
+        _lbl(5, "Row 5\nNN imgs")
+        for j in range(N_COLS):
+            if j < len(nn_imgs):
+                _show(axes[5, j], _tensor_to_pil(nn_imgs[j]),
+                      f"NN-{j+1}", "#e07b54")
 
-    cert_px = cert_result.n_certified
-    total_px = cert_result.n_pixels
     fig.suptitle(
-        f"Sample {sample_idx}  |  σ={sigma}  |  {'Manifold' if is_manifold else 'Isotropic'}\n"
-        f"Certified: {cert_px}/{total_px} px ({100*(1-cert_result.abstain_rate):.1f}%)  "
-        f"R={cert_result.radius:.4f}",
+        f"Sample {sample_idx}  |  σ={sigma}  |  {mode_lbl}  |  "
+        f"Certified: {cert_result.n_certified}/{cert_result.n_pixels} px "
+        f"({100*(1-cert_result.abstain_rate):.1f}%)  |  R={cert_result.radius:.4f}",
         fontsize=10, fontweight="bold",
     )
     plt.tight_layout()
     fig.savefig(viz_dir / f"sample_{sample_idx:04d}.png", dpi=100, bbox_inches="tight")
     plt.close(fig)
 
-    # ── Geometry plot (manifold only) ─────────────────────────────────────────
+    # ── Geometry figure — MANIFOLD ────────────────────────────────────────────
     if is_manifold and pca_cached is not None and smoother is not None:
         try:
             from src.experiments.certify.celeba import _draw_geometry_figure
@@ -427,7 +473,180 @@ def save_seg_visualization(
                 index=pixel_index,
             )
         except Exception as e:
-            _log(f"Geometry plot skipped for sample {sample_idx}: {e}")
+            _log(f"Manifold geometry plot skipped for sample {sample_idx}: {e}")
+
+    # ── Geometry figure — ISOTROPIC ───────────────────────────────────────────
+    if not is_manifold:
+        try:
+            from sklearn.decomposition import PCA as _PCA
+            import matplotlib.pyplot as _plt_geom
+
+            _flat = img_tensor.numpy().flatten().astype(np.float32)
+            _N_mc = cfg.smoothing.n_samples if cfg else 20
+            _mc_flat = np.stack([
+                _flat + np.random.randn(*_flat.shape).astype(np.float32) * sigma
+                for _ in range(_N_mc)
+            ])
+            _pca2    = _PCA(n_components=2).fit(_mc_flat)
+            _anch_2d = _pca2.transform(_flat.reshape(1, -1))[0]
+            _mc_2d   = _pca2.transform(_mc_flat)
+            _pc1_std = float(np.std(_mc_2d[:, 0]))
+            _pc2_std = float(np.std(_mc_2d[:, 1]))
+            _zoom_mid   = 3 * sigma
+            _zoom_tight = sigma
+            _zoom_specs = [
+                (None,        f"[A] Full cloud  σ/std={sigma/(_pc1_std+1e-12):.3f}"),
+                (_zoom_mid,   f"[B] Mid-zoom ±3σ={_zoom_mid:.4f}"),
+                (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
+            ]
+
+            _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
+            _mc_pad = 0.05 * max(float(np.ptp(_mc_2d[:, 0])), float(np.ptp(_mc_2d[:, 1])), 1e-6)
+
+            for _gax, (_zr, _gtitle) in zip(_gaxes, _zoom_specs):
+                _mask_mc = (
+                    (np.abs(_mc_2d[:, 0] - _anch_2d[0]) <= _zr) &
+                    (np.abs(_mc_2d[:, 1] - _anch_2d[1]) <= _zr)
+                ) if _zr is not None else np.ones(len(_mc_2d), dtype=bool)
+                _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
+                             s=6, alpha=0.40, color="#4c78a8", marker="o",
+                             linewidths=0, zorder=3, label=f"Iso MC samples (n={_N_mc})")
+                _gax.add_patch(_plt_geom.Circle(
+                    (_anch_2d[0], _anch_2d[1]), sigma,
+                    fill=False, edgecolor="tab:blue", linewidth=2,
+                    linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle r={sigma}",
+                ))
+                _gax.scatter(_anch_2d[0], _anch_2d[1], s=160, marker="*",
+                             c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
+                if _zr is None:
+                    _gax.set_xlim(np.min(_mc_2d[:, 0]) - _mc_pad, np.max(_mc_2d[:, 0]) + _mc_pad)
+                    _gax.set_ylim(np.min(_mc_2d[:, 1]) - _mc_pad, np.max(_mc_2d[:, 1]) + _mc_pad)
+                else:
+                    _gax.set_xlim(_anch_2d[0] - _zr, _anch_2d[0] + _zr)
+                    _gax.set_ylim(_anch_2d[1] - _zr, _anch_2d[1] + _zr)
+                _gax.set_aspect("equal")
+                _gax.set_title(_gtitle, fontsize=9)
+                _gax.set_xlabel(f"PC1  (std={_pc1_std:.4f})", fontsize=8)
+                _gax.set_ylabel(f"PC2  (std={_pc2_std:.4f})", fontsize=8)
+                _gax.grid(alpha=0.25)
+
+            _handles, _labels = _gaxes[0].get_legend_handles_labels()
+            _gfig.legend(_handles, _labels, loc="lower center", ncol=len(_handles),
+                         fontsize=8, framealpha=0.9, bbox_to_anchor=(0.5, -0.08))
+            _gfig.suptitle(
+                f"Isotropic Circle Geometry  (idx={sample_idx})  |  σ={sigma}  |  MC={_N_mc}",
+                fontsize=11,
+            )
+            _plt_geom.tight_layout()
+            _gfig.savefig(viz_dir / f"sample_{sample_idx:04d}_geometry_iso.png",
+                          dpi=150, bbox_inches="tight")
+            _plt_geom.close(_gfig)
+        except Exception as e:
+            _log(f"Isotropic geometry plot skipped for sample {sample_idx}: {e}")
+
+
+def save_seg_comparison(
+    viz_dir: Path,
+    sample_idx: int,
+    img_tensor: torch.Tensor,
+    gt_mask: torch.Tensor,
+    iso_cert: SegCertResult,
+    mani_cert: SegCertResult,
+    iso_noisy_imgs: List[torch.Tensor],
+    iso_noisy_masks: List[np.ndarray],
+    mani_noisy_imgs: List[torch.Tensor],
+    mani_noisy_masks: List[np.ndarray],
+    sigma: float,
+) -> None:
+    """Iso vs Manifold comparison figure saved to visualizations/comparison/.
+
+    Row 0: Image | GT mask | ISO certified mask | MANI certified mask
+    Row 1: ISO noisy seg 1 | ISO noisy seg 2 | ISO noisy seg 3 | ISO noisy seg 4
+    Row 2: ISO noisy img 1 | ISO noisy img 2 | ISO noisy img 3 | ISO noisy img 4
+    Row 3: MANI noisy seg 1 | MANI noisy seg 2 | MANI noisy seg 3 | MANI noisy seg 4
+    Row 4: MANI noisy img 1 | MANI noisy img 2 | MANI noisy img 3 | MANI noisy img 4
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    save_dir = viz_dir / "comparison"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    N_COLS = 4
+    n_rows = 5
+    fig, axes = plt.subplots(n_rows, N_COLS,
+                             figsize=(3.5 * N_COLS, 3.2 * n_rows),
+                             gridspec_kw={"wspace": 0.05, "hspace": 0.45})
+    axes = np.atleast_2d(axes)
+    for ax in axes.flat:
+        ax.axis("off")
+
+    def _lbl(row, text):
+        axes[row, 0].text(-0.18, 0.5, text, transform=axes[row, 0].transAxes,
+                          fontsize=8, fontweight="bold", va="center", ha="right",
+                          clip_on=False)
+
+    def _show(ax, img_arr, title="", border=None):
+        ax.imshow(img_arr)
+        ax.set_title(title, fontsize=7, pad=2)
+        ax.axis("off")
+        if border:
+            for sp in ax.spines.values():
+                sp.set_edgecolor(border); sp.set_linewidth(2); sp.set_visible(True)
+
+    # Row 0: Image | GT | ISO cert | MANI cert
+    _lbl(0, "Row 0\nImage & Certs")
+    _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original", "gold")
+    _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
+    iso_rgb  = _mask_to_rgb(iso_cert.pred_mask.copy())
+    iso_rgb[~iso_cert.certified]   = [128, 128, 128]
+    mani_rgb = _mask_to_rgb(mani_cert.pred_mask.copy())
+    mani_rgb[~mani_cert.certified] = [128, 128, 128]
+    _show(axes[0, 2], Image.fromarray(iso_rgb),
+          f"ISO cert  abs={iso_cert.abstain_rate*100:.1f}%", "#4c78a8")
+    _show(axes[0, 3], Image.fromarray(mani_rgb),
+          f"MANI cert  abs={mani_cert.abstain_rate*100:.1f}%", "#e07b54")
+
+    # Row 1: ISO noisy segs
+    _lbl(1, "Row 1\nISO noisy segs")
+    for j in range(N_COLS):
+        if j < len(iso_noisy_masks):
+            _show(axes[1, j], Image.fromarray(_mask_to_rgb(iso_noisy_masks[j])),
+                  f"ISO seg {j+1}", "#4c78a8")
+
+    # Row 2: ISO noisy imgs
+    _lbl(2, "Row 2\nISO noisy imgs")
+    for j in range(N_COLS):
+        if j < len(iso_noisy_imgs):
+            _show(axes[2, j], _tensor_to_pil(iso_noisy_imgs[j]),
+                  f"ISO img {j+1}  σ={sigma}", "#4c78a8")
+
+    # Row 3: MANI noisy segs
+    _lbl(3, "Row 3\nMANI noisy segs")
+    for j in range(N_COLS):
+        if j < len(mani_noisy_masks):
+            _show(axes[3, j], Image.fromarray(_mask_to_rgb(mani_noisy_masks[j])),
+                  f"MANI seg {j+1}", "#e07b54")
+
+    # Row 4: MANI noisy imgs
+    _lbl(4, "Row 4\nMANI noisy imgs")
+    for j in range(N_COLS):
+        if j < len(mani_noisy_imgs):
+            _show(axes[4, j], _tensor_to_pil(mani_noisy_imgs[j]),
+                  f"MANI img {j+1}  σ={sigma}", "#e07b54")
+
+    fig.suptitle(
+        f"ISO vs MANI  (idx={sample_idx})  |  σ={sigma}\n"
+        f"ISO: R={iso_cert.radius:.4f}  abs={iso_cert.abstain_rate*100:.1f}%  |  "
+        f"MANI: R={mani_cert.radius:.4f}  abs={mani_cert.abstain_rate*100:.1f}%",
+        fontsize=10, fontweight="bold",
+    )
+    plt.tight_layout()
+    fig.savefig(save_dir / f"sample_{sample_idx:04d}_iso_vs_mani.png",
+                dpi=100, bbox_inches="tight")
+    plt.close(fig)
 
 
 # ── Main certification pipeline ───────────────────────────────────────────────

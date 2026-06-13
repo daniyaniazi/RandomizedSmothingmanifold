@@ -88,6 +88,27 @@ case $TARGET in
     celebahq-latent-angular)
         submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent-angular" "8G" "angular"
         ;;
+    celebahq-seg)
+        # Segmentation pixel index — uses seg indexing module + seg config
+        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
+            --cpus-per-task=$CPUS --mem-per-cpu=8G \
+            --job-name="idx-celebahq-seg" \
+            --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.out \
+            --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.err \
+            --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celebahq_seg_images \
+                --config $CONFIGS_DIR/certify_celebahq_seg_manifold.yaml"
+        echo "  ✅ idx-celebahq-seg"
+        ;;
+    celebahq-seg-angular)
+        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
+            --cpus-per-task=$CPUS --mem-per-cpu=8G \
+            --job-name="idx-celebahq-seg-angular" \
+            --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.out \
+            --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.err \
+            --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celebahq_seg_images \
+                --config $CONFIGS_DIR/certify_celebahq_seg_manifold.yaml --metric angular"
+        echo "  ✅ idx-celebahq-seg-angular"
+        ;;
     all)
         submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"
         submit_index "$CONFIGS_DIR/certify_celeba_isotropic_latent_128.yaml" latent "idx-celeba-latent"
@@ -96,7 +117,7 @@ case $TARGET in
         ;;
     *)
         echo "Unknown target: $TARGET"
-        echo "Usage: ./submit_build_indexes.sh {all|celeba|celebahq|celeba-pixel|celeba-latent|celebahq-pixel|celebahq-latent}"
+        echo "Usage: ./submit_build_indexes.sh {all|celeba|celebahq|celeba-pixel|celeba-latent|celebahq-pixel|celebahq-latent|celebahq-seg|celebahq-seg-angular}"
         exit 1
         ;;
 esac
