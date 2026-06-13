@@ -217,7 +217,7 @@ mkdir -p "$SWEEP_CONFIG_DIR"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/sigma_quad_tasks_${RUN_ID}.tsv"
 
-DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" STRATEGY="$STRATEGY" TYPE_FILTER="$TYPE_FILTER" python3 - <<PY
+DATASET_FILTER="$DATASET_FILTER" SPACE_FILTER="$SPACE_FILTER" STRATEGY="$STRATEGY" TYPE_FILTER="$TYPE_FILTER" VIZ_ONLY="$VIZ_ONLY" python3 - <<PY
 import os
 import yaml
 from pathlib import Path
@@ -228,8 +228,9 @@ task_file = Path(r"$TASK_FILE")
 
 dataset_filter    = os.environ.get("DATASET_FILTER", "").strip().lower()
 space_filter      = os.environ.get("SPACE_FILTER",   "").strip().lower()
-strategy_override = os.environ.get("STRATEGY",       "").strip().lower()  # multi | array | ""=auto
-type_filter       = os.environ.get("TYPE_FILTER",    "").strip().lower()  # iso | mani | ""=all
+strategy_override = os.environ.get("STRATEGY",       "").strip().lower()
+type_filter       = os.environ.get("TYPE_FILTER",    "").strip().lower()
+viz_only          = os.environ.get("VIZ_ONLY",       "false").strip().lower() == "true"
 
 entries = [
     ("ner_iso",           Path(r"$NER_ISO_CFG"),            "ner",     "pixel"),
@@ -334,22 +335,26 @@ for short_name, cfg_path, ds, sp in entries:
     else:
         strategy = "multi" if is_manifold else "array"
 
-    pending, done = [], []
-    for sigma in sigmas:
-        if ds == "ner":
-            out_dir = ner_output_dir(cfg_raw, sigma, cfg_raw.get("smoothing", {}).get("index_path"))
-        else:
-            out_dir = celeb_output_dir(cfg_raw, sigma)
-        if (out_dir / "metrics.json").exists():
-            done.append(sigma)
-        else:
-            pending.append(sigma)
-
-    if done:
-        skipped_configs.append(f"{short_name}: {len(done)} sigmas already done ({done})")
-    if not pending:
-        skipped_configs.append(f"{short_name}: ALL done — skipping")
-        continue
+    # viz-only: always submit all sigmas (skip the metrics.json check)
+    if viz_only:
+        pending = sigmas
+        done    = []
+    else:
+        pending, done = [], []
+        for sigma in sigmas:
+            if ds == "ner":
+                out_dir = ner_output_dir(cfg_raw, sigma, cfg_raw.get("smoothing", {}).get("index_path"))
+            else:
+                out_dir = celeb_output_dir(cfg_raw, sigma)
+            if (out_dir / "metrics.json").exists():
+                done.append(sigma)
+            else:
+                pending.append(sigma)
+        if done:
+            skipped_configs.append(f"{short_name}: {len(done)} sigmas already done ({done})")
+        if not pending:
+            skipped_configs.append(f"{short_name}: ALL done — skipping")
+            continue
 
     cfg_raw.setdefault("checkpoint", {})["resume"] = True
 

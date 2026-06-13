@@ -64,14 +64,15 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="$SWEEP_CONFIG_DIR/seg_sigma_tasks_${RUN_ID}.tsv"
 
 # ── Build task list (Python) ──────────────────────────────────────────────────
-STRATEGY="$STRATEGY" python3 - <<PY
+STRATEGY="$STRATEGY" VIZ_ONLY="$VIZ_ONLY" python3 - <<PY
 import os, yaml
 from pathlib import Path
 
 project_root  = Path(r"$PROJECT_ROOT")
 sweep_dir     = Path(r"$SWEEP_CONFIG_DIR")
 task_file     = Path(r"$TASK_FILE")
-strategy_override = os.environ.get("STRATEGY", "").strip().lower()
+strategy_override = os.environ.get("STRATEGY",  "").strip().lower()
+viz_only          = os.environ.get("VIZ_ONLY", "false").strip().lower() == "true"
 
 entries = [
     ("seg_iso",  Path(r"$ISO_CFG"),  "iso"),
@@ -108,18 +109,22 @@ for short_name, cfg_path, kind in entries:
     strategy = strategy_override if strategy_override in ("multi","array") else \
                ("multi" if is_manifold else "array")
 
-    pending, done = [], []
-    for sigma in sigmas:
-        if (seg_output_dir(cfg_raw, sigma) / "metrics.json").exists():
-            done.append(sigma)
-        else:
-            pending.append(sigma)
-
-    if done:
-        skipped.append(f"{short_name}: {len(done)} sigmas already done {done}")
-    if not pending:
-        skipped.append(f"{short_name}: ALL done — skipping")
-        continue
+    # viz-only: always submit all sigmas (regenerate viz regardless of metrics.json)
+    if viz_only:
+        pending = sigmas
+        done    = []
+    else:
+        pending, done = [], []
+        for sigma in sigmas:
+            if (seg_output_dir(cfg_raw, sigma) / "metrics.json").exists():
+                done.append(sigma)
+            else:
+                pending.append(sigma)
+        if done:
+            skipped.append(f"{short_name}: {len(done)} sigmas already done {done}")
+        if not pending:
+            skipped.append(f"{short_name}: ALL done — skipping")
+            continue
 
     cfg_raw.setdefault("checkpoint", {})["resume"] = True
     bucket = mani_tasks if is_manifold else iso_tasks
