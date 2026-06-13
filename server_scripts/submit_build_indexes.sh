@@ -34,7 +34,7 @@ submit_index() {
     local config=$1
     local space=$2
     local job_name=$3
-    local mem=${4:-"8G"}     # default 8G, override for large jobs
+    local mem=${4:-"8G"}     # mem-per-cpu (original working values)
     local metric=${5:-""}    # optional metric override (euclidean|angular)
 
     local metric_flag=""
@@ -91,7 +91,7 @@ case $TARGET in
     celebahq-seg)
         # Segmentation pixel index — uses seg indexing module + seg config
         sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
-            --cpus-per-task=$CPUS --mem-per-cpu=8G \
+            --cpus-per-task=$CPUS --mem=64G \
             --job-name="idx-celebahq-seg" \
             --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.out \
             --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.err \
@@ -101,7 +101,7 @@ case $TARGET in
         ;;
     celebahq-seg-angular)
         sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
-            --cpus-per-task=$CPUS --mem-per-cpu=8G \
+            --cpus-per-task=$CPUS --mem=64G \
             --job-name="idx-celebahq-seg-angular" \
             --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.out \
             --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.err \

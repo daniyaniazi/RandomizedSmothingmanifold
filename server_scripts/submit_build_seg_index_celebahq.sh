@@ -3,7 +3,7 @@
 #SBATCH -t 24:00:00
 #SBATCH --gres gpu:0
 #SBATCH -c 8
-#SBATCH --mem-per-cpu=8G
+#SBATCH --mem=64G
 #SBATCH -o /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/seg-index-celebahq-%j.out
 #SBATCH -e /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/seg-index-celebahq-%j.err
 #SBATCH -J seg-index-celebahq
