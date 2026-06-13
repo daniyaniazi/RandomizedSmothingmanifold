@@ -89,25 +89,24 @@ case $TARGET in
         submit_index "$CONFIGS_DIR/certify_celebahq_isotropic_latent.yaml" latent "idx-celebahq-latent-angular" "8G" "angular"
         ;;
     celebahq-seg)
-        # Segmentation pixel index — uses seg indexing module + seg config
-        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
-            --cpus-per-task=$CPUS --mem=64G \
+        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:$GPUS \
+            --cpus-per-task=$CPUS --mem-per-cpu=32G \
             --job-name="idx-celebahq-seg" \
             --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.out \
             --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-%j.err \
             --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celebahq_seg_images \
                 --config $CONFIGS_DIR/certify_celebahq_seg_manifold.yaml"
-        echo "  ✅ idx-celebahq-seg"
+        echo "  ✅ idx-celebahq-seg (mem-per-cpu=32G)"
         ;;
     celebahq-seg-angular)
-        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:0 \
-            --cpus-per-task=$CPUS --mem=64G \
+        sbatch --partition=$PARTITION --time=24:00:00 --gres=gpu:$GPUS \
+            --cpus-per-task=$CPUS --mem-per-cpu=32G \
             --job-name="idx-celebahq-seg-angular" \
             --output=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.out \
             --error=$PROJECT_ROOT/output/slurm/idx-celebahq-seg-angular-%j.err \
             --wrap="$WRAP_PREFIX && python -m src.experiments.indexing.celebahq_seg_images \
                 --config $CONFIGS_DIR/certify_celebahq_seg_manifold.yaml --metric angular"
-        echo "  ✅ idx-celebahq-seg-angular"
+        echo "  ✅ idx-celebahq-seg-angular (mem-per-cpu=32G)"
         ;;
     all)
         submit_index "$CONFIGS_DIR/certify_celeba_isotropic_pixel.yaml" pixel "idx-celeba-pixel" "32G"

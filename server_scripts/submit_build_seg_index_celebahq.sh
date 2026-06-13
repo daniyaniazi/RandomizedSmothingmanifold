@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH -p gpu20
 #SBATCH -t 24:00:00
-#SBATCH --gres gpu:0
+#SBATCH --gres gpu:1
 #SBATCH -c 8
-#SBATCH --mem=64G
+#SBATCH --mem-per-cpu=32G
 #SBATCH -o /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/seg-index-celebahq-%j.out
 #SBATCH -e /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/seg-index-celebahq-%j.err
 #SBATCH -J seg-index-celebahq
