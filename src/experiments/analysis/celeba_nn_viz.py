@@ -175,9 +175,9 @@ def main():
 
     # rows in display order — only include rows where the index exists
     ROW_DEFS = [
-        ("pixel",  "euclidean", "#4c78a8", "Pixel\neuclidean"),
+        ("pixel",  "euclidean", "#2166ac", "Pixel\neuclidean"),
         ("pixel",  "angular",   "#1f77b4", "Pixel\nangular"),
-        ("latent", "euclidean", "#e07b54", "Latent\neuclidean"),
+        ("latent", "euclidean", "#6b3fa0", "Latent\neuclidean"),
         ("latent", "angular",   "#d62728", "Latent\nangular"),
     ]
     active_rows = [(sp, mt, col, lbl) for sp, mt, col, lbl in ROW_DEFS if indexes[(sp, mt)] is not None]
@@ -248,7 +248,7 @@ def main():
         # ── Row 0: anchor in col 0, rest hidden ───────────────────────────────
         _show_img(axes[0, 0], image_dir, anchor_fname,
                   f"ANCHOR\n{attr}=1\n{'smile' if anchor_smile else 'no-smile'}",
-                  border_color="gold")
+                  border_color="#f5c518")
         axes[0, 0].text(-0.12, 0.5, "Anchor", transform=axes[0, 0].transAxes,
                         fontsize=7, fontweight="bold", va="center", ha="right",
                         rotation=90, clip_on=False)

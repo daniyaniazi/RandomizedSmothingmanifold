@@ -281,6 +281,19 @@ def sample_counts(
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
 
+_VC = {
+    'knn_ood1':   '#aec7e8',
+    'knn_ood0':   '#6b3fa0',
+    'knn_plain':  '#aec7e8',
+    'mc':         '#74c476',
+    'iso_circle': '#2166ac',
+    'mani_ellip': '#f5c518',
+    'anchor':     'black',
+    'iso_border': '#2166ac',
+    'mani_border':'#6b3fa0',
+    'nn_border':  '#006d2c',
+}
+
 _VIZ_STYLE = {
     'font.family':        'serif',
     'font.size':          10,
@@ -442,14 +455,14 @@ def save_seg_visualization(
     for j in range(N_COLS):
         if j < len(noisy_masks):
             _show(axes[2, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
-                  f"MC seg {j+1}", "#4c78a8")
+                  f"MC seg {j+1}", _VC['iso_border'])
 
     # ── Row 3: Noisy images (4 MC samples) ────────────────────────────────────
     _lbl(3, f"{mode_lbl}\nNoisy imgs")
     for j in range(N_COLS):
         if j < len(noisy_imgs):
             _show(axes[3, j], _tensor_to_pil(noisy_imgs[j]),
-                  f"MC img {j+1}  σ={sigma}", "#4c78a8")
+                  f"MC img {j+1}  σ={sigma}", _VC['iso_border'])
 
     # ── Row 4: NN images (manifold only, no masks) ────────────────────────────
     if n_nn > 0:
@@ -457,12 +470,14 @@ def save_seg_visualization(
         for j in range(N_COLS):
             if j < len(nn_imgs):
                 _show(axes[4, j], _tensor_to_pil(nn_imgs[j]),
-                      f"NN-{j+1}", "#e07b54")
+                      f"NN-{j+1}", _VC['nn_border'])
 
+    _ood_seg = getattr(cfg.dataset if cfg else None, 'ood_attribute', None) if cfg else None
+    _ood_seg_line = f"\nOOD: {_ood_seg}=1" if _ood_seg else ""
     fig.suptitle(
-        f"Sample {sample_idx}  |  σ={sigma}  |  {mode_lbl}  |  "
+        f"{mode_lbl} Smoothing   σ={sigma}\n"
         f"Certified: {cert_result.n_certified}/{cert_result.n_pixels} px "
-        f"({100*(1-cert_result.abstain_rate):.1f}%)  |  R={cert_result.radius:.4f}",
+        f"({100*(1-cert_result.abstain_rate):.1f}%){_ood_seg_line}",
         fontsize=10, fontweight="bold",
     )
     plt.tight_layout()
@@ -511,9 +526,9 @@ def save_seg_visualization(
             _zoom_mid   = 3 * sigma
             _zoom_tight = sigma
             _zoom_specs = [
-                (None,        f"[A] Full cloud  σ/std={sigma/(_pc1_std+1e-12):.3f}"),
-                (_zoom_mid,   f"[B] Mid-zoom ±3σ={_zoom_mid:.4f}"),
-                (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
+                (None,        f"(a) Full noise cloud  σ/std={sigma/(_pc1_std+1e-12):.2f}"),
+                (_zoom_mid,   f"(b) Mid-zoom  ±3σ={_zoom_mid:.3f}"),
+                (_zoom_tight, f"(c) Tight zoom  ±σ={sigma:.3f}"),
             ]
 
             _gfig, _gaxes = _plt_geom.subplots(1, 3, figsize=(15, 5), facecolor="white")
@@ -525,15 +540,15 @@ def save_seg_visualization(
                     (np.abs(_mc_2d[:, 1] - _anch_2d[1]) <= _zr)
                 ) if _zr is not None else np.ones(len(_mc_2d), dtype=bool)
                 _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                             s=6, alpha=0.40, color="#4c78a8", marker="o",
+                             s=6, alpha=0.45, color=_VC['mc'], marker="o",
                              linewidths=0, zorder=3, label=f"Iso MC samples (n={_N_mc})")
                 _gax.add_patch(_plt_geom.Circle(
                     (_anch_2d[0], _anch_2d[1]), sigma,
                     fill=False, edgecolor="tab:blue", linewidth=2,
                     linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle r={sigma}",
                 ))
-                _gax.scatter(_anch_2d[0], _anch_2d[1], s=160, marker="*",
-                             c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
+                _gax.scatter(_anch_2d[0], _anch_2d[1], s=180, marker="*",
+                             c=_VC['anchor'], edgecolors="white", linewidths=0.8, zorder=5, label="Anchor")
                 if _zr is None:
                     _gax.set_xlim(np.min(_mc_2d[:, 0]) - _mc_pad, np.max(_mc_2d[:, 0]) + _mc_pad)
                     _gax.set_ylim(np.min(_mc_2d[:, 1]) - _mc_pad, np.max(_mc_2d[:, 1]) + _mc_pad)
@@ -549,8 +564,10 @@ def save_seg_visualization(
             _handles, _labels = _gaxes[0].get_legend_handles_labels()
             _gfig.legend(_handles, _labels, loc="lower center", ncol=len(_handles),
                          fontsize=8, framealpha=0.9, bbox_to_anchor=(0.5, -0.08))
+            _ood_seg_g = getattr(cfg.dataset if cfg else None, 'ood_attribute', None) if cfg else None
+            _ood_seg_g_line = f"\nOOD: {_ood_seg_g}=1" if _ood_seg_g else ""
             _gfig.suptitle(
-                f"Isotropic Circle Geometry  (idx={sample_idx})  |  σ={sigma}  |  MC={_N_mc}",
+                f"Isotropic Smoothing Geometry   σ={sigma}   MC={_N_mc}{_ood_seg_g_line}",
                 fontsize=11,
             )
             _plt_geom.tight_layout()

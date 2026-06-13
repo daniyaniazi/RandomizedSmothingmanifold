@@ -634,6 +634,20 @@ def make_latent_sample_fn(
 # Visualization
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Visualization colour palette ──────────────────────────────────────────────
+_VC = {
+    'knn_ood1':   '#aec7e8',   # light blue  — KNN neighbours with OOD attr
+    'knn_ood0':   '#6b3fa0',   # purple      — KNN neighbours without OOD attr
+    'knn_plain':  '#aec7e8',   # light blue  — KNN (no OOD info)
+    'mc':         '#74c476',   # green       — MC noise samples
+    'iso_circle': '#2166ac',   # deep blue   — isotropic circle
+    'mani_ellip': '#f5c518',   # yellow/gold — manifold ellipse
+    'anchor':     'black',     # black       — anchor star
+    'iso_border': '#2166ac',   # deep blue   — iso image border
+    'mani_border':'#6b3fa0',   # purple      — manifold image border
+    'nn_border':  '#006d2c',   # dark green  — neighbour image border
+}
+
 _VIZ_STYLE = {
     'font.family':        'serif',
     'font.size':          10,
@@ -720,11 +734,11 @@ def _draw_geometry_figure(
     _zoom_tight = _a1
 
     _zoom_panels = [
-        (None,         f"[A] Full cloud",                              _a1, _a2),
-        (_zoom_mid,    f"[B] Mid-zoom  ±{_zoom_mid:.2f}",             _a1, _a2),
-        (_zoom_tight,  f"[C] Tight  a1={_a1:.4f}  a2={_a2:.4f}",     _a1, _a2),
-        (_zoom_tight,  f"[D] Mid PC  a_mid={_a_mid:.4f}\na_mid/a1={_a_mid/(_a1+1e-12):.4f}", _a1, _a_mid),
-        (_zoom_tight,  f"[E] Last PC  a_last={_a_last:.6f}\na_last/a1={_a_last/(_a1+1e-12):.6f}", _a1, _a_last),
+        (None,         f"(a) Full neighbourhood cloud",                _a1, _a2),
+        (_zoom_mid,    f"(b) Mid-zoom  ±{_zoom_mid:.2f}",             _a1, _a2),
+        (_zoom_tight,  f"(c) Ellipse axes  a₁={_a1:.3f}  a₂={_a2:.3f}",  _a1, _a2),
+        (_zoom_tight,  f"(d) Mid axis  a_mid={_a_mid:.3f}\na_mid/a₁={_a_mid/(_a1+1e-12):.3f}", _a1, _a_mid),
+        (_zoom_tight,  f"(e) Last axis  a_last={_a_last:.2e}\na_last/a₁={_a_last/(_a1+1e-12):.2e}", _a1, _a_last),
     ]
 
     # MC samples — plain colour, no OOD matching
@@ -769,27 +783,27 @@ def _draw_geometry_figure(
         if ood_attr_map is not None:
             if _has.any():
                 _ax.scatter(_neigh_2d[_has, 0], _neigh_2d[_has, 1],
-                            s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
+                            s=5, alpha=0.30, color=_VC['knn_ood1'], linewidths=0, zorder=1,
                             label=f"KNN ({ood_attr_name}=1)")
             if _no.any():
                 _ax.scatter(_neigh_2d[_no, 0], _neigh_2d[_no, 1],
-                            s=8, alpha=0.35, color="#ffaa00", linewidths=0, zorder=2,
+                            s=8, alpha=0.40, color=_VC['knn_ood0'], linewidths=0, zorder=2,
                             label=f"KNN ({ood_attr_name}=0)")
         else:
             _ax.scatter(_neigh_2d[_mask, 0], _neigh_2d[_mask, 1],
-                        s=5, alpha=0.22, color="#aaaaaa", linewidths=0, zorder=1,
+                        s=5, alpha=0.30, color=_VC['knn_plain'], linewidths=0, zorder=1,
                         label="KNN neighbours")
 
-        # MC samples — single colour, no count in label
+        # MC samples
         if _mask_mc.any():
             _ax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                        s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                        s=6, alpha=0.45, color=_VC['mc'], marker="o", linewidths=0,
                         zorder=3, label=f"MC samples (n={n_mc})")
 
         # Isotropic circle
         _ax.add_patch(_plt.Circle(
             (_anchor_2d[0], _anchor_2d[1]), sigma,
-            fill=False, edgecolor="tab:blue", linewidth=2.0,
+            fill=False, edgecolor=_VC['iso_circle'], linewidth=2.0,
             linestyle=(0, (4, 2)), alpha=0.95, zorder=4,
             label=f"Iso circle  r=σ={sigma}",
         ))
@@ -797,13 +811,13 @@ def _draw_geometry_figure(
         _ax.add_patch(_Ellipse(
             (_anchor_2d[0], _anchor_2d[1]),
             width=2.0 * _ea1, height=2.0 * _ea2,
-            fill=False, edgecolor="tab:orange", linewidth=2.0,
+            fill=False, edgecolor=_VC['mani_ellip'], linewidth=2.0,
             linestyle="solid", alpha=0.95, zorder=4,
             label=f"Manifold ellipse  a1={_ea1:.4f}",
         ))
-        # Anchor
-        _ax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
-                    c="black", edgecolors="white", linewidths=1.0, zorder=5, label="Anchor")
+        # Anchor — always black star
+        _ax.scatter(_anchor_2d[0], _anchor_2d[1], s=180, marker="*",
+                    c=_VC['anchor'], edgecolors="white", linewidths=0.8, zorder=5, label="Anchor")
 
         if _zr is None:
             _ax.set_xlim(float(np.min(_x_all)) - _pad, float(np.max(_x_all)) + _pad)
@@ -825,11 +839,11 @@ def _draw_geometry_figure(
                 fontsize=7.5, framealpha=0.9,
                 bbox_to_anchor=(0.5, -0.08), borderaxespad=0)
 
-    _ood_tag = f"  |  OOD: {ood_attr_name}=1" if ood_attr_name else ""
+    _ood_line = f"\nOOD: {ood_attr_name}=1" if ood_attr_name else ""
     _fig.suptitle(
-        f"{space_label} Manifold Ellipsoid Geometry  (idx={sample_idx})"
-        f"  |  σ={sigma}  |  λ_max={_lambda_max:.4f}  √λ_max={_sqrt_lmax:.4f}"
-        f"  |  α=σ/√λ_max={_alpha:.4f}{_ood_tag}",
+        f"{space_label} Manifold Smoothing Geometry   σ={sigma}"
+        f"\nλ_max={_lambda_max:.4f}   √λ_max={_sqrt_lmax:.4f}   α=σ/√λ_max={_alpha:.4f}"
+        f"{_ood_line}",
         fontsize=11, y=1.02,
     )
     _plt.tight_layout()
@@ -1018,9 +1032,9 @@ def save_sample_visualization(
             _zoom_mid = 3 * sigma
             _zoom_tight = sigma
             _zoom_specs = [
-                (None,        f"[A] Full cloud  σ/std={sigma/(_pc1_std+1e-12):.3f}"),
-                (_zoom_mid,   f"[B] Mid-zoom ±3σ={_zoom_mid:.4f}"),
-                (_zoom_tight, f"[C] Tight ±σ={sigma:.4f}"),
+                (None,        f"(a) Full noise cloud  σ/std={sigma/(_pc1_std+1e-12):.2f}"),
+                (_zoom_mid,   f"(b) Mid-zoom  ±3σ={_zoom_mid:.3f}"),
+                (_zoom_tight, f"(c) Tight zoom  ±σ={sigma:.3f}"),
             ]
 
             # MC OOD colouring — disabled (per-sample Annoy queries slow); re-enable if needed
@@ -1066,16 +1080,16 @@ def save_sample_visualization(
 
                 # MC samples — single colour, no OOD split
                 _gax.scatter(_mc_2d[_mask_mc, 0], _mc_2d[_mask_mc, 1],
-                             s=6, alpha=0.40, color="#4c78a8", marker="o", linewidths=0,
+                             s=6, alpha=0.45, color=_VC['mc'], marker="o", linewidths=0,
                              zorder=3, label=f"Iso MC samples (n={_N_mc})")
                 # iso circle
                 _gax.add_patch(_plt_geom.Circle(
                     (_anchor_2d[0], _anchor_2d[1]), sigma,
-                    fill=False, edgecolor="tab:blue", linewidth=2,
+                    fill=False, edgecolor=_VC['iso_circle'], linewidth=2,
                     linestyle=(0, (4, 2)), alpha=0.9, zorder=4, label=f"σ-circle  r={sigma}",
                 ))
-                _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=160, marker="*",
-                             c="gold", edgecolors="black", linewidths=0.8, zorder=5, label="Anchor")
+                _gax.scatter(_anchor_2d[0], _anchor_2d[1], s=180, marker="*",
+                             c=_VC['anchor'], edgecolors="white", linewidths=0.8, zorder=5, label="Anchor")
                 if _zr is None:
                     _gax.set_xlim(float(np.min(_mc_2d[:, 0])) - _mc_pad, float(np.max(_mc_2d[:, 0])) + _mc_pad)
                     _gax.set_ylim(float(np.min(_mc_2d[:, 1])) - _mc_pad, float(np.max(_mc_2d[:, 1])) + _mc_pad)
@@ -1095,10 +1109,10 @@ def save_sample_visualization(
                          fontsize=8, framealpha=0.9,
                          bbox_to_anchor=(0.5, -0.08), borderaxespad=0)
 
-            _ood_tag = f"  |  OOD: {getattr(cfg.dataset, 'ood_attribute', None)}=1" if ood_attr_map is not None and getattr(cfg.dataset, 'ood_attribute', None) else ""
+            _ood_attr_iso = getattr(cfg.dataset, 'ood_attribute', None) if ood_attr_map is not None else None
+            _ood_line_iso = f"\nOOD: {_ood_attr_iso}=1" if _ood_attr_iso else ""
             _gfig.suptitle(
-                f"Isotropic Circle Geometry  (idx={sample_idx})"
-                f"  |  σ={sigma}  |  MC samples={_N_mc}{_ood_tag}",
+                f"Isotropic Smoothing Geometry   σ={sigma}   MC samples={_N_mc}{_ood_line_iso}",
                 fontsize=11,
             )
             _plt_geom.tight_layout()
@@ -1382,18 +1396,15 @@ def save_sample_visualization(
     # ------------------------------------------------------------------
     # Title with certification result
     # ------------------------------------------------------------------
-    cert_status = "ABSTAIN" if abstained else ("CORRECT" if pred == label else "WRONG")
+    smoothing_type = "Manifold" if cfg.smoothing.use_manifold else "Isotropic"
     pred_label = "smile" if pred == 1 else "no smile"
     true_label = "smile" if label == 1 else "no smile"
-    smoothing_type = "Manifold" if cfg.smoothing.use_manifold else "Isotropic"
-    _ood_title = ""
     _ood_attr_name = getattr(cfg.dataset, "ood_attribute", None) if hasattr(cfg, "dataset") else None
-    if _ood_attr_name:
-        _ood_title = f"  |  OOD: {_ood_attr_name}=1"
+    _ood_line_samp = f"\nOOD: {_ood_attr_name}=1" if _ood_attr_name else ""
     fig.suptitle(
-        f"Sample {sample_idx} | {cfg.smoothing.mode.capitalize()} {smoothing_type} | "
-        f"σ={sigma} | True: {true_label} | Pred: {pred_label} | "
-        f"Radius: {radius:.4f} | {cert_status}{_ood_title}",
+        f"{cfg.smoothing.mode.capitalize()} {smoothing_type} Smoothing   σ={sigma}\n"
+        f"True: {true_label}   Predicted: {pred_label}"
+        f"{_ood_line_samp}",
         fontsize=11, fontweight="bold",
     )
 
