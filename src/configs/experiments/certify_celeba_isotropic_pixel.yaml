@@ -16,7 +16,7 @@ dataset:
   num_workers: 4
   subset_size: 100
   # OOD attribute — must match certify_celeba_pixel.yaml for fair iso vs manifold comparison
-  ood_attribute: Big_Lips
+  ood_attribute: Rosy_Cheeks
   ood_balanced: true
   ood_seed: 73
   split_seed: 73               # must match training split_seed to ensure same train/test split
