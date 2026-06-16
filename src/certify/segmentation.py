@@ -159,12 +159,17 @@ def segcertify(
 # ── Evaluation metrics ────────────────────────────────────────────────────────
 
 def pixel_accuracy(pred: np.ndarray, gt: np.ndarray, certified: Optional[np.ndarray] = None) -> float:
-    """Per-pixel accuracy. If certified mask provided, counts only certified pixels."""
+    """Per-pixel accuracy.
+
+    Without certified mask: correct / all pixels.
+    With certified mask:    (certified AND correct) / all pixels.
+      Abstained pixels count as wrong — denominator is always total pixels.
+    """
+    total = pred.size
+    if total == 0:
+        return 0.0
     if certified is not None:
-        mask = certified
-        if mask.sum() == 0:
-            return 0.0
-        return float((pred[mask] == gt[mask]).mean())
+        return float(int(((pred == gt) & certified).sum()) / total)
     return float((pred == gt).mean())
 
 
@@ -175,16 +180,17 @@ def mean_iou(
     certified: Optional[np.ndarray] = None,
     ignore_abstain: bool = True,
 ) -> float:
-    """Compute mIoU across all classes, optionally restricted to certified pixels.
+    """Compute mIoU across all classes.
 
-    Skips classes not present in either pred or gt for this image.
+    Without certified mask: standard mIoU over all pixels.
+    With certified mask:    certified mIoU — abstained pixels are treated as a
+      wrong prediction (class -1), so they hurt both precision and recall.
+      Denominator is always all pixels (via union).
     """
     if certified is not None and ignore_abstain:
-        mask = certified
-        if mask.sum() == 0:
-            return 0.0
-        p = pred[mask]
-        g = gt[mask]
+        # Abstained pixels get prediction = -1 (no valid class) → never match gt
+        p = np.where(certified, pred, -1).flatten()
+        g = gt.flatten()
     else:
         p = pred.flatten()
         g = gt.flatten()
