@@ -278,6 +278,10 @@ CELEBA_STD = [0.5, 0.5, 0.5]
 
 def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
     """Get train and test samples using existing dataloader logic."""
+    # Pass ood_exclude_attribute so the dataloader populates certify_ood_samples
+    # (train-partition attr=1 — truly unseen OOD, excluded from training and val/test).
+    ood_attr_for_certify = getattr(cfg.dataset, "ood_attribute", None)
+
     dataset_cfg = SmileDatasetConfig(
         name=cfg.dataset.name,
         root_dir=cfg.dataset.root_dir,
@@ -291,6 +295,7 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
         train_ratio=cfg.dataset.train_ratio,
         val_ratio=cfg.dataset.val_ratio,
         split_seed=cfg.dataset.split_seed,
+        ood_exclude_attribute=ood_attr_for_certify,
     )
     
     loader_cfg = SmileDataloaderConfig(batch_size=64, shuffle_train=False, pin_memory=True)
