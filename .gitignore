@@ -35,6 +35,10 @@ output_v1/
 
 # Generated ANN index artifacts
 notebooks/*.ann
+notebooks/*.pdf
+notebooks/certify_ood_latex/*.csv
+notebooks/certify_ood_csv/*.csv
+notebooks/certify_ood_latex/*.tex
 notebooks/*_indexmap.json
 
 *.ann
