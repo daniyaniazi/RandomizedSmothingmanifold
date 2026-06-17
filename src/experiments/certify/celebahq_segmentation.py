@@ -358,9 +358,9 @@ def save_seg_visualization(
     sample_idx: int,
     img_tensor: torch.Tensor,       # (C, H, W)
     gt_mask: torch.Tensor,          # (H, W)
-    pred_mask: np.ndarray,          # (H, W) majority vote
-    cert_result: SegCertResult,
-    nn_imgs: List[torch.Tensor],    # neighbour raw images (no masks — not needed)
+    pred_mask: np.ndarray,          # (H, W) clean single-pass prediction
+    cert_result: SegCertResult,     # certified mask from MC voting
+    nn_imgs: List[torch.Tensor],    # neighbour raw images
     noisy_imgs: List[torch.Tensor], # noisy samples for display
     noisy_masks: List[np.ndarray],  # masks for noisy samples
     is_manifold: bool,
@@ -369,20 +369,23 @@ def save_seg_visualization(
     pixel_index=None,
     smoother=None,
     cfg=None,
+    recon_pred_mask: Optional[np.ndarray] = None,  # BiSeNet on PCA recon (manifold only)
 ) -> None:
     """CelebA-style row layout.
 
     MANIFOLD:
       Row 0: Original | GT mask | Certified mask (grey=abstain) | Abstain overlay
       Row 1: PCA recon | Recon seg mask | — | —
+    MANIFOLD:
+      Row 0: Original | GT mask | Clean pred mask | —
+      Row 1: PCA recon | Clean pred mask on recon | Certified mask (MC voting) | —
       Row 2: Mani noisy seg 1 | Mani noisy seg 2 | Mani noisy seg 3 | Mani noisy seg 4
       Row 3: Mani noisy img 1 | Mani noisy img 2 | Mani noisy img 3 | Mani noisy img 4
-      Row 4: NN seg 1 | NN seg 2 | NN seg 3 | NN seg 4
-      Row 5: NN img 1 | NN img 2 | NN img 3 | NN img 4
+      Row 4: NN img 1 | NN img 2 | NN img 3 | NN img 4
 
     ISOTROPIC:
-      Row 0: Original | GT mask | Certified mask (grey=abstain) | Abstain overlay
-      Row 1: Clean pred mask | — | — | —
+      Row 0: Original | GT mask | Clean pred mask | —
+      Row 1: Certified mask (MC voting) | — | — | —
       Row 2: Iso noisy seg 1 | Iso noisy seg 2 | Iso noisy seg 3 | Iso noisy seg 4
       Row 3: Iso noisy img 1 | Iso noisy img 2 | Iso noisy img 3 | Iso noisy img 4
     """
@@ -420,15 +423,19 @@ def save_seg_visualization(
         ax.axis("off")
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
+    cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())  # MC majority vote mask
+    cert_rgb[~cert_result.certified] = [255, 255, 255]     # white = abstain
 
-    # ── Row 0: Original | GT mask | — | — ─────────────────────────────────────
-    _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original", "gold")
+    # ── Row 0: Original | GT mask | Clean pred mask | — ──────────────────────
+    _lbl(0, "Original &\nClean pred")
+    _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
+    _show(axes[0, 2], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
 
-    # ── Row 1: PCA recon (mani) | Clean pred mask | Certified mask | — ────────
-    cert_rgb = _mask_to_rgb(pred_mask.copy())
-    cert_rgb[~cert_result.certified] = [255, 255, 255]  # white = abstain
+    # ── Row 1 ─────────────────────────────────────────────────────────────────
     if is_manifold and pca_cached is not None:
+        # Manifold: PCA recon | pred mask on recon | certified mask
+        _lbl(1, "PCA Recon &\nCertified")
         try:
             from src.smoothing.pca import whiten, unwhiten
             _qv = img_tensor.numpy().flatten().astype(np.float32)
@@ -437,14 +444,15 @@ def save_seg_visualization(
         except Exception:
             _recon_t = img_tensor
         _show(axes[1, 0], _tensor_to_pil(_recon_t), "PCA Recon")
-        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+        # Use recon_pred_mask if provided, else fall back to clean pred
+        _recon_pred = recon_pred_mask if recon_pred_mask is not None else pred_mask
+        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(_recon_pred)), "Pred on recon")
         _show(axes[1, 2], Image.fromarray(cert_rgb),
               f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
     else:
-        _lbl(1, "Clean pred &\nCertified")
-        _show(axes[1, 0], _tensor_to_pil(img_tensor), "Original (iso)")
-        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
-        _show(axes[1, 2], Image.fromarray(cert_rgb),
+        # Isotropic: certified mask only
+        _lbl(1, "Certified")
+        _show(axes[1, 0], Image.fromarray(cert_rgb),
               f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
 
     # ── Row 2: Noisy segmentation masks (4 MC samples) ────────────────────────
@@ -804,23 +812,44 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
 
         # ── Visualisation (first N samples) ───────────────────────────────────
         if cfg.output.save_visualizations and idx < cfg.output.num_viz_samples:
-            # Generate a few noisy samples for display
-            noisy_imgs, noisy_masks = [], []
             _mean_n = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
             _std_n  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+            # Clean prediction — single forward pass on original image
+            with torch.no_grad():
+                x_clean = ((img_tensor - _mean_n) / _std_n).unsqueeze(0).to(device)
+                clean_out, _, _ = net(x_clean)
+                clean_pred_mask = clean_out.argmax(1).squeeze(0).cpu().numpy()
+
+            # PCA recon prediction (manifold only) — BiSeNet on reconstructed image
+            recon_pred_mask = None
+            if cfg.smoothing.use_manifold and cached_pca is not None:
+                try:
+                    from src.smoothing.pca import whiten, unwhiten
+                    _qv = img_tensor.numpy().flatten().astype(np.float32)
+                    _rv = unwhiten(whiten(_qv, cached_pca.pca), cached_pca.pca)
+                    _recon_t = torch.from_numpy(_rv.reshape(img_tensor.shape)).float()
+                    with torch.no_grad():
+                        x_r = ((_recon_t - _mean_n) / _std_n).unsqueeze(0).to(device)
+                        r_out, _, _ = net(x_r)
+                        recon_pred_mask = r_out.argmax(1).squeeze(0).cpu().numpy()
+                except Exception:
+                    pass
+
+            # Noisy MC samples for display
+            noisy_imgs, noisy_masks = [], []
             for _ in range(4):
                 ni = _sample_noisy(img_tensor, smoother, pixel_index)
                 noisy_imgs.append(ni)
                 x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
                 with torch.no_grad():
                     nm_out, _, _ = net(x_n)
-                    nm = nm_out.argmax(1).squeeze(0).cpu().numpy()
-                noisy_masks.append(nm)
+                    noisy_masks.append(nm_out.argmax(1).squeeze(0).cpu().numpy())
 
-            # Nearest neighbours from index (images only — no mask inference needed)
+            # Nearest neighbours
             nn_imgs = []
             if pixel_index is not None and hasattr(pixel_index, "index"):
-                qvec = img_tensor.numpy().flatten().astype(np.float32)
+                qvec   = img_tensor.numpy().flatten().astype(np.float32)
                 nn_ids = pixel_index.index.get_nns_by_vector(qvec.tolist(), 4, include_distances=False)
                 for nid in nn_ids[:4]:
                     if hasattr(pixel_index, "filenames"):
@@ -831,7 +860,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
                 sample_idx=idx,
                 img_tensor=img_tensor,
                 gt_mask=gt_mask,
-                pred_mask=cert.pred_mask,
+                pred_mask=clean_pred_mask,
                 cert_result=cert,
                 nn_imgs=nn_imgs,
                 noisy_imgs=noisy_imgs,
@@ -842,6 +871,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
                 pixel_index=pixel_index,
                 smoother=smoother,
                 cfg=cfg,
+                recon_pred_mask=recon_pred_mask,
             )
 
         # ── Checkpoint ────────────────────────────────────────────────────────
@@ -1020,6 +1050,12 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
         gt_mask = _load_mask(mask_dir, image_id, image_size)
         gt_np   = gt_mask.numpy()
 
+        # Clean prediction — single forward pass, no noise (shared across all sigmas)
+        with torch.no_grad():
+            x_clean_viz = ((img_tensor - _mean_n) / _std_n).unsqueeze(0).to(device)
+            clean_out_viz, _, _ = net(x_clean_viz)
+            clean_pred_mask = clean_out_viz.argmax(1).squeeze(0).cpu().numpy()
+
         # ── Pre-compute PCA once (manifold) — shared across all sigmas ────────
         flat = img_tensor.numpy().flatten().astype(np.float32)
         # Use sigma=1.0 as placeholder for PCA (only kNN structure matters)
@@ -1083,7 +1119,8 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
                 save_seg_visualization(
                     viz_dir=state["paths"].experiment_dir / "visualizations",
                     sample_idx=idx, img_tensor=img_tensor, gt_mask=gt_mask,
-                    pred_mask=cert.pred_mask, cert_result=cert,
+                    pred_mask=clean_pred_mask,  # clean single-pass prediction
+                    cert_result=cert,           # certified mask from MC voting
                     nn_imgs=[],
                     noisy_imgs=noisy_imgs, noisy_masks=noisy_masks,
                     is_manifold=cfg.smoothing.use_manifold, sigma=sigma,
@@ -1234,6 +1271,14 @@ def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
             cert = segcertify(counts_n0, counts_n, sigma, cfg.smoothing.tau,
                               cfg.alpha_conf, correction="holm")
 
+            # Clean prediction — single forward pass, no noise
+            _mean_n_v = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            _std_n_v  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            with torch.no_grad():
+                x_cl = ((img_tensor - _mean_n_v) / _std_n_v).unsqueeze(0).to(device)
+                cl_out, _, _ = net(x_cl)
+                clean_pred_mask_v = cl_out.argmax(1).squeeze(0).cpu().numpy()
+
             # Noisy display samples
             noisy_imgs, noisy_masks = [], []
             for _ in range(4):
@@ -1257,8 +1302,8 @@ def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
                 sample_idx=idx,
                 img_tensor=img_tensor,
                 gt_mask=gt_mask,
-                pred_mask=cert.pred_mask,
-                cert_result=cert,
+                pred_mask=clean_pred_mask_v,  # clean single-pass prediction
+                cert_result=cert,             # certified mask from MC voting
                 nn_imgs=nn_imgs,
                 noisy_imgs=noisy_imgs,
                 noisy_masks=noisy_masks,
