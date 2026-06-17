@@ -52,6 +52,9 @@ class SmileDataBundle:
     test_loader: DataLoader
     class_counts: Dict[str, int]
     pos_weight: float
+    # OOD certification samples: train partition attr=1 (excluded from training,
+    # not used for model selection to truly unseen OOD). None when no ood_exclude_attribute.
+    certify_ood_samples: Optional[List] = None
 
 
 def _to_label(value: str) -> int:
@@ -238,8 +241,14 @@ def build_smile_dataloaders(
             seed=dataset_cfg.split_seed,
         )
 
-    # OOD exclusion: remove images where ood_exclude_attribute=1 from all splits.
-    # The OOD classifier is trained on the non-OOD population only.
+    # OOD exclusion with no-leakage setup:
+    #
+    #   train:           attr=0, train partition  : classifier trains on non-OOD only
+    #   val:             attr=1, val partition    : early stopping on OOD
+    #   test:            attr=1, test partition   : classifier test_acc (held-out, not used in training/selection)
+    #   certify_ood:     attr=1, TRAIN partition  : certification (excluded from training AND from val/test)
+    #                    : truly unseen: model never trained on them, not used for model selection
+    certify_ood_samples: Optional[List] = None
     ood_attr = getattr(dataset_cfg, "ood_exclude_attribute", None)
     if ood_attr:
         attr_path = root_dir / dataset_cfg.annotation_file
@@ -252,18 +261,26 @@ def build_smile_dataloaders(
         attr_map: Dict[str, int] = {}
         for row in attr_lines[2:]:
             parts = row.split()
-            attr_map[parts[0]] = int(parts[1 + attr_idx])  # -1 or 1
+            attr_map[parts[0]] = int(parts[1 + attr_idx])
 
-        def _keep(sample: Sample) -> bool:
-            return attr_map.get(Path(sample[0]).name, -1) != 1
+        def _is_ood(sample: Sample) -> bool:
+            return attr_map.get(Path(sample[0]).name, -1) == 1
 
-        n_before = len(train_samples) + len(val_samples) + len(test_samples)
-        train_samples = [s for s in train_samples if _keep(s)]
-        val_samples   = [s for s in val_samples   if _keep(s)]
-        test_samples  = [s for s in test_samples  if _keep(s)]
-        n_after = len(train_samples) + len(val_samples) + len(test_samples)
-        print(f"OOD exclusion '{ood_attr}=1': {n_before - n_after} samples removed  "
-              f"(train={len(train_samples)}, val={len(val_samples)}, test={len(test_samples)})")
+        # Collect train-partition attr=1 BEFORE removing them for  certification pool samples (unseen OOD)
+        certify_ood_samples = [s for s in train_samples if _is_ood(s)]
+
+        # Train: attr=0 only
+        train_samples = [s for s in train_samples if not _is_ood(s)]
+        # Val:   attr=1 only (early stopping on OOD)
+        val_samples   = [s for s in val_samples   if _is_ood(s)]
+        # Test:  attr=1 only (classifier test_acc evaluation)
+        test_samples  = [s for s in test_samples  if _is_ood(s)]
+
+        print(f"OOD setup '{ood_attr}':  "
+              f"train={len(train_samples)} (attr=0)  "
+              f"val={len(val_samples)} (attr=1)  "
+              f"test={len(test_samples)} (attr=1, test partition)  "
+              f"certify_ood={len(certify_ood_samples)} (attr=1, train partition : unseen)")
 
     train_transform, eval_transform = _build_transforms(model_cfg.input_size)
     train_dataset = SmileImageDataset(train_samples, transform=train_transform)
@@ -310,4 +327,5 @@ def build_smile_dataloaders(
         test_loader=test_loader,
         class_counts=class_counts,
         pos_weight=float(pos_weight),
+        certify_ood_samples=certify_ood_samples,
     )

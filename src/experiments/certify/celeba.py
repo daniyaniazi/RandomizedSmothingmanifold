@@ -298,8 +298,17 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
     
     bundle = build_smile_dataloaders(dataset_cfg, loader_cfg, model_cfg)
     train_samples = list(bundle.train_loader.dataset.samples)
-    test_samples = list(bundle.test_loader.dataset.samples)
-    
+
+    # OOD certification: use train-partition attr=1 samples (truly unseen OOD).
+    # These were excluded from training and not used for model selection (val/test).
+    # Here it Falls back to standard test split when no ood_exclude_attribute for normal certifciation pipeline
+    if bundle.certify_ood_samples is not None:
+        test_samples = bundle.certify_ood_samples
+        _log(f"OOD certification: using train-partition attr=1 samples "
+             f"({len(test_samples)} unseen OOD samples)")
+    else:
+        test_samples = list(bundle.test_loader.dataset.samples)
+
     _log(f"Train samples: {len(train_samples)}, Test samples: {len(test_samples)}")
     return train_samples, test_samples
 
