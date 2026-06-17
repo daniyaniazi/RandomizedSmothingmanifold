@@ -278,10 +278,9 @@ CELEBA_STD = [0.5, 0.5, 0.5]
 
 def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
     """Get train and test samples using existing dataloader logic."""
-    # Pass ood_exclude_attribute so the dataloader populates certify_ood_samples
-    # (train-partition attr=1 — truly unseen OOD, excluded from training and val/test).
-    ood_attr_for_certify = getattr(cfg.dataset, "ood_attribute", None)
-
+    # Do NOT pass ood_exclude_attribute here — train_samples must be the FULL
+    # train partition so the index filenames match the built index (162,079 vectors).
+    # certify_ood_samples (train-partition attr=1) is extracted manually below.
     dataset_cfg = SmileDatasetConfig(
         name=cfg.dataset.name,
         root_dir=cfg.dataset.root_dir,
@@ -295,26 +294,37 @@ def get_train_test_samples(cfg: CertifyConfig) -> Tuple[List[Tuple[str, int]], L
         train_ratio=cfg.dataset.train_ratio,
         val_ratio=cfg.dataset.val_ratio,
         split_seed=cfg.dataset.split_seed,
-        ood_exclude_attribute=ood_attr_for_certify,
     )
     
     loader_cfg = SmileDataloaderConfig(batch_size=64, shuffle_train=False, pin_memory=True)
     model_cfg = SmileModelConfig(name=cfg.model.name, pretrained=False, dropout=0.0, input_size=cfg.model.input_size)
     
     bundle = build_smile_dataloaders(dataset_cfg, loader_cfg, model_cfg)
+    # Full train partition — must match the built index exactly (all 162,079 vectors)
     train_samples = list(bundle.train_loader.dataset.samples)
 
-    # OOD certification: use train-partition attr=1 samples (truly unseen OOD).
-    # These were excluded from training and not used for model selection (val/test).
-    # Here it Falls back to standard test split when no ood_exclude_attribute for normal certifciation pipeline
-    if bundle.certify_ood_samples is not None:
-        test_samples = bundle.certify_ood_samples
-        _log(f"OOD certification: using train-partition attr=1 samples "
-             f"({len(test_samples)} unseen OOD samples)")
+    # OOD certification: extract train-partition attr=1 samples manually.
+    # These are truly unseen (excluded from OOD classifier training, not in val/test).
+    # We do NOT filter train_samples itself so the index filenames stay consistent.
+    ood_attr_certify = getattr(cfg.dataset, "ood_attribute", None)
+    if ood_attr_certify:
+        attr_path = Path(cfg.dataset.root_dir) / cfg.dataset.annotation_file
+        lines = [l.strip() for l in attr_path.read_text().splitlines() if l.strip()]
+        attr_names = lines[1].split()
+        if ood_attr_certify in attr_names:
+            aidx = attr_names.index(ood_attr_certify)
+            attr_map = {row.split()[0]: int(row.split()[1 + aidx])
+                        for row in lines[2:] if len(row.split()) > aidx + 1}
+            test_samples = [(p, l) for p, l in train_samples
+                            if attr_map.get(Path(p).name, -1) == 1]
+            _log(f"OOD certification: {len(test_samples)} train-partition attr=1 samples "
+                 f"(index consistent — full {len(train_samples)} train vectors kept)")
+        else:
+            test_samples = list(bundle.test_loader.dataset.samples)
     else:
         test_samples = list(bundle.test_loader.dataset.samples)
 
-    _log(f"Train samples: {len(train_samples)}, Test samples: {len(test_samples)}")
+    _log(f"Train samples (index): {len(train_samples)}, Certify samples: {len(test_samples)}")
     return train_samples, test_samples
 
 
