@@ -22,15 +22,21 @@ fi
 echo "Running on: $(hostname)"
 echo "GPU: $CUDA_VISIBLE_DEVICES"
 
-# Parse optional --subset arg from sbatch command line
+# Parse optional args
 SUBSET=""
-if [[ "${1:-}" == "--subset" ]]; then
-    SUBSET="--subset $2"
-fi
+VIZONLY=""
+for arg in "$@"; do
+    case "$arg" in
+        --subset)   SUBSET="--subset ${2}"; shift 2 ;;
+        --viz-only) VIZONLY="--viz-only" ;;
+    esac
+done
 
 python -m src.experiments.inference.segmentation.celebahq_segmentation \
-    --checkpoint output/pretrained_model/bisenet_celebahq/79999_iter.pth \
-    --data-root  /BS/dniazi_thesis/static00/CelebAMask-HQ/CelebAMask-HQ \
-    --output-dir output/segmentation/celebahq/baseline \
-    --num-viz    10 \
-    $SUBSET
+    --checkpoint  output/pretrained_model/bisenet_celebahq/79999_iter.pth \
+    --data-root   /BS/dniazi_thesis/static00/CelebAMask-HQ/CelebAMask-HQ \
+    --output-dir  output/segmentation/celebahq/baseline \
+    --num-viz     10 \
+    --pixel-index output/segmentation/celebahq/index/pixel/annoy/euclidean/index.ann \
+    --knn-k       500 \
+    $SUBSET $VIZONLY

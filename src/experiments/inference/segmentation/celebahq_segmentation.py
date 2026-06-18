@@ -67,38 +67,96 @@ def _log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def save_viz_samples(net, test_samples, mask_dir, image_size, device, viz_dir, n_viz):
-    """Save side-by-side (original | GT mask | predicted mask) for first n_viz images."""
+def save_viz_samples(net, test_samples, mask_dir, image_size, device, viz_dir, n_viz,
+                     pixel_index=None, knn_k=500, eps_eig=1e-6):
+    """Save visualization for first n_viz images.
+
+    Row 1: GT mask | Original | Predicted mask (clean)
+    Row 2: GT mask | Original | Predicted mask (clean) | PCA recon | Predicted mask on recon
+           (row 2 only when pixel_index provided — same PCA as certification pipeline)
+    """
     try:
         import matplotlib.pyplot as plt
     except ImportError:
         _log("matplotlib not available — skipping visualizations")
         return
 
+    plt.rcParams.update({
+        'font.family': 'serif', 'font.size': 10,
+        'axes.spines.top': False, 'axes.spines.right': False,
+    })
+
     viz_dir.mkdir(parents=True, exist_ok=True)
     tf = build_seg_transform(image_size)
 
-    _log(f"Saving {n_viz} visualization samples to {viz_dir} …")
+    # PCA modules — same as certification pipeline
+    use_pca = pixel_index is not None
+    if use_pca:
+        try:
+            from src.smoothing.manifold import ManifoldSmoother
+            from src.smoothing.pca import whiten, unwhiten
+            _pca_smoother = ManifoldSmoother(sigma=1.0, index=pixel_index,
+                                             knn_k=knn_k, eps_eig=eps_eig)
+        except Exception as e:
+            _log(f"PCA smoother init failed: {e}")
+            use_pca = False
+
+    _log(f"Saving {n_viz} visualizations (PCA={'yes' if use_pca else 'no'}) …")
+
     for img_path, image_id in test_samples[:n_viz]:
-        img = Image.open(img_path).convert("RGB")
-        img_t = tf(img)                                    # (C, H, W) [0,1]
+        img   = Image.open(img_path).convert("RGB")
+        img_t = tf(img)
+        gt    = _load_mask(mask_dir, image_id, image_size).numpy().astype("int32")
+
+        # Clean prediction
         inp = ((img_t - _BISENET_MEAN) / _BISENET_STD).unsqueeze(0).to(device)
         with torch.no_grad():
             out, _, _ = net(inp)
-            pred = out.argmax(1).squeeze(0).cpu().numpy().astype("int32")
+            pred_clean = out.argmax(1).squeeze(0).cpu().numpy().astype("int32")
 
-        gt = _load_mask(mask_dir, image_id, image_size).numpy().astype("int32")
+        # PCA reconstruction + prediction
+        recon_t      = None
+        pred_recon   = None
+        if use_pca:
+            try:
+                flat = img_t.numpy().flatten().astype("float32")
+                cached = _pca_smoother.compute_pca(flat)
+                rv = unwhiten(whiten(flat, cached.pca), cached.pca)
+                recon_t = torch.from_numpy(rv.reshape(img_t.shape)).float()
+                x_r = ((recon_t - _BISENET_MEAN) / _BISENET_STD).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    r_out, _, _ = net(x_r)
+                    pred_recon = r_out.argmax(1).squeeze(0).cpu().numpy().astype("int32")
+            except Exception as e:
+                _log(f"  PCA failed for {image_id}: {e}")
+                use_pca_this = False
+            else:
+                use_pca_this = True
+        else:
+            use_pca_this = False
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-        axes[0].imshow(_tensor_to_pil(img_t))
-        axes[0].set_title("Original", fontsize=11)
-        axes[1].imshow(Image.fromarray(_mask_to_rgb(gt)))
-        axes[1].set_title("GT mask", fontsize=11)
-        axes[2].imshow(Image.fromarray(_mask_to_rgb(pred)))
-        axes[2].set_title("Predicted mask", fontsize=11)
-        for ax in axes:
+        # ── Layout ───────────────────────────────────────────────────────────
+        n_cols = 5 if use_pca_this else 3
+        fig, axes = plt.subplots(1, n_cols, figsize=(4 * n_cols, 4.5))
+        for ax in axes.flat:
             ax.axis("off")
-        fig.suptitle(f"Image ID: {image_id}", fontsize=12, fontweight="bold")
+
+        def _show(ax, img_arr, title):
+            ax.imshow(img_arr)
+            ax.set_title(title, fontsize=9, pad=3)
+            ax.axis("off")
+
+        _show(axes[0], Image.fromarray(_mask_to_rgb(gt)),   "GT mask")
+        _show(axes[1], _tensor_to_pil(img_t),               "Original")
+        _show(axes[2], Image.fromarray(_mask_to_rgb(pred_clean)), "Predicted mask")
+
+        if use_pca_this:
+            _show(axes[3], _tensor_to_pil(recon_t),
+                  f"PCA recon\n(k={knn_k} neighbours)")
+            _show(axes[4], Image.fromarray(_mask_to_rgb(pred_recon)),
+                  "Predicted mask\non PCA recon")
+
+        fig.suptitle(f"Image ID: {image_id}", fontsize=11, fontweight="bold")
         plt.tight_layout()
         fig.savefig(viz_dir / f"sample_{image_id}.png", dpi=120, bbox_inches="tight")
         plt.close(fig)
@@ -172,6 +230,12 @@ def main():
     p.add_argument("--output-dir",  default="output/segmentation/celebahq/baseline")
     p.add_argument("--num-viz",     type=int, default=10,
                    help="Save this many sample visualizations (0 to skip)")
+    p.add_argument("--pixel-index", type=str, default=None,
+                   help="Path to pixel index .ann — enables PCA recon row in visualizations")
+    p.add_argument("--knn-k",       type=int, default=500,
+                   help="kNN neighbours for PCA (default: 500, same as certification)")
+    p.add_argument("--viz-only",    action="store_true",
+                   help="Regenerate visualizations only — skip inference, metrics already exist")
     p.add_argument("--device",      default="cuda")
     args = p.parse_args()
 
@@ -192,17 +256,36 @@ def main():
     test_samples = [(str(img_dir / f"{i}.jpg"), i) for i in test_ids]
     _log(f"Test images: {len(test_samples)}  (IDs {test_ids[0]}–{test_ids[-1]})")
 
-    # Load model (reuses load_bisenet from certify script)
+    # Load model
     class _FakeCfg:
         class model:
             n_classes = args.n_classes
             checkpoint_path = args.checkpoint
     net = load_bisenet(_FakeCfg(), device)
 
-    # Visualizations first (fast, single-image loop)
+    # Load pixel index for PCA recon row (optional)
+    pixel_index = None
+    if args.pixel_index:
+        try:
+            from src.indexing.base import load_index
+            dim = 3 * args.image_size * args.image_size
+            pixel_index = load_index(dim=dim, index_path=args.pixel_index,
+                                     backend="annoy", metric="euclidean")
+            _log(f"Pixel index loaded: {pixel_index.index.get_n_items():,} vectors  "
+                 f"→ PCA recon enabled (knn_k={args.knn_k})")
+        except Exception as e:
+            _log(f"Could not load pixel index: {e}  (skipping PCA recon)")
+
+    # Visualizations
     if args.num_viz > 0:
         save_viz_samples(net, test_samples, mask_dir, args.image_size, device,
-                         out_dir / "visualizations", args.num_viz)
+                         out_dir / "visualizations", args.num_viz,
+                         pixel_index=pixel_index, knn_k=args.knn_k)
+
+    # --viz-only: skip inference and metrics, just regenerate visualizations
+    if args.viz_only:
+        _log("--viz-only: skipping inference. Visualizations saved.")
+        return
 
     _log("Running inference …")
     conf = evaluate(net, test_samples, mask_dir, args.image_size, args.n_classes, device)
