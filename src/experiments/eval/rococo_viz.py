@@ -150,17 +150,27 @@ def run_viz(
     cfg: RoCoCoConfig,
     ann_file: str,
     n_show: int = 10,
+    smoothed_image_embs: Optional[np.ndarray] = None,  # pre-computed smoothed embeddings
+    image_ids: Optional[List[str]] = None,
+    viz_dir: Optional[Path] = None,
+    pixel_index=None,
 ) -> None:
-    mode     = cfg.smoothing.mode
-    ann_stem = Path(ann_file).stem
+    mode      = cfg.smoothing.mode
+    ann_stem  = Path(ann_file).stem
     cache_dir = Path(cfg.embedding_cache_dir)
-    viz_dir   = _ROOT / cfg.output_dir / mode / "visualizations"
+
+    # Default viz dir: output/rococo/{mode}/sigma_{s}/visualizations/
+    if viz_dir is None:
+        sigma_str = f"sigma_{cfg.smoothing.sigma:.2f}".replace(".", "_")
+        viz_dir = _ROOT / cfg.output_dir / mode / sigma_str / "visualizations"
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     # Load embeddings
     img_cache  = torch.load(cache_dir / "image_embeddings.pt", map_location="cpu")
-    image_embs = img_cache["embeddings"].numpy().astype(np.float32)
-    image_ids  = img_cache["image_ids"]
+    raw_embs   = img_cache["embeddings"].numpy().astype(np.float32)
+    # Use pre-computed smoothed embeddings if provided (avoids re-smoothing)
+    image_embs = smoothed_image_embs if smoothed_image_embs is not None else raw_embs
+    image_ids  = image_ids if image_ids is not None else img_cache["image_ids"]
 
     cap_path   = cache_dir / f"{ann_stem}_captions.pt"
     cap_cache = torch.load(cap_path, map_location="cpu")
@@ -185,9 +195,8 @@ def run_viz(
     # Dataset for image paths and GT captions
     dataset = RoCoCoDataset(cfg.image_dir, cfg.annotation_dir, cfg.annotation_files)
 
-    # kNN index for manifold
-    pixel_index = None
-    if mode == "manifold":
+    # kNN index for manifold (use passed index if available, else load)
+    if pixel_index is None and mode == "manifold":
         from src.experiments.indexing.rococo_clip_images import build_rococo_clip_index
         pixel_index = build_rococo_clip_index(cfg, rebuild=False)
 

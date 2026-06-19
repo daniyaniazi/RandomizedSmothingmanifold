@@ -272,17 +272,31 @@ def evaluate_on_annotation(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _sigma_tag(s: float) -> str:
+    return f"sigma_{s:.2f}".replace(".", "_")
+
+
 def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
                    n_eval: Optional[int] = None) -> None:
+    """Run evaluation for all sigmas in cfg.smoothing.sigma_values (or single sigma).
+
+    Output structure:
+      output/rococo/{mode}/sigma_{s}/{ann_stem}_metrics.json
+    """
     mode = cfg.smoothing.mode
-    _log(f"RoCOCO eval  mode={mode}  sigma={cfg.smoothing.sigma}  "
+
+    # Resolve sigma list
+    if cfg.smoothing.sigma_values:
+        sigma_values = [float(s) for s in cfg.smoothing.sigma_values]
+    else:
+        sigma_values = [float(cfg.smoothing.sigma)]
+
+    _log(f"RoCOCO eval  mode={mode}  sigmas={sigma_values}  "
          f"knn_k={cfg.smoothing.knn_k}  n_samples={cfg.smoothing.n_samples}")
 
     cache_dir = Path(cfg.embedding_cache_dir)
-    out_dir   = _ROOT / cfg.output_dir / mode
-    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load image embeddings
+    # Load image embeddings once — shared across all sigmas and all annotations
     emb_path = cache_dir / "image_embeddings.pt"
     if not emb_path.exists():
         raise FileNotFoundError(f"Image embeddings not found: {emb_path}. "
@@ -291,88 +305,108 @@ def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
     image_embs = cache["embeddings"].numpy().astype(np.float32)
     image_ids  = cache["image_ids"]
 
-    # Subset for fast testing
     if n_eval is not None and n_eval < len(image_embs):
         image_embs = image_embs[:n_eval]
         image_ids  = image_ids[:n_eval]
-        _log(f"Eval subset: {n_eval} images (full set: {len(cache['image_ids'])})")
+        _log(f"Eval subset: {n_eval} images")
     _log(f"Image embeddings: {image_embs.shape}")
 
-    # Load kNN index for manifold mode
+    # Load kNN index once (manifold only)
     pixel_index = None
     if mode == "manifold":
         from src.experiments.indexing.rococo_clip_images import build_rococo_clip_index
         pixel_index = build_rococo_clip_index(cfg, rebuild=False)
-        _log(f"kNN index loaded: {pixel_index.index.get_n_items():,} vectors")
+        _log(f"kNN index: {pixel_index.index.get_n_items():,} vectors")
 
-    # Load dataset (for img2txt mapping)
     dataset = RoCoCoDataset(
         image_dir=cfg.image_dir,
         annotation_dir=cfg.annotation_dir,
         annotation_files=cfg.annotation_files,
     )
 
-    # Smooth image embeddings ONCE — shared across all annotation files
-    t0 = time.time()
-    smoothed = get_smoothed_embeddings(image_embs, cfg, pixel_index)
-    elapsed  = time.time() - t0
-    _log(f"Smoothing done in {elapsed:.1f}s  shape={smoothed.shape}")
-
-    # Evaluate on each annotation file
     ann_to_eval = ann_files or cfg.annotation_files
-    all_results = {}
 
-    for ann_file in ann_to_eval:
-        ann_stem = Path(ann_file).stem
-        metrics_path = out_dir / f"{ann_stem}_metrics.json"
+    # ── Loop over sigmas — smooth once per sigma, evaluate all annotations ────
+    for sigma in sigma_values:
+        cfg.smoothing.sigma = sigma
+        sigma_dir = _ROOT / cfg.output_dir / mode / _sigma_tag(sigma)
+        sigma_dir.mkdir(parents=True, exist_ok=True)
 
-        if metrics_path.exists():
-            _log(f"  SKIP {ann_stem} — metrics.json exists")
+        # Check if all annotations already done for this sigma
+        pending = [Path(af).stem for af in ann_to_eval
+                   if not (sigma_dir / f"{Path(af).stem}_metrics.json").exists()]
+        if not pending:
+            _log(f"SKIP sigma={sigma} — all annotations done")
             continue
 
-        _log(f"  Evaluating {ann_stem} …")
-        metrics = evaluate_on_annotation(smoothed, dataset, ann_stem, cache_dir,
-                                         out_dir=out_dir, checkpoint_every=10)
-        if not metrics:
-            continue
+        _log(f"\n── sigma={sigma} ──────────────────────────────────────")
+        t0 = time.time()
+        smoothed = get_smoothed_embeddings(image_embs, cfg, pixel_index)
+        _log(f"  Smoothing done in {time.time()-t0:.1f}s")
 
-        output = {
-            "experiment":  cfg.experiment_name,
-            "mode":        mode,
-            "ann_stem":    ann_stem,
-            "clip_model":  cfg.clip_model,
-            "smoothing": {
-                "sigma":     cfg.smoothing.sigma,
-                "n_samples": cfg.smoothing.n_samples,
-                "knn_k":     cfg.smoothing.knn_k,
-            },
-            "n_images": len(image_ids),
-            **metrics,
-        }
-        metrics_path.write_text(json.dumps(output, indent=2))
-        _log(f"    {ann_stem}: R@1={metrics.get('R@1')}%  "
-             f"RSMS={metrics.get('RSMS', '–')}%  "
-             f"DropRate={metrics.get('DropRate', '–')}%")
-        all_results[ann_stem] = metrics
+        for ann_file in ann_to_eval:
+            ann_stem     = Path(ann_file).stem
+            metrics_path = sigma_dir / f"{ann_stem}_metrics.json"
+            if metrics_path.exists():
+                _log(f"  SKIP {ann_stem} — exists")
+                continue
 
-    _log(f"Done. Results saved to {out_dir}")
-    return all_results
+            _log(f"  Evaluating {ann_stem} …")
+            metrics = evaluate_on_annotation(smoothed, dataset, ann_stem, cache_dir,
+                                             out_dir=sigma_dir, checkpoint_every=10)
+            if not metrics:
+                continue
+
+            output = {
+                "experiment": cfg.experiment_name,
+                "mode":       mode,
+                "ann_stem":   ann_stem,
+                "clip_model": cfg.clip_model,
+                "smoothing": {
+                    "sigma":     sigma,
+                    "n_samples": cfg.smoothing.n_samples,
+                    "knn_k":     cfg.smoothing.knn_k,
+                },
+                "n_images": len(image_ids),
+                **metrics,
+            }
+            metrics_path.write_text(json.dumps(output, indent=2))
+            _log(f"    {ann_stem}: R@1={metrics.get('R@1')}%  RSMS={metrics.get('RSMS','–')}%")
+
+            # Save visualizations into sigma_dir/visualizations/
+            if cfg.output.save_visualizations if hasattr(cfg, 'output') else True:
+                try:
+                    from src.experiments.eval.rococo_viz import run_viz
+                    run_viz(cfg, ann_file,
+                            n_show=10,
+                            smoothed_image_embs=smoothed,
+                            image_ids=image_ids,
+                            viz_dir=sigma_dir / "visualizations",
+                            pixel_index=pixel_index)
+                except Exception as e:
+                    _log(f"    Viz skipped: {e}")
+
+    _log(f"Done. Results in output/rococo/{mode}/")
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="RoCOCO CLIP retrieval evaluation")
     p.add_argument("--config",   required=True)
     p.add_argument("--ann-file", default=None,
-                   help="Single annotation file (e.g. danger.json). "
-                        "Omit to evaluate all files in config.")
+                   help="Single annotation file (e.g. danger.json).")
+    p.add_argument("--sigma",    type=float, default=None,
+                   help="Override sigma for this run (used by Slurm array job).")
     p.add_argument("--n-eval",   type=int, default=None,
-                   help="Evaluate on first N images only (default: all). "
-                        "Use 100 for fast testing.")
+                   help="Evaluate on first N images only. Use 100 for fast testing.")
     return p.parse_args()
 
 
 if __name__ == "__main__":
-    args  = parse_args()
-    cfg   = load_rococo_config(args.config)
+    args = parse_args()
+    cfg  = load_rococo_config(args.config)
+    # CLI --sigma overrides config sigma_values → single sigma run
+    if args.sigma is not None:
+        cfg.smoothing.sigma_values = [args.sigma]
+        cfg.smoothing.sigma        = args.sigma
     ann_f = [args.ann_file] if args.ann_file else None
     run_evaluation(cfg, ann_files=ann_f, n_eval=args.n_eval)
