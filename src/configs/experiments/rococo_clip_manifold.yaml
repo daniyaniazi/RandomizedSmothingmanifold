@@ -1,0 +1,33 @@
+experiment_name: rococo_clip_manifold
+clip_model: ViT-B/32
+
+image_dir:        /BS/dniazi_thesis/static00/rococo/images
+annotation_dir:   /BS/dniazi_thesis/static00/rococo/annotation
+annotation_files:
+  - coco_karpathy_test.json
+  - danger.json
+  - same_concept.json
+  - diff_concept.json
+  - rand_voca.json
+
+embedding_cache_dir: /BS/dniazi_thesis/static00/rococo/clip_embeddings
+index_dir:  output/rococo/index/clip/annoy/angular
+output_dir: output/rococo
+
+device:      cuda
+batch_size:  256
+seed:        73
+num_workers: 4
+
+smoothing:
+  mode:        manifold
+  sigma:       0.10
+  knn_k:       500
+  n_samples:   1
+  eps_eig:     1.0e-6
+  sigma_values: null
+
+index:
+  backend: annoy
+  metric:  angular
+  n_trees: 50
