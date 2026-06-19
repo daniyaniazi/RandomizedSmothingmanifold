@@ -269,6 +269,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config",   required=True)
     p.add_argument("--ann-file", default=None)
+    p.add_argument("--sigma",    type=float, default=None,
+                   help="Override sigma (sets viz output subdir to sigma_X_XX)")
     p.add_argument("--n-show",   type=int, default=10)
     return p.parse_args()
 
@@ -276,6 +278,9 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     cfg  = load_rococo_config(args.config)
+    if args.sigma is not None:
+        cfg.smoothing.sigma        = args.sigma
+        cfg.smoothing.sigma_values = [args.sigma]
     ann_files = [args.ann_file] if args.ann_file else cfg.annotation_files
     for af in ann_files:
         run_viz(cfg, af, n_show=args.n_show)
