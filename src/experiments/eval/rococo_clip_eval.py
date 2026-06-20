@@ -381,7 +381,7 @@ def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
                 try:
                     from src.experiments.eval.rococo_viz import run_viz
                     run_viz(cfg, ann_file,
-                            n_show=10,
+                            n_show=15,
                             smoothed_image_embs=smoothed,
                             image_ids=image_ids,        # eval subset (100)
                             all_image_ids=all_image_ids, # full 5k for kNN lookup

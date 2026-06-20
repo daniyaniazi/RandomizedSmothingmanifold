@@ -60,91 +60,120 @@ def _wrap(text: str, max_len: int = 55) -> str:
     return "\n".join(lines)
 
 
+def _caption_color(cap: str, gt_captions: set, adv_captions: set) -> str:
+    """Return colour for a retrieved caption:
+      green  — matches a GT caption
+      red    — adversarial/corrupted caption from annotation
+      blue   — other retrieved caption (not GT, not adversarial)
+    """
+    if cap in gt_captions:  return "#1a7a1a"   # green
+    if cap in adv_captions: return "#c0392b"   # red
+    return "#1a5fa8"                            # blue
+
+
+def _save_batch(batch: List[Dict], save_path: Path, mode: str,
+                ann_stem: str, batch_idx: int, n_batches: int) -> None:
+    """Save one batch of 5 samples as a single figure."""
+    try:
+        import matplotlib.pyplot as plt
+        plt.rcParams.update({'font.family': 'serif', 'font.size': 8})
+    except ImportError:
+        return
+
+    n_rows = len(batch)
+    N_COLS = 7   # query + 5 images + text
+    fig, axes = plt.subplots(
+        n_rows, N_COLS, figsize=(N_COLS * 2.2, n_rows * 2.6),
+        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1, 1, 3.0],
+                     "wspace": 0.04, "hspace": 0.40}
+    )
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+    for ax in axes.flat:
+        ax.axis("off")
+
+    for r, s in enumerate(batch):
+        gt_set  = s.get("gt_captions",  set())
+        adv_set = s.get("adv_captions", set())
+
+        # Col 0: query image
+        axes[r, 0].imshow(_load_pil(s["image_path"]))
+        axes[r, 0].set_title("Query", fontsize=7, color="#333")
+
+        # Cols 1-5: top-5 retrieved images
+        for k, img_path in enumerate(s.get("top5_image_paths", [])[:5], start=1):
+            try:
+                axes[r, k].imshow(_load_pil(img_path))
+                color = _caption_color(s["top5_captions"][k-1] if k-1 < len(s["top5_captions"]) else "", gt_set, adv_set)
+                axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
+            except Exception:
+                pass
+
+        # Col 6: colour-coded caption panel
+        tax = axes[r, 6]
+        tax.axis("off")
+        y = 0.97
+        # GT caption header
+        tax.text(0.02, y, f"GT: {_wrap(s['gt_caption'], 42)}",
+                 transform=tax.transAxes, va="top", fontsize=6.5,
+                 color="#1a7a1a", fontfamily="monospace")
+        y -= 0.18
+        # Top-5 retrieved captions, colour-coded (no tick marks)
+        for rank, (cap, sc) in enumerate(zip(s["top5_captions"], s["top5_scores"]), 1):
+            color = _caption_color(cap, gt_set, adv_set)
+            tax.text(0.02, y, f"[{rank}] {_wrap(cap, 42)}  ({sc:.3f})",
+                     transform=tax.transAxes, va="top", fontsize=6.0,
+                     color=color, fontfamily="monospace")
+            y -= 0.16
+
+    title = f"{mode.title()} — {ann_stem.replace('_',' ').title()}"
+    if n_batches > 1:
+        title += f"  [{batch_idx+1}/{n_batches}]"
+    # Colour legend
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0],[0], color="#1a7a1a", lw=3, label="GT caption"),
+        Line2D([0],[0], color="#c0392b", lw=3, label="Adversarial caption"),
+        Line2D([0],[0], color="#1a5fa8", lw=3, label="Other retrieved"),
+    ]
+    fig.legend(handles=legend_handles, loc="lower center", ncol=3,
+               fontsize=8, bbox_to_anchor=(0.5, -0.02), framealpha=0.9)
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {save_path}")
+
+
 def save_retrieval_viz(
     samples: List[Dict],
     save_path: Path,
     mode: str,
     ann_stem: str,
-    n_show: int = 10,
+    n_show: int = 15,
+    batch_size: int = 5,
 ) -> None:
-    """Save visualization grid.
+    """Split samples into batches of 5 → 3 figures (part1, part2, part3).
 
-    Layout per sample (1 row):
-      Col 0:    Query image (original)
-      Col 1-5:  Top-5 retrieved images (the images whose caption scored highest)
-      Col 6:    Text panel — GT caption + top-5 captions with scores
-
-    Manifold adds an extra kNN row below each query row.
-
-    Each sample dict:
-      image_path:         str
-      gt_caption:         str
-      top5_captions:      List[str]
-      top5_scores:        List[float]
-      top5_image_paths:   List[str] — images whose caption ranked top-5
-      knn_image_paths:    Optional[List[str]] — manifold: kNN in CLIP space
+    Caption colour coding:
+      green  — GT caption retrieved
+      red    — adversarial/corrupted caption retrieved
+      blue   — other (not GT, not adversarial)
     """
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        plt.rcParams.update({'font.family': 'serif', 'font.size': 8})
-    except ImportError:
-        print("matplotlib not available — skipping visualization")
-        return
-
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    samples     = samples[:n_show]
-    has_knn     = any(s.get("knn_image_paths") for s in samples)
-    n_rows      = len(samples)   # 1 row per sample — kNN in separate figure
-    N_COLS      = 7   # query + 5 images + text
-    fig_w       = N_COLS * 2.2
-    fig_h       = n_rows * 2.4
+    samples   = samples[:n_show]
+    has_knn   = any(s.get("knn_image_paths") for s in samples)
 
-    fig, axes = plt.subplots(
-        n_rows, N_COLS, figsize=(fig_w, fig_h),
-        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1, 1, 2.8],
-                     "wspace": 0.04, "hspace": 0.35}
-    )
-    if n_rows == 1:
-        axes = axes[np.newaxis, :]
+    # Split into batches
+    batches   = [samples[i:i+batch_size] for i in range(0, len(samples), batch_size)]
+    n_batches = len(batches)
 
-    for ax in axes.flat:
-        ax.axis("off")
-
-    for r, s in enumerate(samples):
-
-        # Col 0: query image
-        axes[r, 0].imshow(_load_pil(s["image_path"]))
-        axes[r, 0].set_title("Query", fontsize=7, color="#333333")
-
-        # Cols 1-5: top-5 retrieved images (SAME for both ISO and Manifold)
-        for k, img_path in enumerate(s.get("top5_image_paths", [])[:5], start=1):
-            try:
-                axes[r, k].imshow(_load_pil(img_path))
-                axes[r, k].set_title(f"Top-{k}", fontsize=6, color="#1a6bc1")
-            except Exception:
-                pass
-
-        # Col 6: text panel
-        tax = axes[r, 6]
-        tax.axis("off")
-        lines = [f"GT: {_wrap(s['gt_caption'], 42)}\n"]
-        for rank, (cap, sc) in enumerate(zip(s["top5_captions"], s["top5_scores"]), 1):
-            hit = "✓" if rank == 1 and cap == s["gt_caption"] else " "
-            lines.append(f"[{rank}]{hit} {_wrap(cap, 40)}  ({sc:.3f})")
-        tax.text(0.02, 0.97, "\n".join(lines),
-                 transform=tax.transAxes, va="top", fontsize=6.2,
-                 fontfamily="monospace")
-
-        # kNN row removed from main viz — shown in separate knn_viz.png instead
-
-    fig.suptitle(f"{mode.title()} — {ann_stem.replace('_',' ').title()}",
-                 fontsize=11, fontweight="bold")
-    plt.tight_layout()
-    fig.savefig(save_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {save_path}")
+    for bi, batch in enumerate(batches):
+        if n_batches == 1:
+            bpath = save_path
+        else:
+            bpath = save_path.parent / f"{save_path.stem}_part{bi+1}.png"
+        _save_batch(batch, bpath, mode, ann_stem, bi, n_batches)
 
     # Separate kNN figure for manifold (query + 5 neighbours)
     if has_knn:
@@ -176,7 +205,7 @@ def save_retrieval_viz(
 def run_viz(
     cfg: RoCoCoConfig,
     ann_file: str,
-    n_show: int = 10,
+    n_show: int = 15,
     smoothed_image_embs: Optional[np.ndarray] = None,
     image_ids: Optional[List[str]] = None,       # eval subset image ids
     all_image_ids: Optional[List[str]] = None,   # full index image ids (for kNN path lookup)
@@ -276,14 +305,18 @@ def run_viz(
             if ii is not None and ii < len(dataset.samples):
                 top5_img_paths.append(dataset.samples[ii].image_path)
 
-        gt_cap = s.gt_captions[0] if s.gt_captions else ""
+        gt_cap  = s.gt_captions[0] if s.gt_captions else ""
+        gt_set  = set(s.gt_captions)
+        adv_set = set(s.adv_captions.get(ann_stem, []))
         samples_out.append({
             "image_path":       s.image_path,
             "gt_caption":       gt_cap,
+            "gt_captions":      gt_set,          # all GT captions for this image
+            "adv_captions":     adv_set,         # adversarial captions for this ann
             "top5_captions":    top5_caps,
             "top5_scores":      top5_scores,
             "top5_image_paths": top5_img_paths,
-            "knn_image_paths":  knn_paths,     # manifold only: kNN neighbour images
+            "knn_image_paths":  knn_paths,
         })
 
     save_retrieval_viz(
