@@ -318,6 +318,14 @@ def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
     pixel_index = None
     if mode == "manifold":
         from src.experiments.indexing.rococo_clip_images import build_rococo_clip_index
+        index_path = Path(_ROOT / cfg.index_dir / "index.ann")
+        if not index_path.exists():
+            raise FileNotFoundError(
+                f"Annoy index not found: {index_path}\n"
+                f"Please pre-build it before submitting manifold jobs:\n"
+                f"  python -m src.experiments.indexing.rococo_clip_images "
+                f"--config src/configs/experiments/rococo_clip_manifold.yaml"
+            )
         pixel_index = build_rococo_clip_index(cfg, rebuild=False)
         _log(f"kNN index: {pixel_index.index.get_n_items():,} vectors")
 

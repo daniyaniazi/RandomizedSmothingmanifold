@@ -189,6 +189,7 @@ def save_retrieval_viz(
 
     # Separate kNN figure for manifold (query + 5 neighbours)
     if has_knn:
+        import matplotlib.pyplot as plt
         knn_path = save_path.parent / (save_path.stem.replace("_viz", "_knn_viz") + ".png")
         n_knn_rows = len(samples)
         fig2, ax2 = plt.subplots(n_knn_rows, 6, figsize=(6*2.2, n_knn_rows*2.4),
