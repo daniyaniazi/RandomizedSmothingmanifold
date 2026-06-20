@@ -100,14 +100,21 @@ def _save_batch(batch: List[Dict], save_path: Path, mode: str,
         axes[r, 0].imshow(_load_pil(s["image_path"]))
         axes[r, 0].set_title("Query", fontsize=7, color="#333")
 
-        # Cols 1-5: top-5 retrieved images
-        for k, img_path in enumerate(s.get("top5_image_paths", [])[:5], start=1):
-            try:
-                axes[r, k].imshow(_load_pil(img_path))
-                color = _caption_color(s["top5_captions"][k-1] if k-1 < len(s["top5_captions"]) else "", gt_set, adv_set)
-                axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
-            except Exception:
-                pass
+        # Cols 1-5: top-5 retrieved images — position fixed by rank
+        top5_paths = s.get("top5_image_paths", [])
+        for k in range(1, 6):
+            cap_k    = s["top5_captions"][k-1] if k-1 < len(s["top5_captions"]) else ""
+            color    = _caption_color(cap_k, gt_set, adv_set)
+            img_path = top5_paths[k-1] if k-1 < len(top5_paths) else None
+            if img_path is not None:
+                try:
+                    axes[r, k].imshow(_load_pil(img_path))
+                    axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
+                except Exception:
+                    axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
+            else:
+                # Adversarial caption — no image, cell stays empty
+                axes[r, k].set_title(f"Top-{k} [adv]", fontsize=6, color=color)
 
         # Col 6: colour-coded caption panel
         tax = axes[r, 6]
@@ -251,6 +258,13 @@ def run_viz(
         for ci in cap_idxs:
             cap_to_img[ci] = img_idx
 
+    # Global adversarial caption set — all adversarial indices across ALL images
+    # Used to colour-code retrieved captions regardless of which image they belong to
+    global_wrongtext: set = set(cap_cache.get("wrongtext", []))
+    # Build global set of adversarial caption texts for colour lookup
+    global_adv_captions: set = {captions[ci] for ci in global_wrongtext
+                                  if ci < len(captions)}
+
     # Dataset for image paths and GT captions
     dataset = RoCoCoDataset(cfg.image_dir, cfg.annotation_dir, cfg.annotation_files)
 
@@ -305,14 +319,15 @@ def run_viz(
             if ii is not None and ii < len(dataset.samples):
                 top5_img_paths.append(dataset.samples[ii].image_path)
 
-        gt_cap  = s.gt_captions[0] if s.gt_captions else ""
-        gt_set  = set(s.gt_captions)
-        adv_set = set(s.adv_captions.get(ann_stem, []))
+        gt_cap = s.gt_captions[0] if s.gt_captions else ""
+        gt_set = set(s.gt_captions)
         samples_out.append({
             "image_path":       s.image_path,
             "gt_caption":       gt_cap,
-            "gt_captions":      gt_set,          # all GT captions for this image
-            "adv_captions":     adv_set,         # adversarial captions for this ann
+            "gt_captions":      gt_set,
+            # Use global adversarial set so captions from ANY image's adversarial
+            # pool are highlighted red, not just this query image's adv captions
+            "adv_captions":     global_adv_captions,
             "top5_captions":    top5_caps,
             "top5_scores":      top5_scores,
             "top5_image_paths": top5_img_paths,
