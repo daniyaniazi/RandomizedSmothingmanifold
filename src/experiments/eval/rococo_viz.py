@@ -74,16 +74,15 @@ def save_retrieval_viz(
       Col 1-5:  Top-5 retrieved images (the images whose caption scored highest)
       Col 6:    Text panel — GT caption + top-5 captions with scores
 
-    For manifold mode, kNN neighbour images shown instead of top-5 matched images
-    (since kNN images explain why the smoothed embedding moved).
+    Manifold adds an extra kNN row below each query row.
 
     Each sample dict:
-      image_path:         str — query image path
-      gt_caption:         str — first GT caption
+      image_path:         str
+      gt_caption:         str
       top5_captions:      List[str]
       top5_scores:        List[float]
-      top5_image_paths:   List[str] — images corresponding to top-5 captions
-      knn_image_paths:    Optional[List[str]] — manifold: 5 kNN neighbours
+      top5_image_paths:   List[str] — images whose caption ranked top-5
+      knn_image_paths:    Optional[List[str]] — manifold: kNN in CLIP space
     """
     try:
         import matplotlib
@@ -95,11 +94,12 @@ def save_retrieval_viz(
         return
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    samples  = samples[:n_show]
-    n_rows   = len(samples)
-    N_COLS   = 7   # query + 5 images + text
-    fig_w    = N_COLS * 2.2
-    fig_h    = n_rows * 2.6
+    samples     = samples[:n_show]
+    has_knn     = any(s.get("knn_image_paths") for s in samples)
+    n_rows      = len(samples)   # 1 row per sample — kNN in separate figure
+    N_COLS      = 7   # query + 5 images + text
+    fig_w       = N_COLS * 2.2
+    fig_h       = n_rows * 2.4
 
     fig, axes = plt.subplots(
         n_rows, N_COLS, figsize=(fig_w, fig_h),
@@ -113,17 +113,16 @@ def save_retrieval_viz(
         ax.axis("off")
 
     for r, s in enumerate(samples):
+
         # Col 0: query image
         axes[r, 0].imshow(_load_pil(s["image_path"]))
         axes[r, 0].set_title("Query", fontsize=7, color="#333333")
 
-        # Cols 1-5: top-5 retrieved images (or kNN images for manifold)
-        show_paths = s.get("knn_image_paths") or s.get("top5_image_paths", [])
-        col_label  = "NN" if s.get("knn_image_paths") else "Top"
-        for k, img_path in enumerate(show_paths[:5], start=1):
+        # Cols 1-5: top-5 retrieved images (SAME for both ISO and Manifold)
+        for k, img_path in enumerate(s.get("top5_image_paths", [])[:5], start=1):
             try:
                 axes[r, k].imshow(_load_pil(img_path))
-                axes[r, k].set_title(f"{col_label}-{k}", fontsize=6, color="#555")
+                axes[r, k].set_title(f"Top-{k}", fontsize=6, color="#1a6bc1")
             except Exception:
                 pass
 
@@ -138,12 +137,40 @@ def save_retrieval_viz(
                  transform=tax.transAxes, va="top", fontsize=6.2,
                  fontfamily="monospace")
 
+        # kNN row removed from main viz — shown in separate knn_viz.png instead
+
     fig.suptitle(f"{mode.title()} — {ann_stem.replace('_',' ').title()}",
                  fontsize=11, fontweight="bold")
     plt.tight_layout()
     fig.savefig(save_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {save_path}")
+
+    # Separate kNN figure for manifold (query + 5 neighbours)
+    if has_knn:
+        knn_path = save_path.parent / (save_path.stem.replace("_viz", "_knn_viz") + ".png")
+        n_knn_rows = len(samples)
+        fig2, ax2 = plt.subplots(n_knn_rows, 6, figsize=(6*2.2, n_knn_rows*2.4),
+                                 gridspec_kw={"wspace": 0.04, "hspace": 0.35})
+        if n_knn_rows == 1:
+            ax2 = ax2[np.newaxis, :]
+        for ax in ax2.flat:
+            ax.axis("off")
+        for r, s in enumerate(samples):
+            ax2[r, 0].imshow(_load_pil(s["image_path"]))
+            ax2[r, 0].set_title("Query", fontsize=7)
+            for k, img_path in enumerate(s.get("knn_image_paths", [])[:5], start=1):
+                try:
+                    ax2[r, k].imshow(_load_pil(img_path))
+                    ax2[r, k].set_title(f"NN-{k}", fontsize=6, color="#888")
+                except Exception:
+                    pass
+        fig2.suptitle(f"{mode.title()} kNN neighbours — {ann_stem.replace('_',' ').title()}",
+                      fontsize=11, fontweight="bold")
+        plt.tight_layout()
+        fig2.savefig(knn_path, dpi=120, bbox_inches="tight")
+        plt.close(fig2)
+        print(f"  Saved: {knn_path}")
 
 
 def run_viz(
