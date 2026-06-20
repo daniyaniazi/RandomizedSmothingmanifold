@@ -114,7 +114,7 @@ def _save_batch(batch: List[Dict], save_path: Path, mode: str,
                     axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
             else:
                 # Adversarial caption — no image, cell stays empty
-                axes[r, k].set_title(f"Top-{k} [adv]", fontsize=6, color=color)
+                axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
 
         # Col 6: colour-coded caption panel
         tax = axes[r, 6]
@@ -252,11 +252,13 @@ def run_viz(
         for ci, ii in enumerate(raw_indices):
             img2txt.setdefault(ii, []).append(ci)
 
-    # Reverse map: caption_idx → image_idx (for top-5 image display)
+    # Reverse map: caption_idx → image_idx (GT captions only)
+    # Normalize to int — img2txt keys may be str after torch.load
     cap_to_img: Dict[int, int] = {}
     for img_idx, cap_idxs in img2txt.items():
         for ci in cap_idxs:
-            cap_to_img[ci] = img_idx
+            cap_to_img[int(ci)] = int(img_idx)
+
 
     # Global adversarial caption set — all adversarial indices across ALL images
     # Used to colour-code retrieved captions regardless of which image they belong to
@@ -280,13 +282,14 @@ def run_viz(
         smoother = ManifoldSmoother(sigma=cfg.smoothing.sigma, index=pixel_index,
                                     knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig)
 
-    # Sample n_show images evenly
-    indices = np.linspace(0, len(dataset)-1, n_show, dtype=int)
+    # Sample n_show images evenly — bounded by available embeddings
+    n_available = len(image_embs)
+    indices = np.linspace(0, n_available - 1, min(n_show, n_available), dtype=int)
     samples_out = []
 
     for i in indices:
-        s      = dataset.samples[i]
-        emb    = image_embs[i]
+        s   = dataset.samples[i]
+        emb = image_embs[i]
 
         # Smooth embedding — no "noisy image" since smoothing is in CLIP embedding space
         if mode == "baseline":
@@ -315,9 +318,12 @@ def run_viz(
         # Map top-5 caption indices → their image paths
         top5_img_paths = []
         for ci in top5_ci:
-            ii = cap_to_img.get(int(ci))
-            if ii is not None and ii < len(dataset.samples):
-                top5_img_paths.append(dataset.samples[ii].image_path)
+            ci_int = int(ci)
+            ii     = cap_to_img.get(ci_int)
+            if ii is not None and int(ii) < len(dataset.samples):
+                top5_img_paths.append(dataset.samples[int(ii)].image_path)
+            else:
+                top5_img_paths.append(None)   # adversarial — leave cell empty
 
         gt_cap = s.gt_captions[0] if s.gt_captions else ""
         gt_set = set(s.gt_captions)
