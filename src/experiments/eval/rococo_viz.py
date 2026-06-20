@@ -46,19 +46,6 @@ def _load_pil(path: str, size: int = 224) -> Image.Image:
     return Image.open(path).convert("RGB").resize((size, size))
 
 
-def _wrap(text: str, max_len: int = 55) -> str:
-    """Wrap long text for display."""
-    words = text.split()
-    lines, cur = [], []
-    for w in words:
-        cur.append(w)
-        if len(" ".join(cur)) > max_len:
-            lines.append(" ".join(cur[:-1]))
-            cur = [w]
-    if cur:
-        lines.append(" ".join(cur))
-    return "\n".join(lines)
-
 
 def _caption_color(cap: str, gt_captions: set, adv_captions: set) -> str:
     """Return colour for a retrieved caption:
@@ -83,8 +70,8 @@ def _save_batch(batch: List[Dict], save_path: Path, mode: str,
     n_rows = len(batch)
     N_COLS = 7   # query + 5 images + text
     fig, axes = plt.subplots(
-        n_rows, N_COLS, figsize=(N_COLS * 2.2, n_rows * 2.6),
-        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1, 1, 3.0],
+        n_rows, N_COLS, figsize=(N_COLS * 2.2, n_rows * 3.8),
+        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1, 1, 3.5],
                      "wspace": 0.04, "hspace": 0.40}
     )
     if n_rows == 1:
@@ -120,18 +107,33 @@ def _save_batch(batch: List[Dict], save_path: Path, mode: str,
         tax = axes[r, 6]
         tax.axis("off")
         y = 0.97
-        # GT caption header
-        tax.text(0.02, y, f"GT: {_wrap(s['gt_caption'], 42)}",
-                 transform=tax.transAxes, va="top", fontsize=6.5,
+        def _wrap(text, max_len=45):
+            words = text.split()
+            lines, cur = [], []
+            for w in words:
+                cur.append(w)
+                if len(" ".join(cur)) > max_len:
+                    lines.append(" ".join(cur[:-1]))
+                    cur = [w]
+            if cur: lines.append(" ".join(cur))
+            return "\n".join(lines)
+
+        # GT caption
+        gt_lines = _wrap(s['gt_caption']).count('\n') + 1
+        tax.text(0.02, y, f"GT: {_wrap(s['gt_caption'])}",
+                 transform=tax.transAxes, va="top", fontsize=5.8,
                  color="#1a7a1a", fontfamily="monospace")
-        y -= 0.18
-        # Top-5 retrieved captions, colour-coded (no tick marks)
+        y -= 0.06 + 0.055 * gt_lines
+
+        # Top-5 retrieved captions — full text, no truncation
         for rank, (cap, sc) in enumerate(zip(s["top5_captions"], s["top5_scores"]), 1):
-            color = _caption_color(cap, gt_set, adv_set)
-            tax.text(0.02, y, f"[{rank}] {_wrap(cap, 42)}  ({sc:.3f})",
-                     transform=tax.transAxes, va="top", fontsize=6.0,
+            color    = _caption_color(cap, gt_set, adv_set)
+            wrapped  = _wrap(cap)
+            n_lines  = wrapped.count('\n') + 1
+            tax.text(0.02, y, f"[{rank}] {wrapped}  ({sc:.3f})",
+                     transform=tax.transAxes, va="top", fontsize=5.5,
                      color=color, fontfamily="monospace")
-            y -= 0.16
+            y -= 0.04 + 0.055 * n_lines
 
     title = f"{mode.title()} — {ann_stem.replace('_',' ').title()}"
     if n_batches > 1:
