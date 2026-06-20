@@ -38,6 +38,7 @@ OOD_ATTRS=(
     "Mustache"
     "No_Beard"
     "Rosy_Cheeks"
+    "Blurry"
 )
 
 while [[ $# -gt 0 ]]; do

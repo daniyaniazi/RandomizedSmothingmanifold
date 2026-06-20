@@ -37,6 +37,6 @@ python -m src.experiments.inference.segmentation.celebahq_segmentation \
     --data-root   /BS/dniazi_thesis/static00/CelebAMask-HQ/CelebAMask-HQ \
     --output-dir  output/segmentation/celebahq/baseline \
     --num-viz     10 \
-    --pixel-index output/segmentation/celebahq/index/pixel/annoy/euclidean/index.ann \
+    --pixel-index output/segmentation/celebamaskhq/index/pixel/annoy/euclidean/index.ann \
     --knn-k       500 \
     $SUBSET $VIZONLY
