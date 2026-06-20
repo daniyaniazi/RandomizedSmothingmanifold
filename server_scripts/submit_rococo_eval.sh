@@ -88,8 +88,7 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     python -m src.experiments.eval.rococo_clip_eval \
         --config "$CFG" \
         --ann-file "$ANN" \
-        --sigma  "$SIGMA" \
-        --n-eval 100
+        --sigma  "$SIGMA"
     exit 0
 fi
 

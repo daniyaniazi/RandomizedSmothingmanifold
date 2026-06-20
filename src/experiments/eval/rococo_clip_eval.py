@@ -301,14 +301,17 @@ def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
     if not emb_path.exists():
         raise FileNotFoundError(f"Image embeddings not found: {emb_path}. "
                                 f"Run generate_embeddings.py first.")
-    cache      = torch.load(emb_path, map_location="cpu")
-    image_embs = cache["embeddings"].numpy().astype(np.float32)
-    image_ids  = cache["image_ids"]
+    cache         = torch.load(emb_path, map_location="cpu")
+    all_image_embs = cache["embeddings"].numpy().astype(np.float32)
+    all_image_ids  = cache["image_ids"]   # full list — needed for kNN index lookup
 
-    if n_eval is not None and n_eval < len(image_embs):
-        image_embs = image_embs[:n_eval]
-        image_ids  = image_ids[:n_eval]
-        _log(f"Eval subset: {n_eval} images")
+    if n_eval is not None and n_eval < len(all_image_embs):
+        image_embs = all_image_embs[:n_eval]
+        image_ids  = all_image_ids[:n_eval]
+        _log(f"Eval subset: {n_eval} images (index still has {len(all_image_ids)})")
+    else:
+        image_embs = all_image_embs
+        image_ids  = all_image_ids
     _log(f"Image embeddings: {image_embs.shape}")
 
     # Load kNN index once (manifold only)
@@ -380,7 +383,8 @@ def run_evaluation(cfg: RoCoCoConfig, ann_files: Optional[List[str]] = None,
                     run_viz(cfg, ann_file,
                             n_show=10,
                             smoothed_image_embs=smoothed,
-                            image_ids=image_ids,
+                            image_ids=image_ids,        # eval subset (100)
+                            all_image_ids=all_image_ids, # full 5k for kNN lookup
                             viz_dir=sigma_dir / "visualizations",
                             pixel_index=pixel_index)
                 except Exception as e:

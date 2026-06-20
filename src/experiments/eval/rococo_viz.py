@@ -150,8 +150,9 @@ def run_viz(
     cfg: RoCoCoConfig,
     ann_file: str,
     n_show: int = 10,
-    smoothed_image_embs: Optional[np.ndarray] = None,  # pre-computed smoothed embeddings
-    image_ids: Optional[List[str]] = None,
+    smoothed_image_embs: Optional[np.ndarray] = None,
+    image_ids: Optional[List[str]] = None,       # eval subset image ids
+    all_image_ids: Optional[List[str]] = None,   # full index image ids (for kNN path lookup)
     viz_dir: Optional[Path] = None,
     pixel_index=None,
 ) -> None:
@@ -167,10 +168,12 @@ def run_viz(
 
     # Load embeddings
     img_cache  = torch.load(cache_dir / "image_embeddings.pt", map_location="cpu")
-    raw_embs   = img_cache["embeddings"].numpy().astype(np.float32)
-    # Use pre-computed smoothed embeddings if provided (avoids re-smoothing)
-    image_embs = smoothed_image_embs if smoothed_image_embs is not None else raw_embs
-    image_ids  = image_ids if image_ids is not None else img_cache["image_ids"]
+    raw_embs        = img_cache["embeddings"].numpy().astype(np.float32)
+    full_image_ids  = img_cache["image_ids"]   # all 5k — for kNN path lookup
+    image_embs      = smoothed_image_embs if smoothed_image_embs is not None else raw_embs
+    image_ids       = image_ids       if image_ids       is not None else full_image_ids
+    # all_image_ids: use passed value, then full cache — ensures kNN IDs map correctly
+    knn_image_ids   = all_image_ids if all_image_ids is not None else full_image_ids
 
     cap_path   = cache_dir / f"{ann_stem}_captions.pt"
     cap_cache = torch.load(cap_path, map_location="cpu")
@@ -227,8 +230,8 @@ def run_viz(
             # kNN neighbours in CLIP embedding space
             nn_ids    = pixel_index.index.get_nns_by_vector(
                 emb.tolist(), 6, include_distances=False)[1:6]
-            knn_paths = [str(Path(cfg.image_dir) / image_ids[nid])
-                         for nid in nn_ids if nid < len(image_ids)]
+            knn_paths = [str(Path(cfg.image_dir) / knn_image_ids[nid])
+                         for nid in nn_ids if nid < len(knn_image_ids)]
         else:
             q_emb     = emb
             knn_paths = None
