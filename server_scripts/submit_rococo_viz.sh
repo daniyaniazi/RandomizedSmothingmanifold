@@ -34,7 +34,7 @@ if [[ -f "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh" ]]; then
 fi
 
 ANN_FILES=(coco_karpathy_test.json danger.json same_concept.json diff_concept.json rand_voca.json)
-SIGMAS=(0.05 0.10 0.25 0.50 0.75 1.00)
+SIGMAS=(0.02 0.05 0.07 0.10 0.20 0.50 0.70 1.00)
 N_ANNS=${#ANN_FILES[@]}
 N_SIGMAS=${#SIGMAS[@]}
 BASELINE_TASKS=$((N_ANNS))
