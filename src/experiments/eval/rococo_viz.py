@@ -100,8 +100,11 @@ def _save_batch(batch: List[Dict], save_path: Path, mode: str,
                 except Exception:
                     axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
             else:
-                # Adversarial caption — no image, cell stays empty
-                axes[r, k].set_title(f"Top-{k}", fontsize=6, color=color)
+                # Adversarial — no image; label centred in cell, same height as images
+                axes[r, k].text(0.5, 0.5, f"Top-{k}\n(adversarial)",
+                                transform=axes[r, k].transAxes,
+                                ha="center", va="center",
+                                fontsize=6, color=color)
 
         # Col 6: colour-coded caption panel
         tax = axes[r, 6]
