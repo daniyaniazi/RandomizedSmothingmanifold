@@ -120,8 +120,7 @@ def _draw_row(axes_row, label: str, label_color: str,
                  color="#1a7a1a", fontfamily="monospace",
                  clip_on=True)
         y -= 0.06 + 0.055 * n_lines
-        tax.axhline(y=y + 0.01, color="#cccccc", lw=0.5,
-                    transform=tax.transAxes, clip_on=True)
+        tax.axhline(y=y + 0.01, color="#cccccc", lw=0.5)
         y -= 0.02
 
     for rank, (cap, sc) in enumerate(zip(top5_caps, top5_sc), 1):
