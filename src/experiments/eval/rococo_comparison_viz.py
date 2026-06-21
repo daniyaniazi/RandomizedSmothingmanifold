@@ -36,7 +36,20 @@ if str(_ROOT) not in sys.path:
 from src.configs.rococo_clip_schema import RoCoCoConfig, load_rococo_config
 from src.dataloaders.rococo import RoCoCoDataset
 from src.experiments.eval.rococo_clip_eval import smooth_iso, smooth_manifold, _normalize
-from src.experiments.eval.rococo_viz import _load_pil, _caption_color, _wrap
+from src.experiments.eval.rococo_viz import _load_pil, _caption_color
+
+
+def _wrap(text: str, max_len: int = 42) -> str:
+    words = text.split()
+    lines, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(" ".join(cur)) > max_len:
+            lines.append(" ".join(cur[:-1]))
+            cur = [w]
+    if cur:
+        lines.append(" ".join(cur))
+    return "\n".join(lines)
 from src.smoothing.isotropic import IsotropicSmoother
 from src.smoothing.manifold import ManifoldSmoother
 
