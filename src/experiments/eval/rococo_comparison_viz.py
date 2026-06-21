@@ -72,26 +72,38 @@ def _top5(q_emb: np.ndarray, text_embs: np.ndarray, captions: List[str],
     return top5_caps, top5_sc, top5_imgs
 
 
-def _draw_row(axes_row, label: str, label_color: str,
-              query_path: str, top5_imgs: List[Optional[str]],
-              top5_caps: List[str], top5_sc: List[float],
-              gt_set: set, adv_set: set,
-              gt_caption: str = "") -> None:
-    """Fill one row of axes: [label | query | top5 images | caption panel]."""
+def _draw_query_row(axes_row, query_path: str, gt_caption: str) -> None:
+    """Query row: [empty label | query image | empty cols | empty caption col]
+    GT caption shown as title above the query image cell.
+    """
+    for ax in axes_row:
+        ax.axis("off")
 
-    # Col 0: row label
+    # Col 1: query image with GT caption as title above it
+    axes_row[1].imshow(_load_pil(query_path, size=256))
+    axes_row[1].axis("off")
+    gt_wrapped = _wrap(gt_caption, max_len=60)
+    axes_row[1].set_title(f"GT: {gt_wrapped}",
+                          fontsize=6, color="#1a7a1a",
+                          loc="left", pad=4)
+
+
+def _draw_method_row(axes_row, label: str, label_color: str,
+                     top5_imgs: List[Optional[str]],
+                     top5_caps: List[str], top5_sc: List[float],
+                     gt_set: set, adv_set: set) -> None:
+    """Method row: [label | top5 images | caption panel]."""
+
+    # Col 0: method label
     axes_row[0].axis("off")
     axes_row[0].text(0.5, 0.5, label, transform=axes_row[0].transAxes,
                      ha="center", va="center", fontsize=7, fontweight="bold",
                      color=label_color, rotation=90)
 
-    # Col 1: query image
-    axes_row[1].imshow(_load_pil(query_path))
-    axes_row[1].axis("off")
-
-    # Cols 2-6: top-5 retrieved images
+    # Cols 1-5: top-5 retrieved images (aligned with query in row above)
+    axes_row[6].axis("off")   # col 6 unused
     for k in range(5):
-        ax   = axes_row[2 + k]
+        ax   = axes_row[1 + k]
         ax.axis("off")
         cap  = top5_caps[k] if k < len(top5_caps) else ""
         col  = _caption_color(cap, gt_set, adv_set)
@@ -106,32 +118,25 @@ def _draw_row(axes_row, label: str, label_color: str,
             ax.text(0.5, 0.5, f"Top-{k+1}\n(adv)", transform=ax.transAxes,
                     ha="center", va="center", fontsize=5, color=col)
 
-    # Col 7: caption panel — GT first, then top-5
+    # Col 7: caption panel — vertically centred
     tax = axes_row[7]
     tax.axis("off")
-    y = 0.98
 
-    # GT caption at top (only on the first method row, passed non-empty)
-    if gt_caption:
-        wrapped = _wrap(gt_caption, max_len=45)
-        n_lines = wrapped.count('\n') + 1
-        tax.text(0.02, y, f"GT: {wrapped}",
-                 transform=tax.transAxes, va="top", fontsize=5.8,
-                 color="#1a7a1a", fontfamily="monospace",
-                 clip_on=True)
-        y -= 0.06 + 0.055 * n_lines
-        tax.axhline(y=y + 0.01, color="#cccccc", lw=0.5)
-        y -= 0.02
-
+    entries = []
     for rank, (cap, sc) in enumerate(zip(top5_caps, top5_sc), 1):
-        col     = _caption_color(cap, gt_set, adv_set)
-        wrapped = _wrap(cap, max_len=45)
-        n_lines = wrapped.count('\n') + 1
-        tax.text(0.02, y, f"[{rank}] {wrapped}  ({sc:.3f})",
-                 transform=tax.transAxes, va="top", fontsize=5.5,
-                 color=col, fontfamily="monospace",
-                 clip_on=True)
-        y -= 0.04 + 0.055 * n_lines
+        w  = _wrap(cap, max_len=45)
+        nl = w.count('\n') + 1
+        col = _caption_color(cap, gt_set, adv_set)
+        entries.append((f"[{rank}] {w}  ({sc:.3f})", col, 5.5, 0.04 + 0.055 * nl))
+
+    total_h = sum(e[3] for e in entries)
+    y = 0.5 + total_h / 2
+
+    for txt, col, fs, step in entries:
+        tax.text(0.02, y, txt,
+                 transform=tax.transAxes, va="top", fontsize=fs,
+                 color=col, fontfamily="monospace", clip_on=True)
+        y -= step
 
 
 # ── per-sample data builder ───────────────────────────────────────────────────
@@ -201,14 +206,16 @@ def _save_comparison_batch(
     plt.rcParams.update({"font.family": "serif", "font.size": 7})
 
     n_samples = len(batch)
-    n_rows    = n_samples * 3   # 3 methods per sample
+    # 4 rows per sample: 1 query row + 3 method rows
+    ROWS_PER = 4
+    n_rows   = n_samples * ROWS_PER
     fig, axes = plt.subplots(
         n_rows, N_COLS,
-        figsize=(N_COLS * 2.2, n_rows * 4.5),
+        figsize=(N_COLS * 2.2, n_samples * (1.8 + 3 * 3.0)),
         gridspec_kw={
             "width_ratios": [0.18, 1, 1, 1, 1, 1, 1, 3.5],
             "wspace": 0.04,
-            "hspace": 0.15,
+            "hspace": 0.20,
         },
     )
     if n_rows == 1:
@@ -217,22 +224,25 @@ def _save_comparison_batch(
         ax.axis("off")
 
     for s_idx, sample in enumerate(batch):
+        base_row = s_idx * ROWS_PER
+
+        # Divider between samples
+        if s_idx > 0:
+            for c in range(N_COLS):
+                axes[base_row, c].axhline(y=1.0, color="#aaaaaa", lw=1.0,
+                                          transform=axes[base_row, c].transAxes,
+                                          clip_on=False)
+
+        # Row 0: query image + GT caption
+        _draw_query_row(axes[base_row], sample["image_path"], sample["gt_caption"])
+
+        # Rows 1-3: one per method
         for m_idx, mode in enumerate(["baseline", "iso", "manifold"]):
-            row       = s_idx * 3 + m_idx
-            label, lc = ROW_LABELS[mode]
+            row        = base_row + 1 + m_idx
+            label, lc  = ROW_LABELS[mode]
             caps, scs, imgs = sample[mode]
-
-            # Divider line between samples
-            if m_idx == 0 and s_idx > 0:
-                for c in range(N_COLS):
-                    axes[row, c].axhline(y=1.0, color="#cccccc", lw=0.8,
-                                         transform=axes[row, c].transAxes, clip_on=False)
-
-            gt_cap = sample["gt_caption"] if m_idx == 0 else ""
-            _draw_row(axes[row], label, lc,
-                      sample["image_path"], imgs, caps, scs,
-                      sample["gt_set"], sample["adv_set"],
-                      gt_caption=gt_cap)
+            _draw_method_row(axes[row], label, lc, imgs, caps, scs,
+                             sample["gt_set"], sample["adv_set"])
 
     ann_label = ann_stem.replace('_', ' ').title()
     title = f"CLIP vs ISO vs Manifold\nAnnotation: {ann_label}   σ = {sigma}"
