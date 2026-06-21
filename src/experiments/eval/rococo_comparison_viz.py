@@ -75,9 +75,9 @@ def _top5(q_emb: np.ndarray, text_embs: np.ndarray, captions: List[str],
 def _draw_row(axes_row, label: str, label_color: str,
               query_path: str, top5_imgs: List[Optional[str]],
               top5_caps: List[str], top5_sc: List[float],
-              gt_set: set, adv_set: set) -> None:
+              gt_set: set, adv_set: set,
+              gt_caption: str = "") -> None:
     """Fill one row of axes: [label | query | top5 images | caption panel]."""
-    import matplotlib.pyplot as plt
 
     # Col 0: row label
     axes_row[0].axis("off")
@@ -106,18 +106,33 @@ def _draw_row(axes_row, label: str, label_color: str,
             ax.text(0.5, 0.5, f"Top-{k+1}\n(adv)", transform=ax.transAxes,
                     ha="center", va="center", fontsize=5, color=col)
 
-    # Col 7: caption panel — use figure-space transform so text never clips
+    # Col 7: caption panel — GT first, then top-5
     tax = axes_row[7]
     tax.axis("off")
     y = 0.98
+
+    # GT caption at top (only on the first method row, passed non-empty)
+    if gt_caption:
+        wrapped = _wrap(gt_caption, max_len=45)
+        n_lines = wrapped.count('\n') + 1
+        tax.text(0.02, y, f"GT: {wrapped}",
+                 transform=tax.transAxes, va="top", fontsize=5.8,
+                 color="#1a7a1a", fontfamily="monospace",
+                 clip_on=True)
+        y -= 0.06 + 0.055 * n_lines
+        tax.axhline(y=y + 0.01, color="#cccccc", lw=0.5,
+                    transform=tax.transAxes, clip_on=True)
+        y -= 0.02
+
     for rank, (cap, sc) in enumerate(zip(top5_caps, top5_sc), 1):
         col     = _caption_color(cap, gt_set, adv_set)
-        wrapped = _wrap(cap, max_len=38)
+        wrapped = _wrap(cap, max_len=45)
         n_lines = wrapped.count('\n') + 1
         tax.text(0.02, y, f"[{rank}] {wrapped}  ({sc:.3f})",
-                 transform=tax.transAxes, va="top", fontsize=4.8,
-                 color=col, fontfamily="monospace", linespacing=1.3)
-        y -= 0.03 + 0.16 * n_lines
+                 transform=tax.transAxes, va="top", fontsize=5.5,
+                 color=col, fontfamily="monospace",
+                 clip_on=True)
+        y -= 0.04 + 0.055 * n_lines
 
 
 # ── per-sample data builder ───────────────────────────────────────────────────
@@ -190,11 +205,11 @@ def _save_comparison_batch(
     n_rows    = n_samples * 3   # 3 methods per sample
     fig, axes = plt.subplots(
         n_rows, N_COLS,
-        figsize=(N_COLS * 2.2, n_rows * 3.2),
+        figsize=(N_COLS * 2.2, n_rows * 4.5),
         gridspec_kw={
-            "width_ratios": [0.18, 1, 1, 1, 1, 1, 1, 3.2],
+            "width_ratios": [0.18, 1, 1, 1, 1, 1, 1, 3.5],
             "wspace": 0.04,
-            "hspace": 0.25,
+            "hspace": 0.15,
         },
     )
     if n_rows == 1:
@@ -214,19 +229,11 @@ def _save_comparison_batch(
                     axes[row, c].axhline(y=1.0, color="#cccccc", lw=0.8,
                                          transform=axes[row, c].transAxes, clip_on=False)
 
+            gt_cap = sample["gt_caption"] if m_idx == 0 else ""
             _draw_row(axes[row], label, lc,
                       sample["image_path"], imgs, caps, scs,
-                      sample["gt_set"], sample["adv_set"])
-
-            # GT caption as text below the label col on the first method row
-            if m_idx == 0:
-                gt_text = _wrap(sample['gt_caption'], max_len=50)
-                axes[row, 0].text(
-                    0.5, -0.12, f"GT:\n{gt_text}",
-                    transform=axes[row, 0].transAxes,
-                    ha="center", va="top", fontsize=4.5,
-                    color="#1a7a1a", fontfamily="monospace",
-                    clip_on=False)
+                      sample["gt_set"], sample["adv_set"],
+                      gt_caption=gt_cap)
 
     ann_label = ann_stem.replace('_', ' ').title()
     title = f"CLIP vs ISO vs Manifold\nAnnotation: {ann_label}   σ = {sigma}"
