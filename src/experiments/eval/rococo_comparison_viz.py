@@ -106,18 +106,18 @@ def _draw_row(axes_row, label: str, label_color: str,
             ax.text(0.5, 0.5, f"Top-{k+1}\n(adv)", transform=ax.transAxes,
                     ha="center", va="center", fontsize=5, color=col)
 
-    # Col 7: caption panel
+    # Col 7: caption panel — use figure-space transform so text never clips
     tax = axes_row[7]
     tax.axis("off")
-    y = 0.97
+    y = 0.98
     for rank, (cap, sc) in enumerate(zip(top5_caps, top5_sc), 1):
         col     = _caption_color(cap, gt_set, adv_set)
-        wrapped = _wrap(cap, max_len=42)
+        wrapped = _wrap(cap, max_len=38)
         n_lines = wrapped.count('\n') + 1
         tax.text(0.02, y, f"[{rank}] {wrapped}  ({sc:.3f})",
-                 transform=tax.transAxes, va="top", fontsize=5,
-                 color=col, fontfamily="monospace")
-        y -= 0.04 + 0.055 * n_lines
+                 transform=tax.transAxes, va="top", fontsize=4.8,
+                 color=col, fontfamily="monospace", linespacing=1.3)
+        y -= 0.03 + 0.16 * n_lines
 
 
 # ── per-sample data builder ───────────────────────────────────────────────────
@@ -182,8 +182,6 @@ def _save_comparison_batch(
     save_path: Path,
     sigma: float,
     ann_stem: str,
-    batch_idx: int,
-    n_batches: int,
 ) -> None:
     import matplotlib.pyplot as plt
     plt.rcParams.update({"font.family": "serif", "font.size": 7})
@@ -192,11 +190,11 @@ def _save_comparison_batch(
     n_rows    = n_samples * 3   # 3 methods per sample
     fig, axes = plt.subplots(
         n_rows, N_COLS,
-        figsize=(N_COLS * 2.0, n_rows * 2.2),
+        figsize=(N_COLS * 2.2, n_rows * 3.2),
         gridspec_kw={
-            "width_ratios": [0.18, 1, 1, 1, 1, 1, 1, 2.8],
+            "width_ratios": [0.18, 1, 1, 1, 1, 1, 1, 3.2],
             "wspace": 0.04,
-            "hspace": 0.35,
+            "hspace": 0.25,
         },
     )
     if n_rows == 1:
@@ -216,20 +214,22 @@ def _save_comparison_batch(
                     axes[row, c].axhline(y=1.0, color="#cccccc", lw=0.8,
                                          transform=axes[row, c].transAxes, clip_on=False)
 
-            # GT caption header on first method row
-            if m_idx == 0:
-                axes[row, 1].set_title(
-                    f"GT: {sample['gt_caption'][:60]}{'…' if len(sample['gt_caption'])>60 else ''}",
-                    fontsize=5.5, color="#1a7a1a", loc="left", pad=3)
-
             _draw_row(axes[row], label, lc,
                       sample["image_path"], imgs, caps, scs,
                       sample["gt_set"], sample["adv_set"])
 
-    title = (f"CLIP vs ISO vs Manifold  |  σ={sigma}  |  "
-             f"{ann_stem.replace('_',' ').title()}")
-    if n_batches > 1:
-        title += f"  [{batch_idx+1}/{n_batches}]"
+            # GT caption as text below the label col on the first method row
+            if m_idx == 0:
+                gt_text = _wrap(sample['gt_caption'], max_len=50)
+                axes[row, 0].text(
+                    0.5, -0.12, f"GT:\n{gt_text}",
+                    transform=axes[row, 0].transAxes,
+                    ha="center", va="top", fontsize=4.5,
+                    color="#1a7a1a", fontfamily="monospace",
+                    clip_on=False)
+
+    ann_label = ann_stem.replace('_', ' ').title()
+    title = f"CLIP vs ISO vs Manifold\nAnnotation: {ann_label}   σ = {sigma}"
 
     from matplotlib.lines import Line2D
     fig.legend(handles=[
@@ -239,7 +239,7 @@ def _save_comparison_batch(
     ], loc="lower center", ncol=3, fontsize=7,
        bbox_to_anchor=(0.5, -0.01), framealpha=0.9)
 
-    fig.suptitle(title, fontsize=10, fontweight="bold")
+    fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -317,7 +317,7 @@ def run_comparison(
                     cap_to_img, global_adv_captions,
                     iso_smoother, mani_smoother, cfg.smoothing.n_samples)
                 save_path = out_base / ann_stem / sigma_str / f"sample_{s_num:02d}.png"
-                _save_comparison_batch([sample], save_path, sigma, ann_stem, 0, 1)
+                _save_comparison_batch([sample], save_path, sigma, ann_stem)
 
 
 def parse_args():
