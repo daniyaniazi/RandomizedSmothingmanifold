@@ -54,6 +54,9 @@ def _log(msg: str) -> None:
 
 # ── Retrieval metrics ─────────────────────────────────────────────────────────
 
+RSMS_K = 5   # compute RSMS@1 … RSMS@5
+
+
 def compute_retrieval(
     image_embs: np.ndarray,
     text_embs:  np.ndarray,
@@ -62,14 +65,19 @@ def compute_retrieval(
     checkpoint_every: int = 10,
     checkpoint_path: Optional[Path] = None,
 ) -> Dict[str, float]:
-    """Compute R@1, R@5, R@10, RSMS, DropRate.
+    """Compute R@1, R@5, R@10, RSMS@1..K.
+
+    RSMS@k = fraction of images where the top-ranked adversarial caption
+             appears at exactly position k (1-indexed).
+    RSMS   = RSMS@1
 
     Saves partial metrics every checkpoint_every images to checkpoint_path.
     """
     N      = image_embs.shape[0]
     scores = image_embs @ text_embs.T   # (N, M)
 
-    r1 = r5 = r10 = rsms = 0
+    r1 = r5 = r10 = 0
+    rsms_at = [0] * (RSMS_K + 1)   # rsms_at[k] = count of images where adv rank == k
     n_valid = 0
 
     for i in range(N):
@@ -77,7 +85,7 @@ def compute_retrieval(
         if not gt_indices:
             continue
         n_valid += 1
-        ranked  = np.argsort(-scores[i])
+        ranked = np.argsort(-scores[i])
 
         gt_rank = min(np.where(np.isin(ranked, list(gt_indices)))[0])
         if gt_rank < 1:  r1  += 1
@@ -85,10 +93,15 @@ def compute_retrieval(
         if gt_rank < 10: r10 += 1
 
         if adv_text_indices is not None:
-            top1 = ranked[0]
-            if top1 in adv_text_indices: rsms += 1
+            # Find rank of best (highest-ranked) adversarial caption
+            adv_positions = np.where(np.isin(ranked, list(adv_text_indices)))[0]
+            if len(adv_positions) > 0:
+                best_adv_rank = int(adv_positions[0]) + 1   # 1-indexed
+                # Exact: RSMS@k counts only if adv is at exactly position k
+                if best_adv_rank <= RSMS_K:
+                    rsms_at[best_adv_rank] += 1
 
-        # Save partial every checkpoint_every images
+        # Save partial checkpoint
         if checkpoint_path is not None and checkpoint_every > 0:
             if (i + 1) % checkpoint_every == 0 or (i + 1) == N:
                 partial = {
@@ -98,7 +111,7 @@ def compute_retrieval(
                     "R@10": round(r10 / n_valid * 100, 2),
                 }
                 if adv_text_indices is not None:
-                    partial["RSMS"] = round(rsms / n_valid * 100, 2)
+                    partial["RSMS"] = round(rsms_at[1] / n_valid * 100, 2)
                 checkpoint_path.write_text(json.dumps(partial, indent=2))
 
     total = n_valid if n_valid > 0 else N
@@ -108,11 +121,12 @@ def compute_retrieval(
         "R@10": round(r10 / total * 100, 2),
     }
     if adv_text_indices is not None:
-        # RSMS: fraction of images where adversarial caption ranked top-1
-        metrics["RSMS"] = round(rsms / total * 100, 2)
-        # DropRate is computed LATER in the notebook/analysis:
-        # DropRate = (R@1_coco_karpathy_test - R@1_this_ann) / R@1_coco_karpathy_test
-        # It requires comparing two separate eval runs, not computable per-image.
+        # RSMS@k: adversarial caption at exactly rank k
+        for k in range(1, RSMS_K + 1):
+            metrics[f"RSMS@{k}"] = round(rsms_at[k] / total * 100, 2)
+        # RSMS = RSMS@1 for backward compatibility
+        metrics["RSMS"] = metrics["RSMS@1"]
+        # DropRate computed in notebook (needs two separate runs to compare).
     return metrics
 
 
