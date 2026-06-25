@@ -154,25 +154,24 @@ class ManifoldSmoother(Smoother):
         return self._sample_from_pca(cached.anchor, cached.pca)
     
     def _sample_from_pca(self, anchor: np.ndarray, pca: LocalPCA) -> np.ndarray:
-        """Sample using precomputed PCA.
-        
-        Args:
-            anchor: Anchor vector (D,)
-            pca: LocalPCA object
-            
-        Returns:
-            Noisy vector (D,)
+        """Sample manifold noise and add to the ORIGINAL anchor.
+
+        The noise direction and scale come from PCA of the local neighbourhood,
+        but the noise is added to the original anchor — NOT to the PCA reconstruction.
+
+        Steps:
+          1. Sample noise in whitened space: n ~ N(0, alpha^2 I)
+          2. Map noise back to original space: noise_orig = (n * sqrt(λ)) @ V.T
+             (no mean added — this is pure noise, not a reconstruction)
+          3. Return: anchor + noise_orig
         """
-        # Whiten (mean-centered, matching notebook: X_whitened = (x - mean) @ (1/sqrt(ev)) * Vt.T)
-        w = whiten(anchor, pca)
-        # Scale noise by sigma / sqrt(lambda_max) so the maximum pixel-space std = sigma.
-        # This is alpha = sigma / sqrt(lambda_max) from the notebook Way-2 convention.
         lambda_max = float(pca.evals[0])
         alpha = self._sigma / np.sqrt(max(lambda_max, 1e-12))
-        noise = gaussian_noise(shape=len(w), std=alpha)
-        w_noisy = w + noise
-        # Unwhiten back
-        return unwhiten(w_noisy, pca)
+        # Sample noise in whitened space
+        noise_w = gaussian_noise(shape=len(pca.evals), std=alpha)
+        # Map noise to original space — no mean shift, just rotate+scale
+        noise_orig = (noise_w * np.sqrt(pca.evals)) @ pca.evecs.T
+        return anchor + noise_orig
     
     def sample_n(self, anchor: np.ndarray, n: int) -> np.ndarray:
         """Sample n noisy points with single PCA computation.
