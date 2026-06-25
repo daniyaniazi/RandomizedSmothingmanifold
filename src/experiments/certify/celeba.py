@@ -1190,9 +1190,9 @@ def save_sample_visualization(
             alpha_display = sigma / np.sqrt(max(lambda_max, 1e-12))
 
         row_labels = [
-            "Original &\nPCA Recon",
-            f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}\n(certified)",
-            f"Manifold noise\nσ={sigma} unscaled\n(ref)",
+            "Original",
+            f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}",
+            f"Manifold noise\nσ={sigma} unscaled",
             f"Isotropic\npixel noise σ={sigma}",
             "Neighbours",
         ]
@@ -1206,53 +1206,36 @@ def save_sample_visualization(
         for r, lbl in enumerate(row_labels):
             _add_row_label(axes, r, lbl)
 
-        # Row 0: Original + PCA Reconstruction
-        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
-        axes[0, 0].set_title("Original", fontsize=9)
+        # Row 0: Original only — no PCA reconstruction (anchor is base, not PCA recon)
+        for i in range(n_noisy_samples):
+            axes[0, i].imshow(_tensor_to_pil(img_tensor))
+            if i == 0:
+                axes[0, i].set_title("Original", fontsize=9)
 
-        if isinstance(manifold_sm, ManifoldSmoother):
-            w = whiten(query_vec, _cached_pca.pca)
-            recon_vec = unwhiten(w, _cached_pca.pca)
-            recon_tensor = torch.from_numpy(recon_vec.reshape(img_tensor.shape)).float()
-            axes[0, 1].imshow(_tensor_to_pil(recon_tensor))
-        else:
-            axes[0, 1].imshow(_tensor_to_pil(img_tensor))
-        axes[0, 1].set_title("PCA Reconstruction", fontsize=9)
+        # Row 1: Manifold noise (alpha scaled) — uses smoother.sample_from_cached()
+        for i in range(n_noisy_samples):
+            if isinstance(manifold_sm, ManifoldSmoother):
+                noisy_flat = manifold_sm.sample_from_cached(_cached_pca)
+                noisy_t    = torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
+            else:
+                noisy_t = sample_pixel(img_tensor, manifold_sm)
+            axes[1, i].imshow(_tensor_to_pil(noisy_t))
+            if i == 0:
+                axes[1, i].set_title(f"Manifold noise  α={alpha_display:.4f}", fontsize=9)
 
-        # Row 1: Manifold noise α = σ/√λ_max  (correct final this is used for certification)
-        if isinstance(manifold_sm, ManifoldSmoother):
-            def _sample_scaled_pixel():
-                w_anchor = whiten(query_vec, _cached_pca.pca)
-                noise = np.random.normal(0.0, alpha_display, size=len(w_anchor)).astype(np.float32)
-                noisy_flat = unwhiten(w_anchor + noise, _cached_pca.pca)
-                return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
-
-            for i in range(n_noisy_samples):
-                axes[1, i].imshow(_tensor_to_pil(_sample_scaled_pixel()))
-                if i == 0:
-                    axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
-        else:
-            for i in range(n_noisy_samples):
-                axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, manifold_sm)))
-                if i == 0:
-                    axes[1, i].set_title(f"Manifold noise  α=σ/√λ_max={alpha_display:.4f}  (certified)", fontsize=9)
-
-        # Row 2: Manifold noise σ unscaled (reference — add noise with raw σ in whitened space)
-        if isinstance(manifold_sm, ManifoldSmoother):
-            def _sample_unscaled_pixel():
-                w_anchor = whiten(query_vec, _cached_pca.pca)
-                noise = np.random.normal(0.0, sigma, size=len(w_anchor)).astype(np.float32)
-                noisy_flat = unwhiten(w_anchor + noise, _cached_pca.pca)
-                return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
-            for i in range(n_noisy_samples):
-                axes[2, i].imshow(_tensor_to_pil(_sample_unscaled_pixel()))
-                if i == 0:
-                    axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled  (ref)", fontsize=9)
-        else:
-            for i in range(n_noisy_samples):
-                axes[2, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
-                if i == 0:
-                    axes[2, i].set_title(f"Isotropic pixel noise  σ={sigma}  (ref)", fontsize=9)
+        # Row 2: Manifold noise unscaled (sigma directly, no alpha scaling) — for comparison
+        for i in range(n_noisy_samples):
+            if isinstance(manifold_sm, ManifoldSmoother):
+                pca = _cached_pca.pca
+                noise_w    = np.random.normal(0.0, sigma, size=len(pca.evals)).astype(np.float32)
+                noise_orig = (noise_w * np.sqrt(pca.evals)) @ pca.evecs.T
+                noisy_flat = query_vec + noise_orig
+                noisy_t    = torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
+            else:
+                noisy_t = sample_pixel(img_tensor, iso_pixel)
+            axes[2, i].imshow(_tensor_to_pil(noisy_t))
+            if i == 0:
+                axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled", fontsize=9)
 
         # Row 3: Isotropic pixel noise
         for i in range(n_noisy_samples):

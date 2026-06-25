@@ -356,23 +356,18 @@ class ManifoldSmoother(Smoother):
             B = shape[0]
             x = images  # already (B, D)
 
-        mean  = gpu_cache['mean'][indices]    # (B, D)
         evecs = gpu_cache['evecs'][indices]   # (B, D, K)
         evals = gpu_cache['evals'][indices]   # (B, K)
 
-        # Whiten: w = (x - mean) @ evecs / sqrt(evals)
-        x_c = (x - mean).unsqueeze(1)                          # (B, 1, D)
-        w   = torch.bmm(x_c, evecs).squeeze(1)                 # (B, K)
-        w   = w / torch.sqrt(evals.clamp(min=1e-12))           # (B, K)
-
         # Noise: alpha = sigma / sqrt(lambda_max)
         alpha = self._sigma / torch.sqrt(evals[:, 0].clamp(min=1e-12))  # (B,)
-        noise = torch.randn_like(w) * alpha.unsqueeze(1)                # (B, K)
-        w_noisy = w + noise
-
-        # Unwhiten: x' = (w_noisy * sqrt(evals)) @ evecs.T + mean
-        w_s    = w_noisy * torch.sqrt(evals.clamp(min=1e-12))  # (B, K)
-        x_out  = torch.bmm(w_s.unsqueeze(1),
-                            evecs.transpose(1, 2)).squeeze(1) + mean  # (B, D)
+        # Sample noise in whitened space
+        noise_w = torch.randn_like(evals) * alpha.unsqueeze(1)          # (B, K)
+        # Map noise to original space: noise_orig = (noise_w * sqrt(evals)) @ evecs.T
+        # No mean added — noise is added to the original anchor, not the PCA reconstruction
+        noise_s   = noise_w * torch.sqrt(evals.clamp(min=1e-12))        # (B, K)
+        noise_orig = torch.bmm(noise_s.unsqueeze(1),
+                               evecs.transpose(1, 2)).squeeze(1)        # (B, D)
+        x_out = x + noise_orig
 
         return x_out.view(shape)

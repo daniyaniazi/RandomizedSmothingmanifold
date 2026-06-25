@@ -371,23 +371,12 @@ def save_seg_visualization(
     cfg=None,
     recon_pred_mask: Optional[np.ndarray] = None,  # BiSeNet on PCA recon (manifold only)
 ) -> None:
-    """CelebA-style row layout.
+    """Row layout (same for Manifold and Isotropic):
 
-    MANIFOLD:
-      Row 0: Original | GT mask | Certified mask (grey=abstain) | Abstain overlay
-      Row 1: PCA recon | Recon seg mask | — | —
-    MANIFOLD:
-      Row 0: Original | GT mask | Clean pred mask | —
-      Row 1: PCA recon | Clean pred mask on recon | Certified mask (MC voting) | —
-      Row 2: Mani noisy seg 1 | Mani noisy seg 2 | Mani noisy seg 3 | Mani noisy seg 4
-      Row 3: Mani noisy img 1 | Mani noisy img 2 | Mani noisy img 3 | Mani noisy img 4
-      Row 4: NN img 1 | NN img 2 | NN img 3 | NN img 4
-
-    ISOTROPIC:
-      Row 0: Original | GT mask | Clean pred mask | —
-      Row 1: Certified mask (MC voting) | — | — | —
-      Row 2: Iso noisy seg 1 | Iso noisy seg 2 | Iso noisy seg 3 | Iso noisy seg 4
-      Row 3: Iso noisy img 1 | Iso noisy img 2 | Iso noisy img 3 | Iso noisy img 4
+      Row 0: Original | GT mask | Clean pred mask | Certified mask
+      Row 1: Noisy seg 1 | Noisy seg 2 | Noisy seg 3 | Noisy seg 4
+      Row 2: Noisy img 1 | Noisy img 2 | Noisy img 3 | Noisy img 4
+      Row 3: NN img 1   | NN img 2   | NN img 3   | NN img 4  (manifold only)
     """
     _apply_viz_style()
     try:
@@ -397,13 +386,9 @@ def save_seg_visualization(
 
     viz_dir.mkdir(parents=True, exist_ok=True)
 
-    N_COLS = 4   # always 4 columns
-    n_nn   = len(nn_imgs)      # pass exactly 4 (manifold) or 0 (iso)
-
-    # Row count
-    # manifold: row0 + row1(recon) + row_noisy_masks + row_noisy_imgs + row_nn_imgs
-    # iso:      row0 + row1(clean pred) + row_noisy_masks + row_noisy_imgs
-    n_rows = 4 + (1 if n_nn > 0 else 0)
+    N_COLS = 4
+    n_nn   = len(nn_imgs)
+    n_rows = 3 + (1 if n_nn > 0 else 0)
 
     fig, axes = plt.subplots(n_rows, N_COLS,
                              figsize=(3.5 * N_COLS, 3.2 * n_rows),
@@ -423,58 +408,37 @@ def save_seg_visualization(
         ax.axis("off")
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
-    cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())  # MC majority vote mask
-    cert_rgb[~cert_result.certified] = [255, 255, 255]     # white = abstain
+    cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())
+    cert_rgb[~cert_result.certified] = [255, 255, 255]   # white = abstain
 
-    # ── Row 0: Original | GT mask | Clean pred mask | — ──────────────────────
+    # ── Row 0: Original | GT mask | Clean pred mask | Certified mask ──────────
     _lbl(0, "Original &\nClean pred")
     _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
     _show(axes[0, 2], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+    _show(axes[0, 3], Image.fromarray(cert_rgb),
+          f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
 
-    # ── Row 1 ─────────────────────────────────────────────────────────────────
-    if is_manifold and pca_cached is not None:
-        # Manifold: PCA recon | pred mask on recon | certified mask
-        _lbl(1, "PCA Recon &\nCertified")
-        try:
-            from src.smoothing.pca import whiten, unwhiten
-            _qv = img_tensor.numpy().flatten().astype(np.float32)
-            _rv = unwhiten(whiten(_qv, pca_cached.pca), pca_cached.pca)
-            _recon_t = torch.from_numpy(_rv.reshape(img_tensor.shape)).float()
-        except Exception:
-            _recon_t = img_tensor
-        _show(axes[1, 0], _tensor_to_pil(_recon_t), "PCA Recon")
-        # Use recon_pred_mask if provided, else fall back to clean pred
-        _recon_pred = recon_pred_mask if recon_pred_mask is not None else pred_mask
-        _show(axes[1, 1], Image.fromarray(_mask_to_rgb(_recon_pred)), "Pred on recon")
-        _show(axes[1, 2], Image.fromarray(cert_rgb),
-              f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
-    else:
-        # Isotropic: certified mask only
-        _lbl(1, "Certified")
-        _show(axes[1, 0], Image.fromarray(cert_rgb),
-              f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
-
-    # ── Row 2: Noisy segmentation masks (4 MC samples) ────────────────────────
-    _lbl(2, f"{mode_lbl}\nNoisy segs")
+    # ── Row 1: Noisy segmentation masks (4 MC samples) ────────────────────────
+    _lbl(1, f"{mode_lbl}\nNoisy segs")
     for j in range(N_COLS):
         if j < len(noisy_masks):
-            _show(axes[2, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
+            _show(axes[1, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
                   f"MC seg {j+1}", _VC['iso_border'])
 
-    # ── Row 3: Noisy images (4 MC samples) ────────────────────────────────────
-    _lbl(3, f"{mode_lbl}\nNoisy imgs")
+    # ── Row 2: Noisy images (4 MC samples) ────────────────────────────────────
+    _lbl(2, f"{mode_lbl}\nNoisy imgs")
     for j in range(N_COLS):
         if j < len(noisy_imgs):
-            _show(axes[3, j], _tensor_to_pil(noisy_imgs[j]),
+            _show(axes[2, j], _tensor_to_pil(noisy_imgs[j]),
                   f"MC img {j+1}  σ={sigma}", _VC['iso_border'])
 
-    # ── Row 4: NN images (manifold only, no masks) ────────────────────────────
+    # ── Row 3: NN images (manifold only) ──────────────────────────────────────
     if n_nn > 0:
-        _lbl(4, "NN imgs")
+        _lbl(3, "NN imgs")
         for j in range(N_COLS):
             if j < len(nn_imgs):
-                _show(axes[4, j], _tensor_to_pil(nn_imgs[j]),
+                _show(axes[3, j], _tensor_to_pil(nn_imgs[j]),
                       f"NN-{j+1}", _VC['nn_border'])
 
     _ood_seg = getattr(cfg.dataset if cfg else None, 'ood_attribute', None) if cfg else None
