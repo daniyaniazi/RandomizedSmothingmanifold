@@ -1206,11 +1206,9 @@ def save_sample_visualization(
         for r, lbl in enumerate(row_labels):
             _add_row_label(axes, r, lbl)
 
-        # Row 0: Original only — no PCA reconstruction (anchor is base, not PCA recon)
-        for i in range(n_noisy_samples):
-            axes[0, i].imshow(_tensor_to_pil(img_tensor))
-            if i == 0:
-                axes[0, i].set_title("Original", fontsize=9)
+        # Row 0: Original in col 0 only
+        axes[0, 0].imshow(_tensor_to_pil(img_tensor))
+        axes[0, 0].set_title("Original", fontsize=9)
 
         # Row 1: Manifold noise (alpha scaled) — uses smoother.sample_from_cached()
         for i in range(n_noisy_samples):
