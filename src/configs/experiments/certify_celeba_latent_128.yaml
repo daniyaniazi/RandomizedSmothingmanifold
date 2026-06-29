@@ -42,7 +42,7 @@ smoothing:
   n0_samples: 100
   n_samples: 250
   knn_k: 150
-  scale_noise: true   # true = alpha=sigma/sqrt(lambda_max), false = alpha=sigma directly
+  scale_noise: false   # true = alpha=sigma/sqrt(lambda_max), false = alpha=sigma directly
   eps_eig: 1.0e-06
   use_manifold: true
 

@@ -47,7 +47,7 @@ smoothing:
   n0_samples: 30
   n_samples: 100
   knn_k: 500
-  scale_noise: true   # true = alpha=sigma/sqrt(lambda_max), false = alpha=sigma directly
+  scale_noise: false   # true = alpha=sigma/sqrt(lambda_max), false = alpha=sigma directly
   eps_eig: 1.0e-06
   use_manifold: true  # true = local PCA manifold, false = isotropic
 
