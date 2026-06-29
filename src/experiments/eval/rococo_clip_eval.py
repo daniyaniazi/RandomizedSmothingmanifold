@@ -209,6 +209,7 @@ def get_smoothed_embeddings(
             index=pixel_index,
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
         )
         for i in tqdm(range(N), desc=f"Manifold smoothing (n={cfg.smoothing.n_samples})"):
             smoothed[i] = smooth_manifold(image_embs[i], smoother, cfg.smoothing.n_samples)

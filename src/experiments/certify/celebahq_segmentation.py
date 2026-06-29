@@ -694,6 +694,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
         smoother = ManifoldSmoother(
             sigma=sigma, index=pixel_index,
             knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
         )
     else:
         smoother = IsotropicSmoother(sigma=sigma)

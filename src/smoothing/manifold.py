@@ -63,11 +63,13 @@ class ManifoldSmoother(Smoother):
         index: NeighborIndex,
         knn_k: int = 32,
         eps_eig: float = 1e-6,
+        scale_noise: bool = True,
     ):
         super().__init__(sigma)
-        self._index = index
-        self._knn_k = knn_k
-        self._eps_eig = eps_eig
+        self._index      = index
+        self._knn_k      = knn_k
+        self._eps_eig    = eps_eig
+        self._scale_noise = scale_noise  # True → alpha = sigma/sqrt(lambda_max), False → alpha = sigma
     
     @property
     def index(self) -> NeighborIndex:
@@ -166,10 +168,12 @@ class ManifoldSmoother(Smoother):
           3. Return: anchor + noise_orig
         """
         lambda_max = float(pca.evals[0])
-        alpha = self._sigma / np.sqrt(max(lambda_max, 1e-12))
-        # Sample noise in whitened space
-        noise_w = gaussian_noise(shape=len(pca.evals), std=alpha)
-        # Map noise to original space — no mean shift, just rotate+scale
+        if self._scale_noise:
+            alpha = self._sigma / np.sqrt(max(lambda_max, 1e-12))
+        else:
+            alpha = self._sigma
+        # Sample noise in whitened space, map back — add to original anchor
+        noise_w    = gaussian_noise(shape=len(pca.evals), std=alpha)
         noise_orig = (noise_w * np.sqrt(pca.evals)) @ pca.evecs.T
         return anchor + noise_orig
     
@@ -359,8 +363,12 @@ class ManifoldSmoother(Smoother):
         evecs = gpu_cache['evecs'][indices]   # (B, D, K)
         evals = gpu_cache['evals'][indices]   # (B, K)
 
-        # Noise: alpha = sigma / sqrt(lambda_max)
-        alpha = self._sigma / torch.sqrt(evals[:, 0].clamp(min=1e-12))  # (B,)
+        # Noise scale: alpha = sigma/sqrt(lambda_max) if scale_noise else sigma
+        if self._scale_noise:
+            alpha = self._sigma / torch.sqrt(evals[:, 0].clamp(min=1e-12))  # (B,)
+        else:
+            alpha = torch.full((evals.shape[0],), self._sigma,
+                               dtype=evals.dtype, device=evals.device)      # (B,)
         # Sample noise in whitened space
         noise_w = torch.randn_like(evals) * alpha.unsqueeze(1)          # (B, K)
         # Map noise to original space: noise_orig = (noise_w * sqrt(evals)) @ evecs.T

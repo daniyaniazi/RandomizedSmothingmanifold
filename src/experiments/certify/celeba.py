@@ -544,6 +544,7 @@ def create_pixel_smoother(
             index=index,
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
         )
     return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
@@ -559,6 +560,7 @@ def create_latent_smoother(
             index=index,
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
         )
     return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
@@ -1183,20 +1185,20 @@ def save_sample_visualization(
 
         # Compute alpha = σ/√λ_max for display — the smoother already uses this internally
         alpha_display = sigma  # fallback
+        scaling_on = True
         if isinstance(manifold_sm, ManifoldSmoother):
-            from src.smoothing.pca import whiten, unwhiten
-            _cached_pca = manifold_sm.compute_pca(query_vec)
-            lambda_max = float(_cached_pca.pca.evals[0])
+            _cached_pca   = manifold_sm.compute_pca(query_vec)
+            lambda_max    = float(_cached_pca.pca.evals[0])
             alpha_display = sigma / np.sqrt(max(lambda_max, 1e-12))
+            scaling_on    = manifold_sm._scale_noise
 
-        row_labels = [
-            "Original",
-            f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}",
-            f"Manifold noise\nσ={sigma} unscaled",
-            f"Isotropic\npixel noise σ={sigma}",
-            "Neighbours",
-        ]
-        n_rows = 5
+        noise_label = (f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}"
+                       if scaling_on else f"Manifold noise\nσ={sigma} (no scaling)")
+        row_labels = ["Original", noise_label]
+        if scaling_on:
+            row_labels.append(f"Manifold noise\nσ={sigma} unscaled")
+        row_labels += [f"Isotropic\npixel noise σ={sigma}", "Neighbours"]
+        n_rows = len(row_labels)
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
                                  figsize=(3 * n_noisy_samples, 3.5 * n_rows))
         axes = np.atleast_2d(axes)
@@ -1221,34 +1223,39 @@ def save_sample_visualization(
             if i == 0:
                 axes[1, i].set_title(f"Manifold noise  α={alpha_display:.4f}", fontsize=9)
 
-        # Row 2: Manifold noise unscaled (sigma directly, no alpha scaling) — for comparison
-        for i in range(n_noisy_samples):
-            if isinstance(manifold_sm, ManifoldSmoother):
-                pca = _cached_pca.pca
-                noise_w    = np.random.normal(0.0, sigma, size=len(pca.evals)).astype(np.float32)
-                noise_orig = (noise_w * np.sqrt(pca.evals)) @ pca.evecs.T
-                noisy_flat = query_vec + noise_orig
-                noisy_t    = torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
-            else:
-                noisy_t = sample_pixel(img_tensor, iso_pixel)
-            axes[2, i].imshow(_tensor_to_pil(noisy_t))
-            if i == 0:
-                axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled", fontsize=9)
+        # Row 2: Manifold noise unscaled — only shown when scale_noise=True
+        if scaling_on:
+            for i in range(n_noisy_samples):
+                if isinstance(manifold_sm, ManifoldSmoother):
+                    pca = _cached_pca.pca
+                    noise_w    = np.random.normal(0.0, sigma, size=len(pca.evals)).astype(np.float32)
+                    noise_orig = (noise_w * np.sqrt(pca.evals)) @ pca.evecs.T
+                    noisy_flat = query_vec + noise_orig
+                    noisy_t    = torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
+                else:
+                    noisy_t = sample_pixel(img_tensor, iso_pixel)
+                axes[2, i].imshow(_tensor_to_pil(noisy_t))
+                if i == 0:
+                    axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled", fontsize=9)
 
-        # Row 3: Isotropic pixel noise
-        for i in range(n_noisy_samples):
-            axes[3, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
-            if i == 0:
-                axes[3, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
+        # Dynamic row offset — if scaling is off, unscaled row was removed
+        iso_row = 3 if scaling_on else 2
+        nn_row  = 4 if scaling_on else 3
 
-        # Row 4: Neighbours
+        # Isotropic pixel noise
+        for i in range(n_noisy_samples):
+            axes[iso_row, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            if i == 0:
+                axes[iso_row, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
+
+        # Neighbours
         nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
                                  img_tensor.shape, vae, device, is_latent=False)
         for i in range(n_noisy_samples):
             if i < len(nn_imgs):
-                axes[4, i].imshow(_tensor_to_pil(nn_imgs[i]))
+                axes[nn_row, i].imshow(_tensor_to_pil(nn_imgs[i]))
             if i == 0:
-                axes[4, i].set_title("Neighbours", fontsize=9)
+                axes[nn_row, i].set_title("Neighbours", fontsize=9)
 
         # ── Geometry figure ───────────────────────────────────────────────
         if isinstance(manifold_sm, ManifoldSmoother):
