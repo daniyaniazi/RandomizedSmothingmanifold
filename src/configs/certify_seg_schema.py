@@ -43,6 +43,7 @@ class SegSmoothingConfig:
     use_manifold: bool = False
     knn_k: int = 500
     eps_eig: float = 1e-6
+    scale_noise: bool = True   # True=alpha=sigma/sqrt(lambda_max), False=alpha=sigma
     # List of sigmas for multi-sigma sweep (overrides sigma if set)
     sigma_values: Optional[list] = None
 

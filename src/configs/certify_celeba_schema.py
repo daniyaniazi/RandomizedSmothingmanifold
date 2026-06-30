@@ -65,6 +65,7 @@ class CertifySmoothingConfig:
     n_samples: int = 100  # Monte Carlo samples for certification
     knn_k: int = 64
     eps_eig: float = 1e-6
+    scale_noise: bool = True   # True=alpha=sigma/sqrt(lambda_max), False=alpha=sigma
     use_manifold: bool = True  # True = manifold PCA smoothing, False = isotropic
 
 

@@ -19,6 +19,7 @@ class RoCoCoSmoothingConfig:
     # Lower than certification (10-20 is enough for retrieval averaging)
     n_samples: int = 10
     eps_eig: float = 1e-6
+    scale_noise: bool = True   # True=alpha=sigma/sqrt(lambda_max), False=alpha=sigma
     # Multi-sigma sweep
     sigma_values: Optional[List[float]] = None
 
