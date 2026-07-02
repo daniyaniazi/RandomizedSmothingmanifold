@@ -17,6 +17,11 @@ dataset:
   split_seed: 73
   num_workers: 8
   ood_exclude_attribute: null   # e.g. "Wearing_Hat" — excludes attr=1 from all splits
+  # Equal balanced subsets — only active when ood_exclude_attribute is set.
+  # Run notebook Celeba_attribute_analysis.ipynb cell 8 to get recommended values.
+  # null = use all available samples (default, original behaviour).
+  ood_train_subset_per_class: null   # N smile + N non-smile for attr=0 training
+  ood_test_subset_per_class:  null   # N smile + N non-smile for attr=1 val/test
 
 dataloader:
   batch_size: 128

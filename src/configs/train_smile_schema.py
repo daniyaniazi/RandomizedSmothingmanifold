@@ -25,6 +25,12 @@ class SmileDatasetConfig:
     # Set null for standard (non-OOD) training.
     ood_exclude_attribute: Optional[str] = None
 
+    # Balanced equal-size subsets for fair comparison across OOD attributes.
+    # N smile + N non-smile drawn from each split after OOD filtering.
+    # Set null to use all available samples (default, original behaviour).
+    ood_train_subset_per_class: Optional[int] = None   # N per class for attr=0 train
+    ood_test_subset_per_class:  Optional[int] = None   # N per class for attr=1 val/test
+
 
 @dataclass
 class SmileDataloaderConfig:

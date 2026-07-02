@@ -127,6 +127,18 @@ def _read_partition_file(partition_path: Path) -> Dict[str, int]:
     return partitions
 
 
+def _balanced_subset(samples: List[Sample], n_per_class: int, seed: int) -> List[Sample]:
+    """Return at most n_per_class smile + n_per_class non-smile, shuffled."""
+    rng = random.Random(seed)
+    pos = [s for s in samples if s[1] == 1]
+    neg = [s for s in samples if s[1] == 0]
+    rng.shuffle(pos)
+    rng.shuffle(neg)
+    chosen = pos[:n_per_class] + neg[:n_per_class]
+    rng.shuffle(chosen)
+    return chosen
+
+
 def _split_by_ratio(samples: List[Sample], train_ratio: float, val_ratio: float, seed: int):
     if not 0.0 < train_ratio < 1.0:
         raise ValueError("train_ratio must be in (0, 1)")
@@ -276,11 +288,25 @@ def build_smile_dataloaders(
         # Test:  attr=1 only (classifier test_acc evaluation)
         test_samples  = [s for s in test_samples  if _is_ood(s)]
 
+        # ── Balanced equal-size subsets ───────────────────────────────
+        # ood_train_subset_per_class: N smile + N non-smile for training (attr=0)
+        # ood_test_subset_per_class:  N smile + N non-smile for testing  (attr=1)
+        # Set in config to make all OOD experiments comparable.
+        train_npc = getattr(dataset_cfg, "ood_train_subset_per_class", None)
+        test_npc  = getattr(dataset_cfg, "ood_test_subset_per_class",  None)
+        if train_npc is not None and train_npc > 0:
+            train_samples = _balanced_subset(train_samples, train_npc, dataset_cfg.split_seed)
+        if test_npc is not None and test_npc > 0:
+            val_samples  = _balanced_subset(val_samples,  test_npc, dataset_cfg.split_seed)
+            test_samples = _balanced_subset(test_samples, test_npc, dataset_cfg.split_seed)
+
         print(f"OOD setup '{ood_attr}':  "
               f"train={len(train_samples)} (attr=0)  "
               f"val={len(val_samples)} (attr=1)  "
               f"test={len(test_samples)} (attr=1, test partition)  "
-              f"certify_ood={len(certify_ood_samples)} (attr=1, train partition : unseen)")
+              f"certify_ood={len(certify_ood_samples)} (attr=1, train partition : unseen)"
+              + (f"  [balanced: {train_npc}/class train, {test_npc}/class test]"
+                 if train_npc or test_npc else ""))
 
     train_transform, eval_transform = _build_transforms(model_cfg.input_size)
     train_dataset = SmileImageDataset(train_samples, transform=train_transform)
