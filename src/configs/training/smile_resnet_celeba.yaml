@@ -20,8 +20,8 @@ dataset:
   # Equal balanced subsets — only active when ood_exclude_attribute is set.
   # Run notebook Celeba_attribute_analysis.ipynb cell 8 to get recommended values.
   # null = use all available samples (default, original behaviour).
-  ood_train_subset_per_class: null   # N smile + N non-smile for attr=0 training
-  ood_test_subset_per_class:  null   # N smile + N non-smile for attr=1 val/test
+  ood_train_subset_per_class: 9504   # 19,008 total train images per attr (50/50 smile) — bottleneck: No_Beard
+  ood_test_subset_per_class:  136    # 272 total test  images per attr (50/50 smile) — bottleneck: Rosy_Cheeks
 
 dataloader:
   batch_size: 128
