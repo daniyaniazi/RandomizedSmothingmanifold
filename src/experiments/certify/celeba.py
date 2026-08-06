@@ -1021,8 +1021,9 @@ def save_sample_visualization(
         for ax in axes.flat:
             ax.axis("off")
 
-        for r, lbl in enumerate(row_labels):
-            _add_row_label(axes, r, lbl)
+        # Row descriptions are already shown as titles above the first image.
+        # for r, lbl in enumerate(row_labels):
+        #     _add_row_label(axes, r, lbl)
 
         axes[0, 0].imshow(_tensor_to_pil(img_tensor))
         axes[0, 0].set_title("Original", fontsize=9)
@@ -1207,8 +1208,9 @@ def save_sample_visualization(
         for ax in axes.flat:
             ax.axis("off")
 
-        for r, lbl in enumerate(row_labels):
-            _add_row_label(axes, r, lbl)
+        # Row descriptions are already shown as titles above the first image.
+        # for r, lbl in enumerate(row_labels):
+        #     _add_row_label(axes, r, lbl)
 
         # Row 0: Original in col 0 only
         axes[0, 0].imshow(_tensor_to_pil(img_tensor))
