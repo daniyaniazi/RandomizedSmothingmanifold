@@ -262,6 +262,74 @@ def _save_comparison_batch(
     print(f"  Saved: {save_path}")
 
 
+# ── per-sample individual image saver (for paper figures) ────────────────────
+
+_MODE_DIR = {
+    "baseline": "baseline",
+    "iso":      "iso",
+    "manifold": "manifold",
+}
+
+
+def _save_individual_images(sample: Dict, sample_dir: Path) -> None:
+    """Save original.png + per-method top-N images and captions.txt.
+
+    Layout inside *sample_dir*::
+
+        original.png
+        baseline/top1.png … top5.png  captions.txt
+        iso/     top1.png … top5.png  captions.txt
+        manifold/top1.png … top5.png  captions.txt
+    """
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── query / original image ────────────────────────────────────────────
+    try:
+        _load_pil(sample["image_path"]).save(sample_dir / "original.png")
+    except Exception as exc:
+        print(f"    [warn] original.png not saved: {exc}")
+
+    gt_lines = [f"gt_caption: {cap}" for cap in sorted(sample["gt_set"])]
+    (sample_dir / "captions.txt").write_text(
+        "\n".join(gt_lines) + "\n", encoding="utf-8"
+    )
+
+    gt_set  = sample["gt_set"]
+    adv_set = sample["adv_set"]
+
+    for mode_key, dir_name in _MODE_DIR.items():
+        caps, scs, imgs = sample[mode_key]
+        mode_dir = sample_dir / dir_name
+        mode_dir.mkdir(parents=True, exist_ok=True)
+
+        caption_lines = []
+        for rank, (cap, sc, img_path) in enumerate(zip(caps, scs, imgs), 1):
+            # Save retrieved image (or a labeled placeholder for adv-only captions)
+            if img_path is not None:
+                try:
+                    _load_pil(img_path).save(mode_dir / f"top{rank}.png")
+                except Exception as exc:
+                    print(f"    [warn] {dir_name}/top{rank}.png not saved: {exc}")
+            else:
+                # Adversarial caption — no associated image; save a white placeholder
+                from PIL import Image, ImageDraw
+                ph = Image.new("RGB", (256, 256), color=(255, 255, 255))
+                draw = ImageDraw.Draw(ph)
+                draw.text((10, 110), f"Top-{rank}\n(adv)",
+                          fill=(180, 50, 50))
+                ph.save(mode_dir / f"top{rank}.png")
+
+            # Caption annotation
+            tag = " [GT]" if cap in gt_set else (" [ADV]" if cap in adv_set else "")
+            caption_lines.append(f"top{rank} (score={sc:.4f}){tag}: {cap}")
+
+        (mode_dir / "captions.txt").write_text(
+            "\n".join(caption_lines) + "\n", encoding="utf-8"
+        )
+
+    print(f"    Individual images → {sample_dir}")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run_comparison(
@@ -332,8 +400,10 @@ def run_comparison(
                     i, dataset, raw_embs, text_embs, captions,
                     cap_to_img, global_adv_captions,
                     iso_smoother, mani_smoother, cfg.smoothing.n_samples)
-                save_path = out_base / ann_stem / sigma_str / f"sample_{s_num:02d}.png"
+                save_path  = out_base / ann_stem / sigma_str / f"sample_{s_num:02d}.png"
+                sample_dir = out_base / ann_stem / sigma_str / f"sample_{s_num:02d}"
                 _save_comparison_batch([sample], save_path, sigma, ann_stem)
+                _save_individual_images(sample, sample_dir)
 
 
 def parse_args():
