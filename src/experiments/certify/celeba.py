@@ -1013,7 +1013,7 @@ def save_sample_visualization(
     # PIXEL ISOTROPIC
     # ------------------------------------------------------------------
     if not is_latent and not is_manifold:
-        row_labels = ["Original", "Isotropic\npixel noise σ"]
+        row_labels = ["Original", "Isotropic noise"]
         n_rows = 2
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
                                  figsize=(3 * n_noisy_samples, 3.2 * n_rows))
@@ -1030,7 +1030,7 @@ def save_sample_visualization(
         for i in range(n_noisy_samples):
             axes[1, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
             if i == 0:
-                axes[1, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
+                axes[1, i].set_title(f"Isotropic noise at  σ={sigma}", fontsize=9)
 
         # ── Isotropic geometry figure: A/B/C + noisy MC cloud ─────────────
         try:
@@ -1193,10 +1193,12 @@ def save_sample_visualization(
             scaling_on    = manifold_sm._scale_noise
 
         noise_label = (f"Manifold noise\nα=σ/√λ_max={alpha_display:.4f}"
-                       if scaling_on else f"Manifold noise\nσ={sigma} (no scaling)")
+                       if scaling_on else f"Manifold noise\nσ={sigma}")
+        # (no scaling)
         row_labels = ["Original", noise_label]
         if scaling_on:
-            row_labels.append(f"Manifold noise\nσ={sigma} unscaled")
+            row_labels.append(f"Manifold noise\nσ={sigma}")
+            # unscaled
         row_labels += [f"Isotropic\npixel noise σ={sigma}", "Neighbours"]
         n_rows = len(row_labels)
         fig, axes = plt.subplots(n_rows, n_noisy_samples,
@@ -1221,7 +1223,7 @@ def save_sample_visualization(
                 noisy_t = sample_pixel(img_tensor, manifold_sm)
             axes[1, i].imshow(_tensor_to_pil(noisy_t))
             if i == 0:
-                axes[1, i].set_title(f"Manifold noise  α={alpha_display:.4f}", fontsize=9)
+                axes[1, i].set_title(f"Manifold noise  α={alpha_display:.4f}" if scaling_on else f"Manifold noise\nσ={sigma}", fontsize=9)
 
         # Row 2: Manifold noise unscaled — only shown when scale_noise=True
         if scaling_on:
@@ -1236,7 +1238,8 @@ def save_sample_visualization(
                     noisy_t = sample_pixel(img_tensor, iso_pixel)
                 axes[2, i].imshow(_tensor_to_pil(noisy_t))
                 if i == 0:
-                    axes[2, i].set_title(f"Manifold noise  σ={sigma} unscaled", fontsize=9)
+                    axes[2, i].set_title(f"Manifold noise  σ={sigma}", fontsize=9)
+                    # unscaled
 
         # Dynamic row offset — if scaling is off, unscaled row was removed
         iso_row = 3 if scaling_on else 2
@@ -1246,7 +1249,7 @@ def save_sample_visualization(
         for i in range(n_noisy_samples):
             axes[iso_row, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
             if i == 0:
-                axes[iso_row, i].set_title(f"Isotropic pixel noise  σ={sigma}", fontsize=9)
+                axes[iso_row, i].set_title(f"Isotropic noise σ={sigma}", fontsize=9)
 
         # Neighbours
         nn_imgs = _get_nn_images(index, query_vec, n_noisy_samples,
@@ -1414,7 +1417,8 @@ def save_sample_visualization(
     _ood_attr_name = getattr(cfg.dataset, "ood_attribute", None) if hasattr(cfg, "dataset") else None
     _ood_line_samp = f"\nOOD: {_ood_attr_name}=1" if _ood_attr_name else ""
     fig.suptitle(
-        f"{cfg.smoothing.mode.capitalize()} {smoothing_type} Smoothing   σ={sigma}\n"
+        # {cfg.smoothing.mode.capitalize()}
+        f"{smoothing_type} Smoothing at σ={sigma}\n"
         f"True: {true_label}   Predicted: {pred_label}"
         f"{_ood_line_samp}",
         fontsize=11, fontweight="bold",
