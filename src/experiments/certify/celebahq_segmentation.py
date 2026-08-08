@@ -279,6 +279,40 @@ def sample_counts(
     return counts
 
 
+def isotropic_cert_for_comparison(
+    net: torch.nn.Module,
+    img_tensor: torch.Tensor,
+    sigma: float,
+    cfg: SegCertifyConfig,
+    image_size: int,
+    device: torch.device,
+    sample_idx: int,
+) -> SegCertResult:
+    """Compute the isotropic baseline used only in manifold comparisons.
+
+    NumPy's RNG state is restored afterwards so these extra visualization
+    samples do not alter the manifold experiment's certification sequence.
+    """
+    rng_state = np.random.get_state()
+    try:
+        np.random.seed(cfg.seed + 100_000 + sample_idx)
+        smoother = IsotropicSmoother(sigma=sigma)
+        counts_n0 = sample_counts(
+            net, img_tensor, smoother, cfg.smoothing.n0_samples,
+            cfg.dataset.n_classes, image_size, device,
+        )
+        counts_n = sample_counts(
+            net, img_tensor, smoother, cfg.smoothing.n_samples,
+            cfg.dataset.n_classes, image_size, device,
+        )
+        return segcertify(
+            counts_n0, counts_n, sigma, cfg.smoothing.tau,
+            cfg.alpha_conf, correction="holm",
+        )
+    finally:
+        np.random.set_state(rng_state)
+
+
 # ── Visualisation ─────────────────────────────────────────────────────────────
 
 _VC = {
@@ -397,56 +431,50 @@ def save_seg_visualization(
     for ax in axes.flat:
         ax.axis("off")
 
-    def _lbl(row, text):
-        axes[row, 0].text(-0.18, 0.5, text, transform=axes[row, 0].transAxes,
-                          fontsize=8, fontweight="bold", va="center", ha="right",
-                          clip_on=False)
-
     def _show(ax, img_arr, title="", border=None):
         ax.imshow(img_arr)
         ax.set_title(title, fontsize=8, pad=3)
         ax.axis("off")
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
+    row_mode_lbl = "Manifold" if is_manifold else "Isotropic"
     cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())
     cert_rgb[~cert_result.certified] = [255, 255, 255]   # white = abstain
 
     # ── Row 0: Original | GT mask | Clean pred mask | Certified mask ──────────
-    _lbl(0, "Original &\nClean pred")
-    _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original")
+    _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original Image")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
-    _show(axes[0, 2], Image.fromarray(_mask_to_rgb(pred_mask)), "Clean pred mask")
+    _show(axes[0, 2], Image.fromarray(_mask_to_rgb(pred_mask)), "Predicted mask")
     _show(axes[0, 3], Image.fromarray(cert_rgb),
-          f"Certified mask  abs={cert_result.abstain_rate*100:.1f}%")
+          f"Certified mask  (abs={cert_result.abstain_rate*100:.1f}%)")
 
     # ── Row 1: Noisy segmentation masks (4 MC samples) ────────────────────────
-    _lbl(1, f"{mode_lbl}\nNoisy segs")
     for j in range(N_COLS):
         if j < len(noisy_masks):
             _show(axes[1, j], Image.fromarray(_mask_to_rgb(noisy_masks[j])),
-                  f"MC seg {j+1}", _VC['iso_border'])
+                  f"{row_mode_lbl} Noisy Segmentation Masks" if j == 0 else "",
+                  _VC['iso_border'])
 
     # ── Row 2: Noisy images (4 MC samples) ────────────────────────────────────
-    _lbl(2, f"{mode_lbl}\nNoisy imgs")
     for j in range(N_COLS):
         if j < len(noisy_imgs):
             _show(axes[2, j], _tensor_to_pil(noisy_imgs[j]),
-                  f"MC img {j+1}  σ={sigma}", _VC['iso_border'])
+                  f"{row_mode_lbl} Noisy Samples" if j == 0 else "",
+                  _VC['iso_border'])
 
     # ── Row 3: NN images (manifold only) ──────────────────────────────────────
     if n_nn > 0:
-        _lbl(3, "NN imgs")
         for j in range(N_COLS):
             if j < len(nn_imgs):
                 _show(axes[3, j], _tensor_to_pil(nn_imgs[j]),
-                      f"NN-{j+1}", _VC['nn_border'])
+                      "Neighbours" if j == 0 else "", _VC['nn_border'])
 
     _ood_seg = getattr(cfg.dataset if cfg else None, 'ood_attribute', None) if cfg else None
     _ood_seg_line = f"\nOOD: {_ood_seg}=1" if _ood_seg else ""
     fig.suptitle(
-        f"{mode_lbl} Smoothing   σ={sigma}\n"
-        f"Certified: {cert_result.n_certified}/{cert_result.n_pixels} px "
-        f"({100*(1-cert_result.abstain_rate):.1f}%){_ood_seg_line}",
+        f"{mode_lbl} Smoothing at  σ={sigma}\n",
+        # f"Certified: {cert_result.n_certified}/{cert_result.n_pixels} px "
+        # f"({100*(1-cert_result.abstain_rate):.1f}%){_ood_seg_line}",
         fontsize=10, fontweight="bold",
     )
     plt.tight_layout()
@@ -649,6 +677,150 @@ def save_seg_comparison(
     plt.close(fig)
 
 
+def save_certified_mask_comparison(
+    experiment_dir: Path,
+    sample_idx: int,
+    image_id: int,
+    img_tensor: torch.Tensor,
+    gt_mask: torch.Tensor,
+    cert_result: SegCertResult,
+    is_manifold: bool,
+    sigma: float,
+) -> None:
+    """Save one side-by-side ISO/manifold certified-mask comparison.
+
+    Each smoothing run first stores a small artifact for the sample.  As soon as
+    the matching artifact from the other mode exists, the 2x2 comparison is
+    written into both modes' ``sigma_x_xx/comparison`` directories.  This makes
+    the operation safe when isotropic and manifold jobs run in parallel.
+    """
+    comparison_dir = experiment_dir / "comparison"
+    data_dir = comparison_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    mode = "manifold" if is_manifold else "isotropic"
+    artifact_path = data_dir / f"sample_{sample_idx:04d}_{mode}.npz"
+    temporary_artifact = artifact_path.with_suffix(".npz.tmp")
+    image_uint8 = (
+        img_tensor.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255
+    ).astype(np.uint8)
+    with open(temporary_artifact, "wb") as artifact_file:
+        np.savez_compressed(
+            artifact_file,
+            image=image_uint8,
+            gt_mask=gt_mask.cpu().numpy().astype(np.int16),
+            pred_mask=cert_result.pred_mask.astype(np.int16),
+            certified=cert_result.certified.astype(bool),
+            image_id=np.asarray(str(image_id)),
+        )
+    temporary_artifact.replace(artifact_path)
+
+    other_mode = "isotropic" if is_manifold else "manifold"
+    other_mode_dir = experiment_dir.parent.parent / f"pixel_{other_mode}" / experiment_dir.name
+    other_artifact = (
+        other_mode_dir / "comparison" / "data"
+        / f"sample_{sample_idx:04d}_{other_mode}.npz"
+    )
+    if not other_artifact.exists():
+        return
+
+    try:
+        with np.load(artifact_path, allow_pickle=False) as current, \
+             np.load(other_artifact, allow_pickle=False) as other:
+            current_data = {key: current[key] for key in current.files}
+            other_data = {key: other[key] for key in other.files}
+    except (OSError, ValueError) as exc:
+        # A parallel writer may still be closing the counterpart artifact.
+        _log(f"Comparison deferred for sample {sample_idx}: {exc}")
+        return
+
+    if str(current_data["image_id"]) != str(other_data["image_id"]):
+        _log(
+            f"Comparison skipped for sample {sample_idx}: image IDs differ "
+            f"({current_data['image_id']} vs {other_data['image_id']})"
+        )
+        return
+
+    iso = current_data if mode == "isotropic" else other_data
+    mani = current_data if mode == "manifold" else other_data
+
+    iso_rgb = _mask_to_rgb(iso["pred_mask"])
+    iso_rgb[~iso["certified"]] = [255, 255, 255]
+    mani_rgb = _mask_to_rgb(mani["pred_mask"])
+    mani_rgb[~mani["certified"]] = [255, 255, 255]
+
+    _apply_viz_style()
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(6.5, 6.5))
+    panels = (
+        (iso["image"], "Original"),
+        (_mask_to_rgb(iso["gt_mask"]), "GT mask"),
+        (iso_rgb, "Isotropic certified mask"),
+        (mani_rgb, "Manifold certified mask"),
+    )
+    for ax, (panel, title) in zip(axes.flat, panels):
+        ax.imshow(panel)
+        ax.set_title(title, fontsize=10)
+        ax.axis("off")
+    fig.suptitle(f"Certified masks  |  sigma={sigma:g}", fontsize=11)
+    fig.tight_layout()
+
+    filename = f"sample_{sample_idx:04d}_iso_vs_manifold.png"
+    for target_dir in (comparison_dir, other_mode_dir / "comparison"):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(target_dir / filename, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_manifold_comparison(
+    experiment_dir: Path,
+    sample_idx: int,
+    img_tensor: torch.Tensor,
+    gt_mask: torch.Tensor,
+    iso_cert: SegCertResult,
+    mani_cert: SegCertResult,
+    sigma: float,
+) -> None:
+    """Save a compact comparison produced entirely by a manifold run."""
+    _apply_viz_style()
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    comparison_dir = experiment_dir / "comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+
+    iso_rgb = _mask_to_rgb(iso_cert.pred_mask.copy())
+    iso_rgb[~iso_cert.certified] = [255, 255, 255]
+    mani_rgb = _mask_to_rgb(mani_cert.pred_mask.copy())
+    mani_rgb[~mani_cert.certified] = [255, 255, 255]
+
+    fig, axes = plt.subplots(2, 2, figsize=(6.5, 6.5))
+    panels = (
+        (_tensor_to_pil(img_tensor), "Original"),
+        (_mask_to_rgb(gt_mask.cpu().numpy()), "GT mask"),
+        (iso_rgb, "Isotropic certified mask"),
+        (mani_rgb, "Manifold certified mask"),
+    )
+    for ax, (panel, title) in zip(axes.flat, panels):
+        ax.imshow(panel)
+        ax.set_title(title, fontsize=10)
+        ax.axis("off")
+    fig.suptitle(f"Certified masks  |  sigma={sigma:g}", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(
+        comparison_dir / f"sample_{sample_idx:04d}_iso_vs_manifold.png",
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
 # ── Main certification pipeline ───────────────────────────────────────────────
 
 def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
@@ -774,6 +946,17 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
             "iou_per_class":  iou_per_class,
         }
         results.append(result)
+
+        # A manifold run computes its own isotropic baseline for five figures.
+        if (cfg.output.save_visualizations and cfg.smoothing.use_manifold
+                and idx < 5):
+            iso_cert = isotropic_cert_for_comparison(
+                net, img_tensor, sigma, cfg, image_size, device, idx,
+            )
+            save_manifold_comparison(
+                paths.experiment_dir, idx, img_tensor, gt_mask,
+                iso_cert, cert, sigma,
+            )
 
         # ── Visualisation (first N samples) ───────────────────────────────────
         if cfg.output.save_visualizations and idx < cfg.output.num_viz_samples:
@@ -1070,6 +1253,16 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
                                                      cfg.dataset.n_classes).tolist(),
             })
 
+            if (cfg.output.save_visualizations and cfg.smoothing.use_manifold
+                    and idx < 5):
+                iso_cert = isotropic_cert_for_comparison(
+                    net, img_tensor, sigma, cfg, image_size, device, idx,
+                )
+                save_manifold_comparison(
+                    state["paths"].experiment_dir, idx, img_tensor, gt_mask,
+                    iso_cert, cert, sigma,
+                )
+
             # Visualisation (first sigma only for first N samples)
             if (cfg.output.save_visualizations and idx < cfg.output.num_viz_samples
                     and sigma == active_sigmas[0]):
@@ -1235,6 +1428,16 @@ def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
 
             cert = segcertify(counts_n0, counts_n, sigma, cfg.smoothing.tau,
                               cfg.alpha_conf, correction="holm")
+
+            if (cfg.output.save_visualizations and cfg.smoothing.use_manifold
+                    and idx < 5):
+                iso_cert = isotropic_cert_for_comparison(
+                    net, img_tensor, sigma, cfg, image_size, device, idx,
+                )
+                save_manifold_comparison(
+                    paths.experiment_dir, idx, img_tensor, gt_mask,
+                    iso_cert, cert, sigma,
+                )
 
             # Clean prediction — single forward pass, no noise
             _mean_n_v = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
