@@ -16,7 +16,7 @@ dataset:
   num_workers: 4
   subset_size: 100
   # OOD attribute — must match certify_celeba_pixel.yaml for fair iso vs manifold comparison
-  ood_attribute: null
+  ood_attribute: Male
   ood_balanced: true
   ood_seed: 73
   split_seed: 73               # must match training split_seed to ensure same train/test split
@@ -35,8 +35,8 @@ smoothing:
   mode: pixel
   sigma: 0.10  # default sigma
   # sigma_values: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.50, 2.00]
-  sigma_values: [0.10,  0.20, 0.30,  0.40,  0.50,  0.60,  0.70, 0.80,  0.90,  1.00]  
-  # sigma_values: [0.70]
+  # sigma_values: [0.10,  0.20, 0.30,  0.40,  0.50,  0.60,  0.70, 0.80,  0.90,  1.00]  
+  sigma_values: [0.02, 0.05, 0.07]
   n0_samples: 30
   n_samples: 100
   knn_k: 500         # ignored when use_manifold=false
