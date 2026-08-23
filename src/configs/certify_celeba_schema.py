@@ -64,6 +64,9 @@ class CertifySmoothingConfig:
     n0_samples: int = 64  # pilot samples for class selection (paper CERTIFY stage-1)
     n_samples: int = 100  # Monte Carlo samples for certification
     knn_k: int = 64
+    # None preserves the original method: PCA uses min(K, ambient_dim)
+    # components. An explicit value must not exceed K-1 after centering.
+    pca_dim: Optional[int] = None
     eps_eig: float = 1e-6
     scale_noise: bool = True   # True=alpha=sigma/sqrt(lambda_max), False=alpha=sigma
     use_manifold: bool = True  # True = manifold PCA smoothing, False = isotropic
@@ -86,6 +89,11 @@ class CertifyOutputConfig:
     save_per_sample: bool = True  # save per-sample certification results
     save_visualizations: bool = True
     num_viz_samples: int = 10
+    # Optional routing for manifold ablations:
+    # pixel_manifold/ablation/sigma_x_xx/{study}/{variant}/
+    ablation_study: Optional[str] = None
+    ablation_variant: Optional[str] = None
+    save_eigenvalues: bool = True
 
 
 @dataclass

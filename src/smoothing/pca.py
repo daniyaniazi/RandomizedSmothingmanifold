@@ -38,16 +38,19 @@ class LocalPCA:
 def fit_local_pca(
     neighbors: np.ndarray,
     eps_eig: float = 1e-6,
+    n_components: int | None = None,
 ) -> LocalPCA:
     """Fit local PCA on a set of neighbor vectors (reference-style).
     
-    Uses sklearn PCA like the notebook: centers the data, fits PCA with
-    n_components = K (number of neighbors), returns eigenvalues and
-    eigenvector matrix.
+    Uses sklearn PCA like the notebook: centers the data and, by default, fits
+    PCA with n_components = K (number of neighbors). An explicit component
+    count supports controlled PCA-dimension ablations.
     
     Args:
         neighbors: Neighbor vectors (K, D)
         eps_eig: Minimum eigenvalue clamp to avoid division by zero
+        n_components: Optional explicit PCA dimension. Because K samples are
+            centered before PCA, an explicit dimension must be at most K-1.
         
     Returns:
         LocalPCA object with mean, eigenvalues, and eigenvectors
@@ -65,8 +68,18 @@ def fit_local_pca(
     centered = neighbors - mean
     
     # Fit PCA (same as reference notebook workflow)
-    n_components = min(K, D)
-    pca = PCA(n_components=n_components)
+    if n_components is None:
+        # Preserve the original implementation for baseline reproducibility.
+        fitted_components = min(K, D)
+    else:
+        fitted_components = int(n_components)
+        max_meaningful_rank = min(K - 1, D)
+        if not 1 <= fitted_components <= max_meaningful_rank:
+            raise ValueError(
+                f"pca_dim must be in [1, {max_meaningful_rank}] for "
+                f"K={K}, D={D}; got {fitted_components}"
+            )
+    pca = PCA(n_components=fitted_components)
     pca.fit(centered)
     
     ev = np.maximum(pca.explained_variance_.astype(np.float32), eps_eig)

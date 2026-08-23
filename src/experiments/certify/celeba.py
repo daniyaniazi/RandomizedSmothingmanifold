@@ -248,9 +248,24 @@ class CertifyPaths:
         mode_tag = f"{cfg.smoothing.mode}_{'manifold' if cfg.smoothing.use_manifold else 'isotropic'}"
         ood_attr = getattr(cfg.dataset, "ood_attribute", None)
         if ood_attr:
-            experiment_dir = base_dir / "certify_ood" / ood_attr.lower() / mode_tag / sigma_tag
+            mode_dir = base_dir / "certify_ood" / ood_attr.lower() / mode_tag
         else:
-            experiment_dir = base_dir / "certify" / mode_tag / sigma_tag
+            mode_dir = base_dir / "certify" / mode_tag
+
+        ablation_study = getattr(cfg.output, "ablation_study", None)
+        ablation_variant = getattr(cfg.output, "ablation_variant", None)
+        if bool(ablation_study) != bool(ablation_variant):
+            raise ValueError(
+                "output.ablation_study and output.ablation_variant must either "
+                "both be set or both be null"
+            )
+        if ablation_study:
+            experiment_dir = (
+                mode_dir / "ablation" / sigma_tag
+                / str(ablation_study) / str(ablation_variant)
+            )
+        else:
+            experiment_dir = mode_dir / sigma_tag
         
         return cls(
             base_dir=base_dir,
@@ -545,6 +560,7 @@ def create_pixel_smoother(
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
             scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+            pca_dim=getattr(cfg.smoothing, "pca_dim", None),
         )
     return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
@@ -561,6 +577,7 @@ def create_latent_smoother(
             knn_k=cfg.smoothing.knn_k,
             eps_eig=cfg.smoothing.eps_eig,
             scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+            pca_dim=getattr(cfg.smoothing, "pca_dim", None),
         )
     return IsotropicSmoother(sigma=cfg.smoothing.sigma)
 
@@ -1926,6 +1943,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
             "n_samples": int(cfg.smoothing.n_samples),
             "total_mc_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
             "knn_k": cfg.smoothing.knn_k,
+            "pca_dim": getattr(cfg.smoothing, "pca_dim", None),
             "eps_eig": cfg.smoothing.eps_eig,
             "alpha_conf": cfg.alpha_conf,
         },
@@ -2246,7 +2264,7 @@ def run_certification(cfg: CertifyConfig) -> Dict:
 
             # Save eigenvalue spectra + geometry arrays for all samples
             eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if r.get("eigenvalues") is not None]
-            if eigen_samples:
+            if eigen_samples and getattr(cfg.output, "save_eigenvalues", True):
                 eigen_path = paths.experiment_dir / "eigenvalues.npz"
                 raw_evals_list = [np.array(e[1], dtype=np.float64) for e in eigen_samples]
                 # Build geometry arrays (mirrors NER eigenvalues.npz format)
@@ -2544,8 +2562,14 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
         sigma_tag = f"sigma_{sigma:.2f}".replace(".", "_")
         mode_tag = f"{cfg.smoothing.mode}_{'manifold' if cfg.smoothing.use_manifold else 'isotropic'}"
         if ood_attr:
-            return paths.base_dir / "certify_ood" / ood_attr.lower() / mode_tag / sigma_tag
-        return paths.base_dir / "certify" / mode_tag / sigma_tag
+            mode_dir = paths.base_dir / "certify_ood" / ood_attr.lower() / mode_tag
+        else:
+            mode_dir = paths.base_dir / "certify" / mode_tag
+        ablation_study = getattr(cfg.output, "ablation_study", None)
+        ablation_variant = getattr(cfg.output, "ablation_variant", None)
+        if ablation_study:
+            return mode_dir / "ablation" / sigma_tag / str(ablation_study) / str(ablation_variant)
+        return mode_dir / sigma_tag
 
     # Build per-sigma mutable state dicts
     sigma_states: Dict[float, Dict] = {}
@@ -2635,6 +2659,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                     index=pixel_index,
                     knn_k=cfg.smoothing.knn_k,
                     eps_eig=cfg.smoothing.eps_eig,
+                    pca_dim=getattr(cfg.smoothing, "pca_dim", None),
                 )
                 _pca_cached = _tmp_smoother.compute_pca(img_tensor.numpy().flatten().astype(np.float32))
             elif cfg.smoothing.mode == "latent" and vae is not None and latent_index is not None:
@@ -2643,6 +2668,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                     index=latent_index,
                     knn_k=cfg.smoothing.knn_k,
                     eps_eig=cfg.smoothing.eps_eig,
+                    pca_dim=getattr(cfg.smoothing, "pca_dim", None),
                 )
                 _pca_cached = _tmp_smoother.compute_pca(_lat_z)
 
@@ -2669,9 +2695,13 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
             # Build sigma-specific smoother (cheap — no kNN, just sets sigma)
             if cfg.smoothing.use_manifold:
                 _pix_sm = ManifoldSmoother(sigma=sigma, index=pixel_index,
-                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig) if pixel_index else IsotropicSmoother(sigma=sigma)
+                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig,
+                                           scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+                                           pca_dim=getattr(cfg.smoothing, "pca_dim", None)) if pixel_index else IsotropicSmoother(sigma=sigma)
                 _lat_sm = ManifoldSmoother(sigma=sigma, index=latent_index,
-                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig) if latent_index else IsotropicSmoother(sigma=sigma)
+                                           knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig,
+                                           scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+                                           pca_dim=getattr(cfg.smoothing, "pca_dim", None)) if latent_index else IsotropicSmoother(sigma=sigma)
             else:
                 _pix_sm = IsotropicSmoother(sigma=sigma)
                 _lat_sm = IsotropicSmoother(sigma=sigma)
@@ -2856,6 +2886,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                 "n_samples": int(cfg.smoothing.n_samples),
                 "total_mc_samples": int(cfg.smoothing.n0_samples) + int(cfg.smoothing.n_samples),
                 "knn_k": cfg.smoothing.knn_k,
+                "pca_dim": getattr(cfg.smoothing, "pca_dim", None),
                 "eps_eig": cfg.smoothing.eps_eig,
                 "alpha_conf": cfg.alpha_conf,
             },
@@ -3075,7 +3106,7 @@ def run_certification_multi_sigma(cfg: CertifyConfig, sigma_values: List[float])
                 _log(f"  Results CSV: {csv_path}")
 
                 eigen_samples = [(r["idx"], r["eigenvalues"]) for r in results if r.get("eigenvalues") is not None]
-                if eigen_samples:
+                if eigen_samples and getattr(cfg.output, "save_eigenvalues", True):
                     eigen_path = exp_dir / "eigenvalues.npz"
                     raw_evals_list = [np.array(e[1], dtype=np.float64) for e in eigen_samples]
                     _ax_max_len = max((len(e) for e in raw_evals_list), default=0)

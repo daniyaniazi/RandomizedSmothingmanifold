@@ -50,6 +50,8 @@ class ManifoldSmoother(Smoother):
         index: kNN index for neighbor lookup
         knn_k: Number of neighbors for local PCA
         eps_eig: Minimum eigenvalue clamp
+        pca_dim: Optional number of retained PCA components. None preserves the
+            original behavior of retaining all components returned by PCA.
         
     Example:
         index = load_index(...)
@@ -64,12 +66,19 @@ class ManifoldSmoother(Smoother):
         knn_k: int = 32,
         eps_eig: float = 1e-6,
         scale_noise: bool = True,
+        pca_dim: Optional[int] = None,
     ):
         super().__init__(sigma)
+        if pca_dim is not None and not 1 <= int(pca_dim) <= int(knn_k) - 1:
+            raise ValueError(
+                f"pca_dim must be between 1 and knn_k-1 ({int(knn_k) - 1}); "
+                f"got pca_dim={pca_dim}, knn_k={knn_k}"
+            )
         self._index      = index
         self._knn_k      = knn_k
         self._eps_eig    = eps_eig
         self._scale_noise = scale_noise  # True → alpha = sigma/sqrt(lambda_max), False → alpha = sigma
+        self._pca_dim = int(pca_dim) if pca_dim is not None else None
     
     @property
     def index(self) -> NeighborIndex:
@@ -111,7 +120,11 @@ class ManifoldSmoother(Smoother):
         Returns:
             LocalPCA object
         """
-        return fit_local_pca(neighbors, eps_eig=self._eps_eig)
+        return fit_local_pca(
+            neighbors,
+            eps_eig=self._eps_eig,
+            n_components=self._pca_dim,
+        )
     
     def compute_pca(self, anchor: np.ndarray) -> CachedPCA:
         """Compute and cache PCA for an anchor.
