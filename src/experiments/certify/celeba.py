@@ -926,6 +926,86 @@ def _get_nn_images(
     return imgs
 
 
+def _save_pixel_manifold_report_visualization(
+    viz_dir: Path,
+    sample_idx: int,
+    img_tensor: torch.Tensor,
+    manifold_imgs: List[torch.Tensor],
+    isotropic_imgs: List[torch.Tensor],
+    nn_imgs: List[torch.Tensor],
+) -> None:
+    """Save a compact, paper-ready manifold comparison and its raw panels.
+
+    This is an additional output; the existing ``sample_NNNN.png`` grid is
+    deliberately left unchanged.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    # Export individual panels so they can be rearranged directly in a report.
+    panel_dir = viz_dir / "report_samples" / f"sample_{sample_idx:04d}"
+    groups = {
+        "manifold": manifold_imgs,
+        "isotropic": isotropic_imgs,
+        "neighbours": nn_imgs,
+    }
+    panel_dir.mkdir(parents=True, exist_ok=True)
+    _tensor_to_pil(img_tensor).save(panel_dir / "original.png")
+    for group_name, images in groups.items():
+        group_dir = panel_dir / group_name
+        group_dir.mkdir(parents=True, exist_ok=True)
+        singular = "neighbour" if group_name == "neighbours" else f"{group_name}_noise"
+        for image_idx, image in enumerate(images, start=1):
+            _tensor_to_pil(image).save(group_dir / f"{singular}_{image_idx:02d}.png")
+
+    n_cols = 5
+    top_row = [img_tensor] + list(nn_imgs[: n_cols - 1])
+    rows = [top_row, list(manifold_imgs[:n_cols]), list(isotropic_imgs[:n_cols])]
+    row_labels = [
+        r"Original ($x$) / NN ($\mathcal{N}_K(x)$)",
+        r"Manifold ($x + \delta_x$)",
+        r"Isotropic ($x + \epsilon$)",
+    ]
+
+    # STIX closely matches the serif/math typography used by common paper
+    # templates while remaining available through Matplotlib itself.
+    with plt.rc_context({
+        "font.family": "STIXGeneral",
+        "mathtext.fontset": "stix",
+        "font.size": 14,
+        "figure.facecolor": "white",
+    }):
+        fig, axes = plt.subplots(3, n_cols, figsize=(10.2, 6.05))
+        for row_idx, images in enumerate(rows):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx, col_idx]
+                ax.axis("off")
+                if col_idx < len(images):
+                    ax.imshow(_tensor_to_pil(images[col_idx]))
+                    ax.set_aspect("equal")
+
+        # Keep the rotated labels in a narrow gutter beside the image grid.
+        row_centres = (0.835, 0.505, 0.175)
+        for y_pos, label_text in zip(row_centres, row_labels):
+            fig.text(
+                0.021, y_pos, label_text,
+                rotation=90, va="center", ha="center",
+                fontsize=11, fontweight="normal",
+            )
+
+        fig.subplots_adjust(
+            left=0.030, right=0.997, bottom=0.005, top=0.995,
+            wspace=0.025, hspace=0.035,
+        )
+        fig.savefig(
+            viz_dir / f"sample_{sample_idx:04d}_report.png",
+            dpi=300, bbox_inches="tight", pad_inches=0.025,
+        )
+        plt.close(fig)
+
+
 def save_sample_visualization(
     viz_dir: Path,
     sample_idx: int,
@@ -1234,12 +1314,14 @@ def save_sample_visualization(
         axes[0, 0].set_title("Original", fontsize=9)
 
         # Row 1: Manifold noise (alpha scaled) — uses smoother.sample_from_cached()
+        report_manifold_imgs: List[torch.Tensor] = []
         for i in range(n_noisy_samples):
             if isinstance(manifold_sm, ManifoldSmoother):
                 noisy_flat = manifold_sm.sample_from_cached(_cached_pca)
                 noisy_t    = torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float()
             else:
                 noisy_t = sample_pixel(img_tensor, manifold_sm)
+            report_manifold_imgs.append(noisy_t)
             axes[1, i].imshow(_tensor_to_pil(noisy_t))
             if i == 0:
                 axes[1, i].set_title(f"Manifold noise  α={alpha_display:.4f}" if scaling_on else f"Manifold noise\nσ={sigma}", fontsize=9)
@@ -1265,8 +1347,11 @@ def save_sample_visualization(
         nn_row  = 4 if scaling_on else 3
 
         # Isotropic pixel noise
+        report_isotropic_imgs: List[torch.Tensor] = []
         for i in range(n_noisy_samples):
-            axes[iso_row, i].imshow(_tensor_to_pil(sample_pixel(img_tensor, iso_pixel)))
+            isotropic_t = sample_pixel(img_tensor, iso_pixel)
+            report_isotropic_imgs.append(isotropic_t)
+            axes[iso_row, i].imshow(_tensor_to_pil(isotropic_t))
             if i == 0:
                 axes[iso_row, i].set_title(f"Isotropic noise σ={sigma}", fontsize=9)
 
@@ -1278,6 +1363,15 @@ def save_sample_visualization(
                 axes[nn_row, i].imshow(_tensor_to_pil(nn_imgs[i]))
             if i == 0:
                 axes[nn_row, i].set_title("Neighbours", fontsize=9)
+
+        _save_pixel_manifold_report_visualization(
+            viz_dir=viz_dir,
+            sample_idx=sample_idx,
+            img_tensor=img_tensor,
+            manifold_imgs=report_manifold_imgs,
+            isotropic_imgs=report_isotropic_imgs,
+            nn_imgs=nn_imgs,
+        )
 
         # ── Geometry figure ───────────────────────────────────────────────
         if isinstance(manifold_sm, ManifoldSmoother):

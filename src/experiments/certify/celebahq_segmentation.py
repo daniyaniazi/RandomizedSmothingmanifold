@@ -420,13 +420,40 @@ def save_seg_visualization(
 
     viz_dir.mkdir(parents=True, exist_ok=True)
 
+    # Paper/report-ready raw panels. Keep these beside the composed figure so
+    # every component can be used independently without cropping a grid.
+    panel_dir = viz_dir / "report_samples" / f"sample_{sample_idx:04d}"
+    mode_dir = panel_dir / ("manifold" if is_manifold else "isotropic")
+    panel_dir.mkdir(parents=True, exist_ok=True)
+    mode_dir.mkdir(parents=True, exist_ok=True)
+    _tensor_to_pil(img_tensor).save(panel_dir / "original.png")
+    Image.fromarray(_mask_to_rgb(gt_mask.cpu().numpy())).save(panel_dir / "gt_mask.png")
+    Image.fromarray(_mask_to_rgb(pred_mask)).save(panel_dir / "predicted_mask.png")
+
+    cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())
+    cert_rgb[~cert_result.certified] = [255, 255, 255]   # white = abstain
+    Image.fromarray(cert_rgb).save(panel_dir / "certified_mask.png")
+    for image_idx, noisy_img in enumerate(noisy_imgs, start=1):
+        _tensor_to_pil(noisy_img).save(mode_dir / f"noisy_sample_{image_idx:02d}.png")
+    for image_idx, noisy_mask in enumerate(noisy_masks, start=1):
+        Image.fromarray(_mask_to_rgb(noisy_mask)).save(
+            mode_dir / f"noisy_segmentation_mask_{image_idx:02d}.png"
+        )
+    if nn_imgs:
+        neighbour_dir = panel_dir / "neighbours"
+        neighbour_dir.mkdir(parents=True, exist_ok=True)
+        for image_idx, neighbour_img in enumerate(nn_imgs, start=1):
+            _tensor_to_pil(neighbour_img).save(
+                neighbour_dir / f"neighbour_{image_idx:02d}.png"
+            )
+
     N_COLS = 4
     n_nn   = len(nn_imgs)
     n_rows = 3 + (1 if n_nn > 0 else 0)
 
     fig, axes = plt.subplots(n_rows, N_COLS,
-                             figsize=(3.5 * N_COLS, 3.2 * n_rows),
-                             gridspec_kw={"wspace": 0.05, "hspace": 0.45})
+                             figsize=(2.45 * N_COLS, 2.32 * n_rows),
+                             gridspec_kw={"wspace": 0.035, "hspace": 0.16})
     axes = np.atleast_2d(axes)
     for ax in axes.flat:
         ax.axis("off")
@@ -438,9 +465,6 @@ def save_seg_visualization(
 
     mode_lbl = "Manifold" if is_manifold else "Iso"
     row_mode_lbl = "Manifold" if is_manifold else "Isotropic"
-    cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())
-    cert_rgb[~cert_result.certified] = [255, 255, 255]   # white = abstain
-
     # ── Row 0: Original | GT mask | Clean pred mask | Certified mask ──────────
     _show(axes[0, 0], _tensor_to_pil(img_tensor), "Original Image")
     _show(axes[0, 1], Image.fromarray(_mask_to_rgb(gt_mask.numpy())), "GT mask")
@@ -477,8 +501,10 @@ def save_seg_visualization(
         # f"({100*(1-cert_result.abstain_rate):.1f}%){_ood_seg_line}",
         fontsize=10, fontweight="bold",
     )
-    plt.tight_layout()
-    fig.savefig(viz_dir / f"sample_{sample_idx:04d}.png", dpi=100, bbox_inches="tight")
+    fig.subplots_adjust(left=0.015, right=0.995, bottom=0.01, top=0.94,
+                        wspace=0.035, hspace=0.16)
+    fig.savefig(viz_dir / f"sample_{sample_idx:04d}.png", dpi=150,
+                bbox_inches="tight", pad_inches=0.025)
     plt.close(fig)
 
     # ── Geometry figure — MANIFOLD ────────────────────────────────────────────
@@ -755,7 +781,8 @@ def save_certified_mask_comparison(
     except ImportError:
         return
 
-    fig, axes = plt.subplots(2, 2, figsize=(6.5, 6.5))
+    fig, axes = plt.subplots(2, 2, figsize=(5.35, 5.35),
+                             gridspec_kw={"wspace": 0.035, "hspace": 0.12})
     panels = (
         (iso["image"], "Original"),
         (_mask_to_rgb(iso["gt_mask"]), "GT mask"),
@@ -766,13 +793,35 @@ def save_certified_mask_comparison(
         ax.imshow(panel)
         ax.set_title(title, fontsize=10)
         ax.axis("off")
-    fig.suptitle(f"Certified masks  |  sigma={sigma:g}", fontsize=11)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99,
+                        wspace=0.035, hspace=0.12)
+
+    report_panels = {
+        "original.png": iso["image"],
+        "gt_mask.png": _mask_to_rgb(iso["gt_mask"]),
+        "isotropic_certified_mask.png": iso_rgb,
+        "manifold_certified_mask.png": mani_rgb,
+    }
+    abstention_data = {
+        "sample_idx": sample_idx,
+        "image_id": str(iso["image_id"]),
+        "sigma": float(sigma),
+        "isotropic_abstention_percent": float(100.0 * (1.0 - np.mean(iso["certified"]))),
+        "manifold_abstention_percent": float(100.0 * (1.0 - np.mean(mani["certified"]))),
+    }
 
     filename = f"sample_{sample_idx:04d}_iso_vs_manifold.png"
     for target_dir in (comparison_dir, other_mode_dir / "comparison"):
         target_dir.mkdir(parents=True, exist_ok=True)
-        fig.savefig(target_dir / filename, dpi=150, bbox_inches="tight")
+        report_dir = target_dir / "report_samples" / f"sample_{sample_idx:04d}"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        for panel_name, panel in report_panels.items():
+            Image.fromarray(np.asarray(panel, dtype=np.uint8)).save(report_dir / panel_name)
+        (target_dir / f"sample_{sample_idx:04d}_abstention.json").write_text(
+            json.dumps(abstention_data, indent=2) + "\n"
+        )
+        fig.savefig(target_dir / filename, dpi=180, bbox_inches="tight",
+                    pad_inches=0.025)
     plt.close(fig)
 
 
@@ -800,7 +849,8 @@ def save_manifold_comparison(
     mani_rgb = _mask_to_rgb(mani_cert.pred_mask.copy())
     mani_rgb[~mani_cert.certified] = [255, 255, 255]
 
-    fig, axes = plt.subplots(2, 2, figsize=(6.5, 6.5))
+    fig, axes = plt.subplots(2, 2, figsize=(5.35, 5.35),
+                             gridspec_kw={"wspace": 0.035, "hspace": 0.12})
     panels = (
         (_tensor_to_pil(img_tensor), "Original"),
         (_mask_to_rgb(gt_mask.cpu().numpy()), "GT mask"),
@@ -811,12 +861,32 @@ def save_manifold_comparison(
         ax.imshow(panel)
         ax.set_title(title, fontsize=10)
         ax.axis("off")
-    fig.suptitle(f"Certified masks  |  sigma={sigma:g}", fontsize=11)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99,
+                        wspace=0.035, hspace=0.12)
+
+    report_dir = comparison_dir / "report_samples" / f"sample_{sample_idx:04d}"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_panels = {
+        "original.png": np.asarray(_tensor_to_pil(img_tensor)),
+        "gt_mask.png": _mask_to_rgb(gt_mask.cpu().numpy()),
+        "isotropic_certified_mask.png": iso_rgb,
+        "manifold_certified_mask.png": mani_rgb,
+    }
+    for panel_name, panel in report_panels.items():
+        Image.fromarray(np.asarray(panel, dtype=np.uint8)).save(report_dir / panel_name)
+    abstention_data = {
+        "sample_idx": sample_idx,
+        "sigma": float(sigma),
+        "isotropic_abstention_percent": float(iso_cert.abstain_rate * 100.0),
+        "manifold_abstention_percent": float(mani_cert.abstain_rate * 100.0),
+    }
+    (comparison_dir / f"sample_{sample_idx:04d}_abstention.json").write_text(
+        json.dumps(abstention_data, indent=2) + "\n"
+    )
     fig.savefig(
         comparison_dir / f"sample_{sample_idx:04d}_iso_vs_manifold.png",
-        dpi=150,
-        bbox_inches="tight",
+        dpi=180,
+        bbox_inches="tight", pad_inches=0.025,
     )
     plt.close(fig)
 
