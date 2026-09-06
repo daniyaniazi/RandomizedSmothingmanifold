@@ -8,15 +8,18 @@ For each image and annotation stem, it computes:
     d_sep = normalize(t_gt_best - t_adv_best)
     Q_sep = d_sep^T Sigma_loc d_sep
 
-and compares Q_sep to Q values for random unit directions. If Q_sep is smaller
-than random, Mani smoothing has less variance along the caption-separation
-direction than an arbitrary direction, which can help explain lower RSMS than
-isotropic smoothing.
+and compares Q_sep to Q values for random unit directions.
+
+Two adversarial scopes are supported:
+    paired: adversarial captions attached to the same image.
+    global: all adversarial captions in the retrieval pool, matching RSMS more
+            closely because RSMS ranks against the full text pool.
 
 Usage:
     python -m src.experiments.analysis.rococo_alignment_geometry \
         --config src/configs/experiments/rococo_clip_manifold.yaml \
         --ann-stem danger \
+        --adv-scope paired \
         --n-images 1000 \
         --knn-k 500 \
         --n-random 128 \
@@ -95,6 +98,20 @@ def _caption_indices_for_image(
     return gt, adv
 
 
+def _caption_image_map(
+    img2txt: Dict[int, List[int]],
+    n_images: int,
+    n_texts: int,
+) -> Dict[int, int]:
+    """Map each caption index in the cache back to its owning image index."""
+    result: Dict[int, int] = {}
+    for img_idx in range(n_images):
+        gt, adv = _caption_indices_for_image(img_idx, img2txt, n_texts)
+        for cap_idx in gt + adv:
+            result[cap_idx] = img_idx
+    return result
+
+
 def _random_unit_directions(
     rng: np.random.Generator,
     n_random: int,
@@ -104,7 +121,7 @@ def _random_unit_directions(
     return _normalize_rows(r)
 
 
-def _plot_summary(rows: List[dict], out_dir: Path, ann_stem: str) -> None:
+def _plot_summary(rows: List[dict], out_dir: Path, ann_stem: str, adv_scope: str) -> None:
     q_sep = np.array([r["q_sep"] for r in rows], dtype=np.float64)
     q_rand = np.array([r["q_rand_mean"] for r in rows], dtype=np.float64)
     ratio = np.array([r["q_ratio_sep_over_rand"] for r in rows], dtype=np.float64)
@@ -142,7 +159,10 @@ def _plot_summary(rows: List[dict], out_dir: Path, ann_stem: str) -> None:
     ax.set_title("Suppression strength")
     ax.grid(alpha=0.25)
 
-    fig.suptitle(f"RoCOCO {ann_stem}: GT-adversarial alignment geometry", fontsize=12)
+    fig.suptitle(
+        f"RoCOCO {ann_stem} ({adv_scope} adversary): GT-adversarial alignment geometry",
+        fontsize=12,
+    )
     fig.tight_layout()
     out_path = out_dir / f"{ann_stem}_qsep_vs_random.png"
     fig.savefig(out_path, dpi=170, bbox_inches="tight")
@@ -150,11 +170,7 @@ def _plot_summary(rows: List[dict], out_dir: Path, ann_stem: str) -> None:
     _log(f"Saved summary plot: {out_path}")
 
 
-def _plot_examples(
-    examples: List[dict],
-    out_dir: Path,
-    ann_stem: str,
-) -> None:
+def _plot_examples(examples: List[dict], out_dir: Path, ann_stem: str, adv_scope: str) -> None:
     viz_dir = out_dir / "examples"
     viz_dir.mkdir(parents=True, exist_ok=True)
 
@@ -224,7 +240,7 @@ def _plot_examples(
         ax.grid(alpha=0.25)
 
         fig.suptitle(
-            f"{ann_stem} image={row['image_index']} "
+            f"{ann_stem}/{adv_scope} image={row['image_index']} "
             f"margin={row['gt_minus_adv_margin']:.4f} "
             f"percentile={row['q_sep_random_percentile']:.3f}",
             fontsize=11,
@@ -261,6 +277,7 @@ def _summary(rows: List[dict], args: argparse.Namespace, cfg) -> dict:
 
     return {
         "ann_stem": args.ann_stem,
+        "adv_scope": args.adv_scope,
         "config": args.config,
         "clip_model": cfg.clip_model,
         "n_images": len(rows),
@@ -300,6 +317,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", required=True)
     p.add_argument("--ann-stem", default="danger",
                    help="Adversarial annotation stem: danger, same_concept, diff_concept, rand_voca")
+    p.add_argument("--adv-scope", choices=["paired", "global"], default="paired",
+                   help="paired = same-image adversarial captions; global = all adversarial captions in the retrieval pool.")
     p.add_argument("--n-images", type=int, default=None,
                    help="Optional first-N subset for quick analysis.")
     p.add_argument("--knn-k", type=int, default=None)
@@ -320,7 +339,8 @@ def main() -> None:
     cfg.smoothing.knn_k = args.knn_k
 
     rng = np.random.default_rng(args.seed)
-    out_dir = args.output_dir or (_ROOT / cfg.output_dir / "alignment_geometry" / args.ann_stem)
+    default_leaf = args.ann_stem if args.adv_scope == "paired" else f"{args.ann_stem}_{args.adv_scope}"
+    out_dir = args.output_dir or (_ROOT / cfg.output_dir / "alignment_geometry" / default_leaf)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cache_dir = Path(cfg.embedding_cache_dir)
@@ -342,6 +362,12 @@ def main() -> None:
     text_embs = cap_cache["embeddings"].numpy().astype(np.float32)
     text_embs = _normalize_rows(text_embs)
     img2txt = {int(k): list(v) for k, v in cap_cache["img2txt"].items()}
+    all_adv_indices = [int(i) for i in cap_cache.get("wrongtext", [])]
+    if not all_adv_indices:
+        for img_idx in range(len(image_embs)):
+            _, adv = _caption_indices_for_image(img_idx, img2txt, len(text_embs))
+            all_adv_indices.extend(adv)
+    cap_to_image = _caption_image_map(img2txt, len(image_embs), len(text_embs))
 
     n_total = len(image_embs)
     n_eval = min(args.n_images, n_total) if args.n_images else n_total
@@ -366,7 +392,8 @@ def main() -> None:
 
     for i in tqdm(range(n_eval), desc=f"Alignment geometry [{args.ann_stem}]"):
         anchor = image_embs[i]
-        gt_idx, adv_idx = _caption_indices_for_image(i, img2txt, len(text_embs))
+        gt_idx, paired_adv_idx = _caption_indices_for_image(i, img2txt, len(text_embs))
+        adv_idx = paired_adv_idx if args.adv_scope == "paired" else all_adv_indices
         if not gt_idx or not adv_idx:
             continue
 
@@ -407,6 +434,9 @@ def main() -> None:
             "image_id": image_ids[i],
             "best_gt_caption_index": best_gt_idx,
             "best_adv_caption_index": best_adv_idx,
+            "best_adv_image_index": cap_to_image.get(best_adv_idx, -1),
+            "adv_scope": args.adv_scope,
+            "best_adv_is_paired": bool(best_adv_idx in paired_adv_idx),
             "best_gt_score": float(gt_scores.max()),
             "best_adv_score": float(adv_scores.max()),
             "gt_minus_adv_margin": float(gt_scores.max() - adv_scores.max()),
@@ -446,8 +476,8 @@ def main() -> None:
     _write_csv(rows, csv_path)
     summary = _summary(rows, args, cfg)
     json_path.write_text(json.dumps(summary, indent=2))
-    _plot_summary(rows, out_dir, args.ann_stem)
-    _plot_examples(examples, out_dir, args.ann_stem)
+    _plot_summary(rows, out_dir, args.ann_stem, args.adv_scope)
+    _plot_examples(examples, out_dir, args.ann_stem, args.adv_scope)
 
     _log(f"Saved CSV: {csv_path}")
     _log(f"Saved summary: {json_path}")
