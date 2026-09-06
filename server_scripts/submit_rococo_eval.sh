@@ -38,7 +38,7 @@ fi
 #   36 .. 65   = manifold  × 6 sigmas × 5 anns
 
 ANN_FILES=(coco_karpathy_test.json danger.json same_concept.json diff_concept.json rand_voca.json)
-SIGMAS=(0.02 0.05 0.07 0.10 0.20 0.50 0.70 1.00)
+SIGMAS=(0.02 0.05 0.07 0.10 0.20 0.50 0.70 1.00 1.15 2.00)
 N_ANNS=${#ANN_FILES[@]}    # 5
 N_SIGMAS=${#SIGMAS[@]}     # 6
 
