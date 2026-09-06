@@ -1,0 +1,66 @@
+experiment_name: certify_celeba_pixel_isotropic_ablation_mc_samples
+seed: 73
+device: cuda
+alpha_conf: 0.001
+
+dataset:
+  name: CelebA
+  root_dir: /BS/databases08/CelebA
+  image_dir: img_align_celeba
+  annotation_file: Anno/list_attr_celeba.txt
+  annotation_format: celeba
+  file_extension: ""
+  num_workers: 4
+  subset_size: 100
+  ood_attribute: null
+  ood_balanced: true
+  ood_seed: 73
+  split_seed: 73
+
+model:
+  name: resnet18
+  checkpoint_path: output/pretrained_model/smile_resnet_celeba/best.pt
+  use_smoothed_classifier: false
+  smoothed_classifier_base_dir: output/pretrained_model
+  input_size: 224
+  num_classes: 1
+  dropout: 0.1
+
+vae:
+  enabled: false
+
+smoothing:
+  mode: pixel
+  sigma: 0.10
+  sigma_values: [0.10,  0.50, 0.70,  1.00]
+  n0_samples: 30
+  n_sample_values: [100, 300, 500, 700, 1000]
+  n_samples: 100
+  knn_k: 500
+  pca_dim: null
+  scale_noise: false
+  eps_eig: 1.0e-06
+  use_manifold: false
+
+index:
+  backend: annoy
+  metric: euclidean
+  n_trees: 50
+  pixel_index_path: null
+  latent_index_path: null
+  build_if_missing: true
+
+output:
+  output_dir: output
+  save_results: true
+  save_per_sample: true
+  save_visualizations: true
+  num_viz_samples: 10
+  ablation_study: monte_carlo_samples
+  ablation_variant: null  # filled by submission script
+  save_eigenvalues: false
+
+checkpoint:
+  enabled: true
+  checkpoint_every: 10
+  resume: true

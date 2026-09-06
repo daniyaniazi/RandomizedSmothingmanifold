@@ -1,9 +1,10 @@
-"""Aggregate CelebA manifold ablation results into CSVs and plots.
+"""Aggregate CelebA smoothing ablation results into CSVs and plots.
 
 This is a post-processing script. It does not run certification. It scans
 completed ablation folders produced by submit_celeba_manifold_ablation.sh:
 
   output/smile_classification/celeba/certify/pixel_manifold/ablation/
+  output/smile_classification/celeba/certify/pixel_isotropic/ablation/
     sigma_0_10/local_manifold_size/knn_128_pca_auto/metrics.json
     sigma_0_10/pca_dimension/knn_500_pca_128/metrics.json
 
@@ -79,18 +80,25 @@ def _flatten_metrics(metrics: dict, metrics_path: Path, study: str, variant: str
     elif study == "pca_dimension":
         ablation_value = int(pca_dim) if pca_dim is not None else None
         ablation_axis = "pca_dim"
+    elif study == "monte_carlo_samples":
+        ablation_value = int(smoothing.get("n_samples")) if smoothing.get("n_samples") is not None else None
+        ablation_axis = "n_samples"
     else:
         ablation_value = None
         ablation_axis = "unknown"
 
     return {
         "study": study,
+        "smoother": smoother,
         "variant": variant,
         "ablation_axis": ablation_axis,
         "ablation_value": ablation_value,
         "sigma": sigma,
         "knn_k": knn_k,
         "pca_dim": pca_dim,
+        "n0_samples": smoothing.get("n0_samples"),
+        "n_samples": smoothing.get("n_samples"),
+        "total_mc_samples": smoothing.get("total_mc_samples"),
         "metrics_path": str(metrics_path),
         "results_path": str(metrics_path.with_name("results.csv")),
         "experiment": metrics.get("experiment"),
@@ -143,6 +151,18 @@ def _collect(base_dir: Path) -> List[dict]:
     return rows
 
 
+def _collect_many(base_dirs: List[Path]) -> List[dict]:
+    rows: List[dict] = []
+    for base_dir in base_dirs:
+        if not base_dir.exists():
+            _log(f"Skipping missing base dir: {base_dir}")
+            continue
+        found = _collect(base_dir)
+        _log(f"Found {len(found)} metric files under {base_dir}")
+        rows.extend(found)
+    return rows
+
+
 def _read_result_rows(path: Path) -> List[dict]:
     if not path.exists():
         return []
@@ -170,6 +190,7 @@ def _radius_threshold_rows(summary_rows: List[dict], thresholds: List[float]) ->
                     correct_at_r += 1
             out.append({
                 "study": row["study"],
+                "smoother": row.get("smoother"),
                 "variant": row["variant"],
                 "ablation_axis": row["ablation_axis"],
                 "ablation_value": row["ablation_value"],
@@ -235,17 +256,25 @@ def _plot_metric_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.5), facecolor="white")
     axes = axes.ravel()
     sigmas = sorted({float(r["sigma"]) for r in study_rows if r.get("sigma") is not None})
+    smoothers = sorted({str(r.get("smoother", "unknown")) for r in study_rows})
     colors = plt.cm.viridis(np.linspace(0.10, 0.90, max(len(sigmas), 1)))
+    markers = {"manifold": "o", "isotropic": "s", "unknown": "^"}
 
     for ax, (metric, ylabel) in zip(axes, metrics):
         any_line = False
         for color, sigma in zip(colors, sigmas):
-            sigma_rows = [r for r in study_rows if float(r["sigma"]) == sigma]
-            x, y = _finite_pairs(sigma_rows, x_key, metric)
-            if len(x) == 0:
-                continue
-            ax.plot(x, y, "o-", lw=1.7, ms=4, color=color, label=f"sigma={sigma:.2f}")
-            any_line = True
+            for smoother in smoothers:
+                sigma_rows = [
+                    r for r in study_rows
+                    if float(r["sigma"]) == sigma and str(r.get("smoother", "unknown")) == smoother
+                ]
+                x, y = _finite_pairs(sigma_rows, x_key, metric)
+                if len(x) == 0:
+                    continue
+                label = f"{smoother}, sigma={sigma:.2f}" if len(smoothers) > 1 else f"sigma={sigma:.2f}"
+                ax.plot(x, y, marker=markers.get(smoother, "^"), linestyle="-",
+                        lw=1.7, ms=4, color=color, label=label)
+                any_line = True
         ax.set_xlabel(x_key)
         ax.set_ylabel(ylabel)
         ax.set_title(ylabel)
@@ -253,7 +282,14 @@ def _plot_metric_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -
         if any_line:
             ax.legend(fontsize=7)
 
-    title = "Local k ablation" if study == "local_manifold_size" else "PCA dimension ablation"
+    if study == "local_manifold_size":
+        title = "Local k ablation"
+    elif study == "pca_dimension":
+        title = "PCA dimension ablation"
+    elif study == "monte_carlo_samples":
+        title = "Monte Carlo sample-size ablation"
+    else:
+        title = study
     fig.suptitle(f"{title}: certification outcomes", fontsize=13)
     fig.tight_layout()
     path = out_dir / f"{study}_certification_grid.png"
@@ -305,7 +341,14 @@ def _plot_geometry_grid(rows: List[dict], out_dir: Path, study: str, x_key: str)
         ax.set_title(ylabel)
         ax.grid(alpha=0.25)
 
-    title = "Local k ablation" if study == "local_manifold_size" else "PCA dimension ablation"
+    if study == "local_manifold_size":
+        title = "Local k ablation"
+    elif study == "pca_dimension":
+        title = "PCA dimension ablation"
+    elif study == "monte_carlo_samples":
+        title = "Monte Carlo sample-size ablation"
+    else:
+        title = study
     fig.suptitle(f"{title}: local covariance geometry", fontsize=13)
     fig.tight_layout()
     path = out_dir / f"{study}_geometry_grid.png"
@@ -315,7 +358,16 @@ def _plot_geometry_grid(rows: List[dict], out_dir: Path, study: str, x_key: str)
 
 
 def _plot_heatmap(rows: List[dict], out_dir: Path, study: str, value_key: str, metric: str) -> None:
-    study_rows = [r for r in rows if r["study"] == study and r.get(value_key) is not None]
+    study_rows_all = [r for r in rows if r["study"] == study and r.get(value_key) is not None]
+    if not study_rows_all:
+        return
+    for smoother in sorted({str(r.get("smoother", "unknown")) for r in study_rows_all}):
+        study_rows = [r for r in study_rows_all if str(r.get("smoother", "unknown")) == smoother]
+        _plot_single_heatmap(study_rows, out_dir, study, value_key, metric, smoother)
+
+
+def _plot_single_heatmap(rows: List[dict], out_dir: Path, study: str, value_key: str, metric: str, smoother: str) -> None:
+    study_rows = rows
     if not study_rows:
         return
     xs = sorted({int(r[value_key]) for r in study_rows})
@@ -337,7 +389,7 @@ def _plot_heatmap(rows: List[dict], out_dir: Path, study: str, value_key: str, m
     ax.set_xlabel(value_key)
     ax.set_ylabel("sigma")
     label = metric.replace("_", " ")
-    ax.set_title(f"{study}: {label}")
+    ax.set_title(f"{study} ({smoother}): {label}")
     for yi in range(len(sigmas)):
         for xi in range(len(xs)):
             val = grid[yi, xi]
@@ -347,7 +399,8 @@ def _plot_heatmap(rows: List[dict], out_dir: Path, study: str, value_key: str, m
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(label)
     fig.tight_layout()
-    path = out_dir / f"{study}_{metric}_heatmap.png"
+    suffix = "" if smoother == "manifold" else f"_{smoother}"
+    path = out_dir / f"{study}_{metric}{suffix}_heatmap.png"
     fig.savefig(path, dpi=170, bbox_inches="tight")
     plt.close(fig)
     _log(f"Saved plot: {path}")
@@ -434,26 +487,36 @@ def _plot_theory_tradeoff(out_dir: Path, m: int, n: int, delta: float, tau: floa
 def _best_by_sigma(rows: List[dict]) -> List[dict]:
     out = []
     for study in sorted({r["study"] for r in rows}):
-        for sigma in sorted({float(r["sigma"]) for r in rows if r["study"] == study}):
-            group = [
-                r for r in rows
-                if r["study"] == study
-                and float(r["sigma"]) == sigma
-                and r.get("certified_accuracy") is not None
-            ]
-            if not group:
-                continue
-            best = max(group, key=lambda r: (float(r["certified_accuracy"]), float(r.get("mean_radius") or 0.0)))
-            out.append(dict(best))
+        for smoother in sorted({str(r.get("smoother", "unknown")) for r in rows if r["study"] == study}):
+            for sigma in sorted({float(r["sigma"]) for r in rows if r["study"] == study and str(r.get("smoother", "unknown")) == smoother}):
+                group = [
+                    r for r in rows
+                    if r["study"] == study
+                    and str(r.get("smoother", "unknown")) == smoother
+                    and float(r["sigma"]) == sigma
+                    and r.get("certified_accuracy") is not None
+                ]
+                if not group:
+                    continue
+                best = max(group, key=lambda r: (float(r["certified_accuracy"]), float(r.get("mean_radius") or 0.0)))
+                out.append(dict(best))
     return out
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Aggregate CelebA manifold ablation outputs")
+    p = argparse.ArgumentParser(description="Aggregate CelebA smoothing ablation outputs")
     p.add_argument(
         "--base-dir",
         type=Path,
-        default=_ROOT / "output" / "smile_classification" / "celeba" / "certify" / "pixel_manifold" / "ablation",
+        default=None,
+        help="Optional single ablation directory. By default scans pixel_manifold and pixel_isotropic.",
+    )
+    p.add_argument(
+        "--base-dirs",
+        type=Path,
+        nargs="+",
+        default=None,
+        help="Optional list of ablation directories to scan.",
     )
     p.add_argument(
         "--output-dir",
@@ -472,11 +535,20 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = _collect(args.base_dir)
-    _log(f"Found {len(rows)} completed ablation metric files under {args.base_dir}")
+    if args.base_dirs:
+        base_dirs = args.base_dirs
+    elif args.base_dir:
+        base_dirs = [args.base_dir]
+    else:
+        base_dirs = [
+            _ROOT / "output" / "smile_classification" / "celeba" / "certify" / "pixel_manifold" / "ablation",
+            _ROOT / "output" / "smile_classification" / "celeba" / "certify" / "pixel_isotropic" / "ablation",
+        ]
+
+    rows = _collect_many(base_dirs)
     if not rows:
         raise FileNotFoundError(
-            f"No metrics.json files found under {args.base_dir}. "
+            f"No metrics.json files found under {', '.join(str(p) for p in base_dirs)}. "
             "Run server_scripts/submit_celeba_manifold_ablation.sh first."
         )
 
@@ -486,6 +558,8 @@ def main() -> None:
                args.output_dir / "ablation_local_size_summary.csv")
     _write_csv([r for r in rows if r["study"] == "pca_dimension"],
                args.output_dir / "ablation_pca_dim_summary.csv")
+    _write_csv([r for r in rows if r["study"] == "monte_carlo_samples"],
+               args.output_dir / "ablation_mc_samples_summary.csv")
     _write_csv(_best_by_sigma(rows), args.output_dir / "ablation_best_by_sigma.csv")
 
     radius_rows = _radius_threshold_rows(rows, args.radius_thresholds)
@@ -493,14 +567,19 @@ def main() -> None:
 
     _plot_metric_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_metric_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
+    _plot_metric_grid(rows, args.output_dir, "monte_carlo_samples", "n_samples")
     _plot_geometry_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_geometry_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
+    _plot_geometry_grid(rows, args.output_dir, "monte_carlo_samples", "n_samples")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "pca_dimension", "pca_dim", "certified_accuracy_pct")
+    _plot_heatmap(rows, args.output_dir, "monte_carlo_samples", "n_samples", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "mean_radius")
     _plot_heatmap(rows, args.output_dir, "pca_dimension", "pca_dim", "mean_radius")
+    _plot_heatmap(rows, args.output_dir, "monte_carlo_samples", "n_samples", "mean_radius")
     _plot_radius_thresholds(radius_rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_radius_thresholds(radius_rows, args.output_dir, "pca_dimension", "pca_dim")
+    _plot_radius_thresholds(radius_rows, args.output_dir, "monte_carlo_samples", "n_samples")
     _plot_theory_tradeoff(
         args.output_dir,
         m=args.theory_m,
@@ -510,7 +589,7 @@ def main() -> None:
     )
 
     manifest = {
-        "base_dir": str(args.base_dir),
+        "base_dirs": [str(p) for p in base_dirs],
         "output_dir": str(args.output_dir),
         "n_metric_files": len(rows),
         "studies": sorted({r["study"] for r in rows}),
@@ -519,15 +598,19 @@ def main() -> None:
             "ablation_summary_all.csv",
             "ablation_local_size_summary.csv",
             "ablation_pca_dim_summary.csv",
+            "ablation_mc_samples_summary.csv",
             "ablation_best_by_sigma.csv",
             "ablation_radius_thresholds.csv",
             "theory_knn_tradeoff.csv",
             "local_manifold_size_certification_grid.png",
             "pca_dimension_certification_grid.png",
+            "monte_carlo_samples_certification_grid.png",
             "local_manifold_size_geometry_grid.png",
             "pca_dimension_geometry_grid.png",
+            "monte_carlo_samples_geometry_grid.png",
             "local_manifold_size_certified_accuracy_pct_heatmap.png",
             "pca_dimension_certified_accuracy_pct_heatmap.png",
+            "monte_carlo_samples_certified_accuracy_pct_heatmap.png",
             "theory_knn_tradeoff.png",
         ],
     }
@@ -538,3 +621,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    use_manifold = bool(smoothing.get("use_manifold"))
+    smoother = "manifold" if use_manifold else "isotropic"

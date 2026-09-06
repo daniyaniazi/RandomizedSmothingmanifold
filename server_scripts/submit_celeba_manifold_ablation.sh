@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit CelebA pixel-manifold ablations. Each array task handles one K/d
+# Submit CelebA pixel-manifold ablations. Each array task handles one K/d/N
 # variant and all configured sigmas, allowing PCA reuse across sigma values.
 
 set -euo pipefail
@@ -18,10 +18,12 @@ DRY_RUN=false
 
 LOCAL_CFG="src/configs/experiments/certify_celeba_pixel_ablation_local_size.yaml"
 PCA_CFG="src/configs/experiments/certify_celeba_pixel_ablation_pca_dim.yaml"
+MC_CFG="src/configs/experiments/certify_celeba_pixel_ablation_mc_samples.yaml"
+ISO_MC_CFG="src/configs/experiments/certify_celeba_pixel_isotropic_ablation_mc_samples.yaml"
 PYTHON_BIN="/BS/dniazi_thesis/work/miniforge3_new/envs/smoothing/bin/python"
 
 usage() {
-    echo "Usage: $0 [--study local-size|pca-dim|all] [--dry-run]"
+    echo "Usage: $0 [--study local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|all] [--dry-run]"
     echo "          [--partition PART] [--time TIME] [--cpus N]"
     echo "          [--mem-per-cpu MEM] [--max-concurrent N]"
 }
@@ -40,8 +42,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! [[ "$STUDY" =~ ^(local-size|pca-dim|all)$ ]]; then
-    echo "Error: --study must be local-size, pca-dim, or all"
+if ! [[ "$STUDY" =~ ^(local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|all)$ ]]; then
+    echo "Error: --study must be local-size, pca-dim, mc-samples, mc-samples-iso, mc-samples-both, or all"
     exit 1
 fi
 if ! [[ "$MAX_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
@@ -53,7 +55,7 @@ mkdir -p output/slurm output/sweep_configs
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="output/sweep_configs/celeba_manifold_ablation_${RUN_ID}.tsv"
 
-STUDY="$STUDY" LOCAL_CFG="$LOCAL_CFG" PCA_CFG="$PCA_CFG" \
+STUDY="$STUDY" LOCAL_CFG="$LOCAL_CFG" PCA_CFG="$PCA_CFG" MC_CFG="$MC_CFG" ISO_MC_CFG="$ISO_MC_CFG" \
 TASK_FILE="$TASK_FILE" RUN_ID="$RUN_ID" "$PYTHON_BIN" - <<'PY'
 import os
 from pathlib import Path
@@ -68,6 +70,10 @@ if study in ("local-size", "all"):
     specs.append(("local_size", Path(os.environ["LOCAL_CFG"]), "knn_values"))
 if study in ("pca-dim", "all"):
     specs.append(("pca_dim", Path(os.environ["PCA_CFG"]), "pca_dim_values"))
+if study in ("mc-samples", "mc-samples-both", "all"):
+    specs.append(("mc_samples", Path(os.environ["MC_CFG"]), "n_sample_values"))
+if study in ("mc-samples-iso", "mc-samples-both", "all"):
+    specs.append(("mc_samples_iso", Path(os.environ["ISO_MC_CFG"]), "n_sample_values"))
 
 tasks = []
 for short_name, source, values_key in specs:
@@ -85,10 +91,16 @@ for short_name, source, values_key in specs:
             generated_smoothing["knn_k"] = int(value)
             generated_smoothing["pca_dim"] = None
             variant = f"knn_{int(value)}_pca_auto"
-        else:
+        elif short_name == "pca_dim":
             generated_smoothing["knn_k"] = 500
             generated_smoothing["pca_dim"] = int(value)
             variant = f"knn_500_pca_{int(value)}"
+        else:
+            generated_smoothing["knn_k"] = 500
+            generated_smoothing["pca_dim"] = None
+            generated_smoothing["n_samples"] = int(value)
+            prefix = "iso" if short_name == "mc_samples_iso" else "mani"
+            variant = f"{prefix}_knn_500_pca_auto_n_{int(value)}"
 
         generated["output"]["ablation_variant"] = variant
         generated["experiment_name"] = f"{generated['experiment_name']}_{variant}"
