@@ -227,9 +227,9 @@ def _plot_metric_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -
         return
     metrics = [
         ("certified_accuracy_pct", "Certified accuracy (%)"),
-        ("mean_radius", "Mean certified radius"),
-        ("median_radius", "Median certified radius"),
-        ("mean_effective_rank", "Effective rank"),
+        ("mean_radius", "Mean radius over certified samples"),
+        ("median_radius", "Median radius over certified samples"),
+        ("abstain_rate_pct", "Abstain rate (%)"),
     ]
 
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.5), facecolor="white")
@@ -254,9 +254,61 @@ def _plot_metric_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -
             ax.legend(fontsize=7)
 
     title = "Local k ablation" if study == "local_manifold_size" else "PCA dimension ablation"
-    fig.suptitle(title, fontsize=13)
+    fig.suptitle(f"{title}: certification outcomes", fontsize=13)
     fig.tight_layout()
-    path = out_dir / f"{study}_summary_grid.png"
+    path = out_dir / f"{study}_certification_grid.png"
+    fig.savefig(path, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+    _log(f"Saved plot: {path}")
+
+
+def _mean_by_x(rows: List[dict], x_key: str, y_key: str) -> tuple[np.ndarray, np.ndarray]:
+    grouped: Dict[int, List[float]] = {}
+    for r in rows:
+        x = r.get(x_key)
+        y = r.get(y_key)
+        if x is None or y is None:
+            continue
+        try:
+            xi = int(x)
+            yf = float(y)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(yf):
+            grouped.setdefault(xi, []).append(yf)
+    if not grouped:
+        return np.array([]), np.array([])
+    xs = np.array(sorted(grouped), dtype=float)
+    ys = np.array([np.mean(grouped[int(x)]) for x in xs], dtype=float)
+    return xs, ys
+
+
+def _plot_geometry_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -> None:
+    study_rows = [r for r in rows if r["study"] == study]
+    if not study_rows:
+        return
+    metrics = [
+        ("mean_effective_rank", "Mean effective rank"),
+        ("mean_condition_number", "Mean condition number"),
+        ("mean_geometry_factor", "Mean geometry factor"),
+        ("mean_log_geo_ratio", "Mean log volume ratio"),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.5), facecolor="white")
+    axes = axes.ravel()
+    for ax, (metric, ylabel) in zip(axes, metrics):
+        x, y = _mean_by_x(study_rows, x_key, metric)
+        if len(x) > 0:
+            ax.plot(x, y, "o-", lw=1.8, ms=4, color="#2f4b7c")
+        ax.set_xlabel(x_key)
+        ax.set_ylabel(ylabel)
+        ax.set_title(ylabel)
+        ax.grid(alpha=0.25)
+
+    title = "Local k ablation" if study == "local_manifold_size" else "PCA dimension ablation"
+    fig.suptitle(f"{title}: local covariance geometry", fontsize=13)
+    fig.tight_layout()
+    path = out_dir / f"{study}_geometry_grid.png"
     fig.savefig(path, dpi=170, bbox_inches="tight")
     plt.close(fig)
     _log(f"Saved plot: {path}")
@@ -441,6 +493,8 @@ def main() -> None:
 
     _plot_metric_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_metric_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
+    _plot_geometry_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
+    _plot_geometry_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "pca_dimension", "pca_dim", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "mean_radius")
@@ -468,8 +522,10 @@ def main() -> None:
             "ablation_best_by_sigma.csv",
             "ablation_radius_thresholds.csv",
             "theory_knn_tradeoff.csv",
-            "local_manifold_size_summary_grid.png",
-            "pca_dimension_summary_grid.png",
+            "local_manifold_size_certification_grid.png",
+            "pca_dimension_certification_grid.png",
+            "local_manifold_size_geometry_grid.png",
+            "pca_dimension_geometry_grid.png",
             "local_manifold_size_certified_accuracy_pct_heatmap.png",
             "pca_dimension_certified_accuracy_pct_heatmap.png",
             "theory_knn_tradeoff.png",
