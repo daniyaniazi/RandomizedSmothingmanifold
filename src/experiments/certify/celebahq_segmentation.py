@@ -224,11 +224,12 @@ def _sample_noisy(
     img_tensor: torch.Tensor,    # (C, H, W) in [0,1]
     smoother,
     pixel_index: Optional[NeighborIndex],
+    cached_pca=None,
 ) -> torch.Tensor:
     """Return one noisy image tensor (C, H, W)."""
     flat = img_tensor.numpy().flatten().astype(np.float32)
-    if isinstance(smoother, ManifoldSmoother) and pixel_index is not None:
-        noisy_flat = smoother.sample(flat)
+    if isinstance(smoother, ManifoldSmoother) and cached_pca is not None:
+        noisy_flat = smoother.sample_from_cached(cached_pca)
     else:
         noisy_flat = smoother.sample(flat)
     return torch.from_numpy(noisy_flat.reshape(img_tensor.shape)).float().clamp(0, 1)
@@ -432,9 +433,33 @@ def save_seg_visualization(
 
     cert_rgb = _mask_to_rgb(cert_result.pred_mask.copy())
     cert_rgb[~cert_result.certified] = [255, 255, 255]   # white = abstain
+    mode_name = "manifold" if is_manifold else "isotropic"
     Image.fromarray(cert_rgb).save(panel_dir / "certified_mask.png")
+    Image.fromarray(cert_rgb).save(panel_dir / f"{mode_name}_certified_mask.png")
+    Image.fromarray((cert_result.certified.astype(np.uint8) * 255)).save(
+        panel_dir / f"{mode_name}_certified_region.png"
+    )
+    noise_rows = []
     for image_idx, noisy_img in enumerate(noisy_imgs, start=1):
         _tensor_to_pil(noisy_img).save(mode_dir / f"noisy_sample_{image_idx:02d}.png")
+        delta = (noisy_img - img_tensor).detach().cpu().numpy()
+        noise_rows.append({
+            "mode": mode_name,
+            "sigma": float(sigma),
+            "sample": image_idx,
+            "mean_abs_delta": float(np.mean(np.abs(delta))),
+            "rms_delta": float(np.sqrt(np.mean(delta ** 2))),
+            "max_abs_delta": float(np.max(np.abs(delta))),
+            "frac_values_changed_gt_0_01": float(np.mean(np.abs(delta) > 0.01)),
+            "frac_values_at_clip_boundary": float(
+                torch.mean(((noisy_img <= 0.0) | (noisy_img >= 1.0)).float()).item()
+            ),
+        })
+    if noise_rows:
+        with (panel_dir / f"{mode_name}_noise_stats.csv").open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(noise_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(noise_rows)
     for image_idx, noisy_mask in enumerate(noisy_masks, start=1):
         Image.fromarray(_mask_to_rgb(noisy_mask)).save(
             mode_dir / f"noisy_segmentation_mask_{image_idx:02d}.png"
@@ -1057,7 +1082,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
             # Noisy MC samples for display
             noisy_imgs, noisy_masks = [], []
             for _ in range(4):
-                ni = _sample_noisy(img_tensor, smoother, pixel_index)
+                ni = _sample_noisy(img_tensor, smoother, pixel_index, cached_pca)
                 noisy_imgs.append(ni)
                 x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
                 with torch.no_grad():
@@ -1279,8 +1304,13 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
         # Use sigma=1.0 as placeholder for PCA (only kNN structure matters)
         cached_pca = None
         if cfg.smoothing.use_manifold and pixel_index is not None:
-            _tmp_sm = ManifoldSmoother(sigma=1.0, index=pixel_index,
-                                       knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig)
+            _tmp_sm = ManifoldSmoother(
+                sigma=1.0,
+                index=pixel_index,
+                knn_k=cfg.smoothing.knn_k,
+                eps_eig=cfg.smoothing.eps_eig,
+                scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+            )
             cached_pca = _tmp_sm.compute_pca(flat)
 
         for sigma in active_sigmas:
@@ -1290,8 +1320,13 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
 
             # Build sigma-specific smoother (cheap)
             if cfg.smoothing.use_manifold and pixel_index is not None:
-                smoother = ManifoldSmoother(sigma=sigma, index=pixel_index,
-                                            knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig)
+                smoother = ManifoldSmoother(
+                    sigma=sigma,
+                    index=pixel_index,
+                    knn_k=cfg.smoothing.knn_k,
+                    eps_eig=cfg.smoothing.eps_eig,
+                    scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+                )
             else:
                 smoother = IsotropicSmoother(sigma=sigma)
 
@@ -1338,7 +1373,7 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
                     and sigma == active_sigmas[0]):
                 noisy_imgs, noisy_masks = [], []
                 for _ in range(4):
-                    ni = _sample_noisy(img_tensor, smoother, pixel_index)
+                    ni = _sample_noisy(img_tensor, smoother, pixel_index, cached_pca)
                     noisy_imgs.append(ni)
                     x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
                     with torch.no_grad():
@@ -1477,8 +1512,13 @@ def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
                 cfg.index.n_trees, cfg.index.metric,
             )
         if cfg.smoothing.use_manifold and pixel_index is not None:
-            smoother = ManifoldSmoother(sigma=sigma, index=pixel_index,
-                                        knn_k=cfg.smoothing.knn_k, eps_eig=cfg.smoothing.eps_eig)
+            smoother = ManifoldSmoother(
+                sigma=sigma,
+                index=pixel_index,
+                knn_k=cfg.smoothing.knn_k,
+                eps_eig=cfg.smoothing.eps_eig,
+                scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+            )
         else:
             smoother = IsotropicSmoother(sigma=sigma)
 
@@ -1520,7 +1560,7 @@ def run_seg_viz_only(cfg: SegCertifyConfig, sigma_values: List[float]) -> None:
             # Noisy display samples
             noisy_imgs, noisy_masks = [], []
             for _ in range(4):
-                ni = _sample_noisy(img_tensor, smoother, pixel_index)
+                ni = _sample_noisy(img_tensor, smoother, pixel_index, cached_pca)
                 noisy_imgs.append(ni)
                 x_n = ((ni - _mean_n) / _std_n).unsqueeze(0).to(device)
                 with torch.no_grad():
