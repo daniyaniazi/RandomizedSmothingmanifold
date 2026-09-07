@@ -5,10 +5,10 @@ Same pattern as celeba_neighborhood_geometry.py but for 512-dim CLIP unit-sphere
 For each anchor shows:
   - kNN neighbours projected onto PC1/PC2
   - Isotropic circle (r = sigma)
-  - Manifold ellipse (axes = sigma * sqrt(lambda_norm))
+  - Manifold ellipse (axes = alpha * sqrt(lambda))
   - n_mc smoothed CLIP embeddings (viz only — actual eval uses n_samples=1)
   - Eigenvalue spectrum
-  - Alpha amplification: alpha = sigma / sqrt(lambda_max)
+  - Alpha/noise scale: alpha = sigma when scale_noise=false, else sigma / sqrt(lambda_max)
 
 Uses the CLIP embedding Annoy index (not pixel-space index).
 Also checks whether saved CLIP embeddings are already on the unit sphere.
@@ -76,7 +76,8 @@ def _draw_geometry(
     Vt        = pca.evecs.T                          # (n_comp, 512)
     ev_norm   = ev / float(ev.max())
     lambda_max = float(ev[0])
-    alpha      = sigma / np.sqrt(max(lambda_max, 1e-12))
+    scale_noise = bool(getattr(smoother, "_scale_noise", True))
+    alpha = sigma / np.sqrt(max(lambda_max, 1e-12)) if scale_noise else sigma
 
     # Project onto PC1/PC2
     centered   = neighbours - pca.mean
@@ -85,8 +86,8 @@ def _draw_geometry(
     anchor_2d  = anchor_c @ Vt[:2].T      # (2,)
 
     # Ellipse semi-axes
-    a1 = float(sigma * np.sqrt(ev_norm[0]))
-    a2 = float(sigma * np.sqrt(ev_norm[1]))
+    a1 = float(alpha * np.sqrt(ev[0]))
+    a2 = float(alpha * np.sqrt(ev[1]))
 
     # MC noise samples — only if requested (n_mc=0 skips, cleaner figures)
     mc_2d = np.empty((0, 2), dtype=np.float32)
@@ -167,7 +168,8 @@ def _draw_geometry(
     ax.axhline(lambda_max, color='#c0392b', lw=1, ls=':', label=f'λ_max={lambda_max:.5f}')
     ax.set_xlabel('PC index')
     ax.set_ylabel('Eigenvalue')
-    ax.set_title(f'Eigenvalue spectrum\nλ_max={lambda_max:.5f}  α=σ/√λ_max={alpha:.3f}',
+    alpha_label = "σ/√λ_max" if scale_noise else "σ"
+    ax.set_title(f'Eigenvalue spectrum\nλ_max={lambda_max:.5f}  α={alpha_label}={alpha:.3f}',
                  fontsize=8.5)
     ax.set_yscale('log')
     ax.legend(fontsize=7)
@@ -181,7 +183,7 @@ def _draw_geometry(
     fig.suptitle(
         f"CLIP Embedding Manifold Geometry  —  anchor={anchor_idx}  σ={sigma}\n"
         f"λ_max={lambda_max:.5f}   √λ_max={np.sqrt(lambda_max):.5f}   "
-        f"α=σ/√λ_max={alpha:.4f}   (α/σ = {alpha/sigma:.1f}×)",
+        f"scale_noise={scale_noise}   α={alpha_label}={alpha:.4f}   (α/σ = {alpha/sigma:.1f}×)",
         fontsize=11, y=1.02,
     )
     plt.tight_layout()
@@ -193,12 +195,13 @@ def _draw_geometry(
         'anchor_idx': anchor_idx,
         'lambda_max': lambda_max,
         'alpha':      alpha,
+        'scale_noise': scale_noise,
         'a1': a1, 'a2': a2,
         'pc1_std': pc1_std,
     }
 
 
-def _draw_amplification_curve(lambda_maxs: list, sigmas: list, save_path: Path) -> None:
+def _draw_amplification_curve(lambda_maxs: list, sigmas: list, save_path: Path, scale_noise: bool) -> None:
     """Panel 3 from notebook — alpha amplification for all anchors × all sigmas."""
     fig, ax = plt.subplots(figsize=(8, 5))
     sig_arr = np.linspace(0.005, 1.0, 200)
@@ -207,18 +210,22 @@ def _draw_amplification_curve(lambda_maxs: list, sigmas: list, save_path: Path) 
     min_lmax  = float(np.min(lambda_maxs))
     max_lmax  = float(np.max(lambda_maxs))
 
-    ax.fill_between(sig_arr,
-                    sig_arr / np.sqrt(max_lmax),
-                    sig_arr / np.sqrt(min_lmax),
-                    alpha=0.15, color='#c0392b', label='alpha range (min/max λ_max)')
-    ax.plot(sig_arr, sig_arr / np.sqrt(mean_lmax), lw=2, color='#c0392b',
-            label=f'alpha = σ/√λ_max  (mean λ_max={mean_lmax:.5f})')
+    if scale_noise:
+        ax.fill_between(sig_arr,
+                        sig_arr / np.sqrt(max_lmax),
+                        sig_arr / np.sqrt(min_lmax),
+                        alpha=0.15, color='#c0392b', label='alpha range (min/max λ_max)')
+        ax.plot(sig_arr, sig_arr / np.sqrt(mean_lmax), lw=2, color='#c0392b',
+                label=f'alpha = σ/√λ_max  (mean λ_max={mean_lmax:.5f})')
+    else:
+        ax.plot(sig_arr, sig_arr, lw=2, color='#c0392b',
+                label='alpha = σ  (unscaled manifold setting)')
     ax.plot(sig_arr, sig_arr, lw=1.5, ls='--', color='#636363',
             label='alpha = σ  (isotropic / no amplification)')
     ax.axhline(1.0, color='orange', lw=1, ls=':', label='alpha = 1  (unit noise)')
 
     for s in sigmas:
-        a = s / np.sqrt(mean_lmax)
+        a = s / np.sqrt(mean_lmax) if scale_noise else s
         ax.annotate(f'σ={s}\nα={a:.1f}',
                     xy=(s, a), xytext=(s+0.02, a+0.5),
                     fontsize=7, color='#c0392b',
@@ -226,8 +233,9 @@ def _draw_amplification_curve(lambda_maxs: list, sigmas: list, save_path: Path) 
 
     ax.set_xlabel('σ  (config value)')
     ax.set_ylabel('Effective noise std  (alpha)')
-    ax.set_title('Noise amplification in CLIP embedding space\n'
-                 'alpha = σ / √λ_max  —  tiny λ_max on unit sphere → huge alpha')
+    title = 'Noise amplification in CLIP embedding space'
+    subtitle = 'alpha = σ / √λ_max' if scale_noise else 'unscaled setting: alpha = σ'
+    ax.set_title(f'{title}\n{subtitle}')
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     plt.tight_layout()
@@ -289,8 +297,13 @@ def main():
 
     all_stats = []
     for sigma in args.sigmas:
-        smoother = ManifoldSmoother(sigma=sigma, index=clip_index,
-                                    knn_k=args.knn_k, eps_eig=cfg.smoothing.eps_eig)
+        smoother = ManifoldSmoother(
+            sigma=sigma,
+            index=clip_index,
+            knn_k=args.knn_k,
+            eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+        )
         for ai in anchors:
             anchor = embs_norm[ai]
             # Use Annoy index — same as eval pipeline
@@ -303,12 +316,15 @@ def main():
             pca_info = fit_local_pca(neighbours)
             ev       = pca_info.evals
             lmax     = float(ev[0])
-            alpha    = sigma / np.sqrt(max(lmax, 1e-12))
+            scale_noise = bool(getattr(cfg.smoothing, 'scale_noise', True))
+            alpha = sigma / np.sqrt(max(lmax, 1e-12)) if scale_noise else sigma
+            alpha_label = "σ/√λ_max" if scale_noise else "σ"
             print(f"\nAnchor={ai}  σ={sigma}")
             print(f"  Top-10 eigenvalues (raw): " +
                   "  ".join(f"{v:.5f}" for v in ev[:10]))
             print(f"  λ_max={lmax:.5f}  √λ_max={np.sqrt(lmax):.5f}")
-            print(f"  alpha = σ/√λ_max = {alpha:.4f}  ({alpha/sigma:.1f}× amplification)")
+            print(f"  scale_noise={scale_noise}")
+            print(f"  alpha = {alpha_label} = {alpha:.4f}  ({alpha/sigma:.1f}× sigma)")
             print(f"  → noise added in whitened space has std={alpha:.4f}  "
                   f"(vs σ={sigma} you set)")
 
@@ -321,7 +337,8 @@ def main():
     # Amplification curve across all sigmas
     lambda_maxs = [s['lambda_max'] for s in all_stats]
     _draw_amplification_curve(lambda_maxs, args.sigmas,
-                               out_dir / "alpha_amplification.png")
+                               out_dir / "alpha_amplification.png",
+                               bool(getattr(cfg.smoothing, 'scale_noise', True)))
 
     # Summary
     import json
@@ -331,10 +348,12 @@ def main():
     print(f"\nlambda_max across all anchors:")
     lmaxs = [s['lambda_max'] for s in all_stats if s['sigma'] == args.sigmas[0]]
     print(f"  mean={np.mean(lmaxs):.5f}  min={np.min(lmaxs):.5f}  max={np.max(lmaxs):.5f}")
+    scale_noise = bool(getattr(cfg.smoothing, 'scale_noise', True))
     for sigma in args.sigmas:
         alphas = [s['alpha'] for s in all_stats if s['sigma'] == sigma]
+        suffix = "amplification" if scale_noise else "sigma"
         print(f"  σ={sigma}  →  alpha mean={np.mean(alphas):.3f}  "
-              f"({np.mean(alphas)/sigma:.1f}× amplification)")
+              f"({np.mean(alphas)/sigma:.1f}× {suffix})")
 
 
 if __name__ == "__main__":

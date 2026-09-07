@@ -368,9 +368,13 @@ def run_comparison(
     for sigma in sigmas:
         print(f"\n── sigma={sigma} ────────────────────────────────────")
         iso_smoother  = IsotropicSmoother(sigma=sigma)
-        mani_smoother = ManifoldSmoother(sigma=sigma, index=pixel_index,
-                                         knn_k=cfg.smoothing.knn_k,
-                                         eps_eig=cfg.smoothing.eps_eig)
+        mani_smoother = ManifoldSmoother(
+            sigma=sigma,
+            index=pixel_index,
+            knn_k=cfg.smoothing.knn_k,
+            eps_eig=cfg.smoothing.eps_eig,
+            scale_noise=getattr(cfg.smoothing, 'scale_noise', True),
+        )
 
         for ann_stem in ann_stems:
             cap_path = cache_dir / f"{ann_stem}_captions.pt"
