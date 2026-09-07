@@ -1158,6 +1158,7 @@ def run_seg_certification(cfg: SegCertifyConfig, sigma: float) -> Dict:
             "n0_samples":      cfg.smoothing.n0_samples,
             "n_samples":       cfg.smoothing.n_samples,
             "knn_k":           cfg.smoothing.knn_k,
+            "scale_noise":     getattr(cfg.smoothing, 'scale_noise', None),
             "correction":      "holm",
             "alpha_conf":      cfg.alpha_conf,
         },
@@ -1424,7 +1425,9 @@ def run_seg_certification_multi_sigma(cfg: SegCertifyConfig, sigma_values: List[
                 "mode": cfg.smoothing.mode, "use_manifold": cfg.smoothing.use_manifold,
                 "sigma": sigma, "tau": cfg.smoothing.tau,
                 "n0_samples": cfg.smoothing.n0_samples, "n_samples": cfg.smoothing.n_samples,
-                "knn_k": cfg.smoothing.knn_k, "correction": "holm", "alpha_conf": cfg.alpha_conf,
+                "knn_k": cfg.smoothing.knn_k,
+                "scale_noise": getattr(cfg.smoothing, 'scale_noise', None),
+                "correction": "holm", "alpha_conf": cfg.alpha_conf,
             },
             "runtime": {
                 "certify_seconds": round(elapsed, 2),
