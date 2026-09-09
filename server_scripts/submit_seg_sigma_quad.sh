@@ -22,8 +22,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
-PARTITION="gpu20"
-TIME="48:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="8G"

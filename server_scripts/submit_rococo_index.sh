@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH -p cpu20
-#SBATCH -t 8:00:00
+#SBATCH -t 24:00:00
 #SBATCH -c 8
 #SBATCH --mem=32G
 #SBATCH -o /BS/dniazi_thesis/work/RandomizedSmothingmanifold/output/slurm/rococo-index-%j.out

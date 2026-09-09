@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # =============================================================================
 # Submit smoothed-classifier training array for CelebA-HQ
 #   20 tasks: 10 sigmas x 2 modes (isotropic + manifold)
@@ -9,8 +9,8 @@
 #
 # Options:
 #   --max-concurrent N   How many tasks run in parallel (default: 4)
-#   --time TIME          Wall time per task (default: 48:00:00)
-#   --partition PART     SLURM partition (default: gpu20)
+#   --time TIME          Wall time per task (default: 24:00:00)
+#   --partition PART     SLURM partition (default: gpu-rtx8000)
 #   --dry-run            Print sbatch command without submitting
 #   --help               Show this help
 #
@@ -23,8 +23,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
 MAX_CONCURRENT=4
-TIME="48:00:00"
-PARTITION="gpu20"
+TIME="24:00:00"
+PARTITION="gpu-rtx8000"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do

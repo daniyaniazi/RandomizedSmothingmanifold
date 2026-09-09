@@ -15,7 +15,7 @@
 #   sbatch server_scripts/submit_rococo_alignment_geometry.sh same_concept paired 5000
 # =============================================================================
 #SBATCH -p cpu20
-#SBATCH -t 04:00:00
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:0
 #SBATCH -c 4
 #SBATCH --mem-per-cpu=8G

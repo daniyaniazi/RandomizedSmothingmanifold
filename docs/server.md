@@ -52,7 +52,7 @@ scancel <jobid>
 
 gpusession start
 <!-- or -->
-srun -p gpu20 --gres gpu:1 -c 4 --mem-per-cpu=4G --pty /bin/bash
+srun -p gpu-rtx8000 --gres gpu:1 -c 4 --mem-per-cpu=4G --pty /bin/bash
 <!-- inside the session -->
 source "/BS/dniazi_thesis/work/miniforge3_new/etc/profile.d/conda.sh"
 conda activate smoothing

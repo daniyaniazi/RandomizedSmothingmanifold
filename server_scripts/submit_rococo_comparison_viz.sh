@@ -10,8 +10,8 @@
 #   sbatch server_scripts/submit_rococo_comparison_viz.sh --dry-run
 #   sbatch server_scripts/submit_rococo_comparison_viz.sh --sigma 0.05 0.10
 # =============================================================================
-#SBATCH -p gpu20
-#SBATCH -t 02:00:00
+#SBATCH -p gpu-rtx8000
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:1
 #SBATCH -c 4
 #SBATCH --mem-per-cpu=8G
@@ -101,8 +101,8 @@ if $DRY_RUN; then
 else
     sbatch \
         --array="1-${TOTAL}%${MAX_CONCURRENT}" \
-        --partition=gpu20 \
-        --time=02:00:00 \
+        --partition=gpu-rtx8000 \
+        --time=24:00:00 \
         --gres=gpu:1 \
         --cpus-per-task=4 \
         --mem-per-cpu=8G \

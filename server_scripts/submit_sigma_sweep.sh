@@ -25,8 +25,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
 # SLURM defaults
-PARTITION="gpu20"
-TIME="48:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="8G"
@@ -44,8 +44,8 @@ Arguments:
   CONFIG_FILE          Path to experiment config with sigma_values array
 
 Options:
-  --partition PART     SLURM partition (default: gpu20)
-  --time TIME          Time limit (default: 12:00:00)
+  --partition PART     SLURM partition (default: gpu-rtx8000)
+  --time TIME          Time limit (default: 24:00:00)
   --cpus N             CPUs per task (default: 4)
   --mem MEM            Memory (default: 16G)
   --dry-run            Print commands without submitting

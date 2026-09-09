@@ -8,8 +8,8 @@
 #   sbatch server_scripts/submit_build_celebahq_latent_index.sh
 # =============================================================================
 
-#SBATCH -p gpu20
-#SBATCH -t 4:00:00
+#SBATCH -p gpu-rtx8000
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:1
 #SBATCH -c 8
 #SBATCH --mem-per-cpu=8G

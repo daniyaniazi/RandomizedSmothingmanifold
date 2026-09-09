@@ -7,8 +7,8 @@
 #   sbatch server_scripts/submit_build_celebahq_pixel_index.sh
 # =============================================================================
 
-#SBATCH -p gpu20
-#SBATCH -t 12:00:00
+#SBATCH -p gpu-rtx8000
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:1
 #SBATCH -c 8
 #SBATCH --mem-per-cpu=32G

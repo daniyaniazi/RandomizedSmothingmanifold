@@ -2,11 +2,11 @@
 #SBATCH --job-name=build_pixel_index
 #SBATCH --output=logs/build_pixel_index_%j.out
 #SBATCH --error=logs/build_pixel_index_%j.err
-#SBATCH --partition=gpu20
+#SBATCH --partition=gpu-rtx8000
 #SBATCH --gres=gpu:1
 #SBATCH --mem-per-cpu=8G
 #SBATCH -c 8
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 
 set -eu
 

@@ -29,8 +29,8 @@ CONFIGS_DIR="${PROJECT_ROOT}/src/configs/experiments"
 CHECKPOINT="${PROJECT_ROOT}/output/ner_conll2003_bert/ner_bert_conll2003_finetune/model.pt"
 
 # ── Defaults ──
-PARTITION="gpu20"
-TIME="48:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="8G"

@@ -3,8 +3,8 @@
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
 
 sbatch \
-  --partition=gpu20 \
-  --time=02:00:00 \
+  --partition=gpu-rtx8000 \
+  --time=24:00:00 \
   --gres=gpu:1 \
   --cpus-per-task=4 \
   --mem-per-cpu=8G \

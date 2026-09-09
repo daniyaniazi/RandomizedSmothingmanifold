@@ -26,8 +26,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
 # Slurm defaults
-PARTITION="gpu20"
-TIME="48:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="8G"
@@ -54,8 +54,8 @@ print_help() {
 Usage: ./submit_sigma_quad_array.sh [OPTIONS]
 
 Options:
-  --partition PART        Slurm partition (default: gpu20)
-  --time TIME             Time limit (default: 48:00:00)
+  --partition PART        Slurm partition (default: gpu-rtx8000)
+  --time TIME             Time limit (default: 24:00:00)
   --cpus N                CPUs per task (default: 8)
   --mem-per-cpu MEM       Memory per CPU (default: 8G)
   --max-concurrent N      Array concurrency cap (default: 4)

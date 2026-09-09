@@ -8,8 +8,8 @@
 #   sbatch --dependency=afterok:$JOB_ID submit_sigma_sweep.sh src/configs/experiments/certify_celeba_pixel.yaml
 # =============================================================================
 
-#SBATCH -p gpu20
-#SBATCH -t 12:00:00
+#SBATCH -p gpu-rtx8000
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:1
 #SBATCH -c 8
 #SBATCH --mem-per-cpu=32G

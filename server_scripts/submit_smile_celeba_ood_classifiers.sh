@@ -18,8 +18,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 mkdir -p output/slurm
 
-PARTITION="gpu20"
-TIME="48:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="4G"
@@ -86,7 +86,7 @@ for ATTR in "${OOD_ATTRS[@]}"; do
     cat > "$JOB_SCRIPT" << JOBEOF
 #!/usr/bin/env bash
 #SBATCH -p ${PARTITION}
-#SBATCH -t ${TIME}
+#SBATCH -t 24:00:00
 #SBATCH --gres gpu:${GPUS}
 #SBATCH -c ${CPUS}
 #SBATCH --mem-per-cpu=${MEM_PER_CPU}

@@ -18,8 +18,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="/BS/dniazi_thesis/work/RandomizedSmothingmanifold"
-PARTITION="gpu20"
-TIME="12:00:00"
+PARTITION="gpu-rtx8000"
+TIME="24:00:00"
 GPUS=1
 CPUS=8
 MEM_PER_CPU="8G"
