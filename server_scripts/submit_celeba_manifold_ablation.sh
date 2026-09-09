@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Submit CelebA pixel-manifold ablations. Each array task handles one K/d/N
 # variant and all configured sigmas, allowing PCA reuse across sigma values.
+# Run this submission wrapper with bash; it creates and submits the GPU array.
+# Example:
+#   bash server_scripts/submit_celeba_manifold_ablation.sh --study test-subset-both
 
 set -euo pipefail
 
@@ -16,6 +19,12 @@ MAX_CONCURRENT=4
 STUDY="all"
 DRY_RUN=false
 
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    echo "Error: this is a submission wrapper and must not itself be run with sbatch." >&2
+    echo "Run: bash server_scripts/submit_celeba_manifold_ablation.sh --study test-subset-both" >&2
+    exit 2
+fi
+
 LOCAL_CFG="src/configs/experiments/certify_celeba_pixel_ablation_local_size.yaml"
 PCA_CFG="src/configs/experiments/certify_celeba_pixel_ablation_pca_dim.yaml"
 MC_CFG="src/configs/experiments/certify_celeba_pixel_ablation_mc_samples.yaml"
@@ -25,7 +34,7 @@ ISO_SUBSET_CFG="src/configs/experiments/certify_celeba_pixel_isotropic_ablation_
 PYTHON_BIN="/BS/dniazi_thesis/work/miniforge3_new/envs/smoothing/bin/python"
 
 usage() {
-    echo "Usage: $0 [--study local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|test-subset|test-subset-iso|test-subset-both|all] [--dry-run]"
+    echo "Usage: bash $0 [--study local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|test-subset|test-subset-iso|test-subset-both|all] [--dry-run]"
     echo "          [--partition PART] [--time TIME] [--cpus N]"
     echo "          [--mem-per-cpu MEM] [--max-concurrent N]"
 }
