@@ -20,10 +20,12 @@ LOCAL_CFG="src/configs/experiments/certify_celeba_pixel_ablation_local_size.yaml
 PCA_CFG="src/configs/experiments/certify_celeba_pixel_ablation_pca_dim.yaml"
 MC_CFG="src/configs/experiments/certify_celeba_pixel_ablation_mc_samples.yaml"
 ISO_MC_CFG="src/configs/experiments/certify_celeba_pixel_isotropic_ablation_mc_samples.yaml"
+SUBSET_CFG="src/configs/experiments/certify_celeba_pixel_ablation_test_subset_size.yaml"
+ISO_SUBSET_CFG="src/configs/experiments/certify_celeba_pixel_isotropic_ablation_test_subset_size.yaml"
 PYTHON_BIN="/BS/dniazi_thesis/work/miniforge3_new/envs/smoothing/bin/python"
 
 usage() {
-    echo "Usage: $0 [--study local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|all] [--dry-run]"
+    echo "Usage: $0 [--study local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|test-subset|test-subset-iso|test-subset-both|all] [--dry-run]"
     echo "          [--partition PART] [--time TIME] [--cpus N]"
     echo "          [--mem-per-cpu MEM] [--max-concurrent N]"
 }
@@ -42,8 +44,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! [[ "$STUDY" =~ ^(local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|all)$ ]]; then
-    echo "Error: --study must be local-size, pca-dim, mc-samples, mc-samples-iso, mc-samples-both, or all"
+if ! [[ "$STUDY" =~ ^(local-size|pca-dim|mc-samples|mc-samples-iso|mc-samples-both|test-subset|test-subset-iso|test-subset-both|all)$ ]]; then
+    echo "Error: --study must be local-size, pca-dim, mc-samples, mc-samples-iso, mc-samples-both, test-subset, test-subset-iso, test-subset-both, or all"
     exit 1
 fi
 if ! [[ "$MAX_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
@@ -56,6 +58,7 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)"
 TASK_FILE="output/sweep_configs/celeba_manifold_ablation_${RUN_ID}.tsv"
 
 STUDY="$STUDY" LOCAL_CFG="$LOCAL_CFG" PCA_CFG="$PCA_CFG" MC_CFG="$MC_CFG" ISO_MC_CFG="$ISO_MC_CFG" \
+SUBSET_CFG="$SUBSET_CFG" ISO_SUBSET_CFG="$ISO_SUBSET_CFG" \
 TASK_FILE="$TASK_FILE" RUN_ID="$RUN_ID" "$PYTHON_BIN" - <<'PY'
 import os
 from pathlib import Path
@@ -74,19 +77,29 @@ if study in ("mc-samples", "mc-samples-both", "all"):
     specs.append(("mc_samples", Path(os.environ["MC_CFG"]), "n_sample_values"))
 if study in ("mc-samples-iso", "mc-samples-both", "all"):
     specs.append(("mc_samples_iso", Path(os.environ["ISO_MC_CFG"]), "n_sample_values"))
+if study in ("test-subset", "test-subset-both", "all"):
+    specs.append(("test_subset", Path(os.environ["SUBSET_CFG"]), "subset_size_values"))
+if study in ("test-subset-iso", "test-subset-both", "all"):
+    specs.append(("test_subset_iso", Path(os.environ["ISO_SUBSET_CFG"]), "subset_size_values"))
 
 tasks = []
 for short_name, source, values_key in specs:
     cfg = yaml.safe_load(source.read_text())
     smoothing = cfg["smoothing"]
-    values = smoothing.pop(values_key)
+    dataset = cfg["dataset"]
+    if values_key == "subset_size_values":
+        values = dataset.pop(values_key)
+    else:
+        values = smoothing.pop(values_key)
     sigmas = [float(v) for v in smoothing.get("sigma_values", [smoothing["sigma"]])]
     sigma_args = " ".join(str(v) for v in sigmas)
 
     for value in values:
         generated = yaml.safe_load(source.read_text())
         generated_smoothing = generated["smoothing"]
+        generated_dataset = generated["dataset"]
         generated_smoothing.pop(values_key, None)
+        generated_dataset.pop(values_key, None)
         if short_name == "local_size":
             generated_smoothing["knn_k"] = int(value)
             generated_smoothing["pca_dim"] = None
@@ -95,12 +108,21 @@ for short_name, source, values_key in specs:
             generated_smoothing["knn_k"] = 500
             generated_smoothing["pca_dim"] = int(value)
             variant = f"knn_500_pca_{int(value)}"
-        else:
+        elif short_name in ("mc_samples", "mc_samples_iso"):
             generated_smoothing["knn_k"] = 500
             generated_smoothing["pca_dim"] = None
             generated_smoothing["n_samples"] = int(value)
             prefix = "iso" if short_name == "mc_samples_iso" else "mani"
             variant = f"{prefix}_knn_500_pca_auto_n_{int(value)}"
+        elif short_name in ("test_subset", "test_subset_iso"):
+            generated_dataset["subset_size"] = int(value)
+            generated_smoothing["knn_k"] = 500
+            generated_smoothing["pca_dim"] = None
+            generated_smoothing["n_samples"] = 100
+            prefix = "iso" if short_name == "test_subset_iso" else "mani"
+            variant = f"{prefix}_test_{int(value)}_knn_500_pca_auto_n_100"
+        else:
+            raise ValueError(f"Unknown ablation short_name: {short_name}")
 
         generated["output"]["ablation_variant"] = variant
         generated["experiment_name"] = f"{generated['experiment_name']}_{variant}"

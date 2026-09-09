@@ -63,6 +63,8 @@ def _flatten_metrics(metrics: dict, metrics_path: Path, study: str, variant: str
     smoothing = metrics.get("smoothing", {})
     volume = metrics.get("volume", {}) or {}
     geometry = volume.get("geometry", {}) or {}
+    use_manifold = bool(smoothing.get("use_manifold"))
+    smoother = "manifold" if use_manifold else "isotropic"
 
     sigma = float(smoothing.get("sigma", _sigma_from_name(metrics_path.parts[-4]) or 0.0))
     knn_k = smoothing.get("knn_k")
@@ -83,6 +85,10 @@ def _flatten_metrics(metrics: dict, metrics_path: Path, study: str, variant: str
     elif study == "monte_carlo_samples":
         ablation_value = int(smoothing.get("n_samples")) if smoothing.get("n_samples") is not None else None
         ablation_axis = "n_samples"
+    elif study == "certification_subset_size":
+        total_test_samples = metrics.get("total_test_samples")
+        ablation_value = int(total_test_samples) if total_test_samples is not None else None
+        ablation_axis = "subset_size"
     else:
         ablation_value = None
         ablation_axis = "unknown"
@@ -288,6 +294,8 @@ def _plot_metric_grid(rows: List[dict], out_dir: Path, study: str, x_key: str) -
         title = "PCA dimension ablation"
     elif study == "monte_carlo_samples":
         title = "Monte Carlo sample-size ablation"
+    elif study == "certification_subset_size":
+        title = "Certification subset-size ablation"
     else:
         title = study
     fig.suptitle(f"{title}: certification outcomes", fontsize=13)
@@ -347,6 +355,8 @@ def _plot_geometry_grid(rows: List[dict], out_dir: Path, study: str, x_key: str)
         title = "PCA dimension ablation"
     elif study == "monte_carlo_samples":
         title = "Monte Carlo sample-size ablation"
+    elif study == "certification_subset_size":
+        title = "Certification subset-size ablation"
     else:
         title = study
     fig.suptitle(f"{title}: local covariance geometry", fontsize=13)
@@ -560,6 +570,8 @@ def main() -> None:
                args.output_dir / "ablation_pca_dim_summary.csv")
     _write_csv([r for r in rows if r["study"] == "monte_carlo_samples"],
                args.output_dir / "ablation_mc_samples_summary.csv")
+    _write_csv([r for r in rows if r["study"] == "certification_subset_size"],
+               args.output_dir / "ablation_test_subset_size_summary.csv")
     _write_csv(_best_by_sigma(rows), args.output_dir / "ablation_best_by_sigma.csv")
 
     radius_rows = _radius_threshold_rows(rows, args.radius_thresholds)
@@ -568,18 +580,23 @@ def main() -> None:
     _plot_metric_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_metric_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
     _plot_metric_grid(rows, args.output_dir, "monte_carlo_samples", "n_samples")
+    _plot_metric_grid(rows, args.output_dir, "certification_subset_size", "subset_size")
     _plot_geometry_grid(rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_geometry_grid(rows, args.output_dir, "pca_dimension", "pca_dim")
     _plot_geometry_grid(rows, args.output_dir, "monte_carlo_samples", "n_samples")
+    _plot_geometry_grid(rows, args.output_dir, "certification_subset_size", "subset_size")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "pca_dimension", "pca_dim", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "monte_carlo_samples", "n_samples", "certified_accuracy_pct")
+    _plot_heatmap(rows, args.output_dir, "certification_subset_size", "subset_size", "certified_accuracy_pct")
     _plot_heatmap(rows, args.output_dir, "local_manifold_size", "knn_k", "mean_radius")
     _plot_heatmap(rows, args.output_dir, "pca_dimension", "pca_dim", "mean_radius")
     _plot_heatmap(rows, args.output_dir, "monte_carlo_samples", "n_samples", "mean_radius")
+    _plot_heatmap(rows, args.output_dir, "certification_subset_size", "subset_size", "mean_radius")
     _plot_radius_thresholds(radius_rows, args.output_dir, "local_manifold_size", "knn_k")
     _plot_radius_thresholds(radius_rows, args.output_dir, "pca_dimension", "pca_dim")
     _plot_radius_thresholds(radius_rows, args.output_dir, "monte_carlo_samples", "n_samples")
+    _plot_radius_thresholds(radius_rows, args.output_dir, "certification_subset_size", "subset_size")
     _plot_theory_tradeoff(
         args.output_dir,
         m=args.theory_m,
@@ -599,18 +616,22 @@ def main() -> None:
             "ablation_local_size_summary.csv",
             "ablation_pca_dim_summary.csv",
             "ablation_mc_samples_summary.csv",
+            "ablation_test_subset_size_summary.csv",
             "ablation_best_by_sigma.csv",
             "ablation_radius_thresholds.csv",
             "theory_knn_tradeoff.csv",
             "local_manifold_size_certification_grid.png",
             "pca_dimension_certification_grid.png",
             "monte_carlo_samples_certification_grid.png",
+            "certification_subset_size_certification_grid.png",
             "local_manifold_size_geometry_grid.png",
             "pca_dimension_geometry_grid.png",
             "monte_carlo_samples_geometry_grid.png",
+            "certification_subset_size_geometry_grid.png",
             "local_manifold_size_certified_accuracy_pct_heatmap.png",
             "pca_dimension_certified_accuracy_pct_heatmap.png",
             "monte_carlo_samples_certified_accuracy_pct_heatmap.png",
+            "certification_subset_size_certified_accuracy_pct_heatmap.png",
             "theory_knn_tradeoff.png",
         ],
     }
@@ -621,5 +642,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    use_manifold = bool(smoothing.get("use_manifold"))
-    smoother = "manifold" if use_manifold else "isotropic"

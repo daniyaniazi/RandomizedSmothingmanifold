@@ -22,8 +22,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from scipy.special import gammaln
-
 _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -45,7 +43,7 @@ def _sigma_from_path(path: Path) -> Optional[float]:
 
 
 def _log_c_ball(dim: int) -> float:
-    return (dim / 2.0) * math.log(math.pi) - float(gammaln(dim / 2.0 + 1.0))
+    return (dim / 2.0) * math.log(math.pi) - math.lgamma(dim / 2.0 + 1.0)
 
 
 def _log_volume_ball(radius: Optional[float], dim: Optional[int]) -> Optional[float]:
@@ -62,11 +60,11 @@ def _mode_from_metrics(metrics: dict, path: Path) -> str:
     smoothing = metrics.get("smoothing", {}) or {}
     if "use_manifold" in smoothing:
         return "manifold" if smoothing.get("use_manifold") else "isotropic"
-    text = str(path).lower()
-    if "manifold" in text:
-        return "manifold"
-    if "isotropic" in text:
+    path_parts = [part.lower() for part in path.parts]
+    if any("isotropic" in part for part in path_parts):
         return "isotropic"
+    if any("manifold" in part for part in path_parts):
+        return "manifold"
     return "unknown"
 
 
@@ -268,7 +266,19 @@ def _write_csv(rows: List[dict], path: Path, columns: Optional[List[str]] = None
 
 
 def _collect_classification(root: Path, dataset_tag: str) -> List[dict]:
-    base = root / "output" / "smile_classification" / dataset_tag / "certify"
+    dataset_aliases = {
+        "celebahq": ["celebahq", "celebhq"],
+        "celebhq": ["celebhq", "celebahq"],
+    }
+    candidates = dataset_aliases.get(dataset_tag, [dataset_tag])
+    base = None
+    for candidate in candidates:
+        candidate_base = root / "output" / "smile_classification" / candidate / "certify"
+        if candidate_base.exists():
+            base = candidate_base
+            break
+    if base is None:
+        base = root / "output" / "smile_classification" / dataset_tag / "certify"
     rows = []
     for metrics_path in sorted(base.glob("pixel_*/sigma_*/metrics.json")):
         rows.append(_classification_row(metrics_path, dataset_tag))

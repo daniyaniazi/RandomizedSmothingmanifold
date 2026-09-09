@@ -122,6 +122,37 @@ def _plot(rows: List[dict], out_dir: Path, tag: str) -> None:
     _log(f"Saved plot: {out_path}")
 
 
+def _plot_signed_margin_delta(rows: List[dict], out_dir: Path, tag: str) -> None:
+    iso = np.asarray([
+        r["margin_delta"] for r in rows if r["mode"] == "isotropic"
+    ], dtype=np.float64)
+    mani = np.asarray([
+        r["margin_delta"] for r in rows if r["mode"] == "manifold"
+    ], dtype=np.float64)
+    if iso.size == 0 or mani.size == 0:
+        return
+
+    # Shared, symmetric bins make left/right movement and both methods comparable.
+    limit = float(max(np.max(np.abs(iso)), np.max(np.abs(mani)), 1e-12))
+    bins = np.linspace(-limit, limit, 81)
+    fig, ax = plt.subplots(figsize=(8, 5), facecolor="white")
+    ax.hist(iso, bins=bins, alpha=0.58, label="isotropic", color="#4c78a8")
+    ax.hist(mani, bins=bins, alpha=0.58, label="manifold", color="#7b3294")
+    ax.axvline(0.0, color="black", linewidth=1.0, linestyle="--")
+    ax.set_title("Signed GT-Danger margin change")
+    ax.set_xlabel(
+        "margin_delta (negative: toward Danger; positive: toward GT)"
+    )
+    ax.set_ylabel("image-samples")
+    ax.legend()
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    out_path = out_dir / f"{tag}_signed_margin_delta_histogram.png"
+    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+    _log(f"Saved signed-margin plot: {out_path}")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="RoCOCO retrieval instability: Iso vs Mani")
     p.add_argument("--config", required=True)
@@ -242,6 +273,10 @@ def main() -> None:
             "mani_score_delta_std_mean": float(np.mean([r["score_delta_std"] for r in mani_rows])),
             "iso_abs_margin_delta_mean": float(np.mean([r["abs_margin_delta"] for r in iso_rows])),
             "mani_abs_margin_delta_mean": float(np.mean([r["abs_margin_delta"] for r in mani_rows])),
+            "iso_margin_delta_mean": float(np.mean([r["margin_delta"] for r in iso_rows])),
+            "mani_margin_delta_mean": float(np.mean([r["margin_delta"] for r in mani_rows])),
+            "iso_margin_toward_danger_fraction": float(np.mean([r["margin_delta"] < 0 for r in iso_rows])),
+            "mani_margin_toward_danger_fraction": float(np.mean([r["margin_delta"] < 0 for r in mani_rows])),
             "iso_adv_flip_rate": float(np.mean([r["adv_beats_gt_pair"] for r in iso_rows])),
             "mani_adv_flip_rate": float(np.mean([r["adv_beats_gt_pair"] for r in mani_rows])),
         })
@@ -271,6 +306,12 @@ def main() -> None:
             ])),
             "iso_adv_flip_rate_mean": float(np.mean([r["iso_adv_flip_rate"] for r in pair_rows])),
             "mani_adv_flip_rate_mean": float(np.mean([r["mani_adv_flip_rate"] for r in pair_rows])),
+            "iso_margin_toward_danger_fraction_mean": float(np.mean([
+                r["iso_margin_toward_danger_fraction"] for r in pair_rows
+            ])),
+            "mani_margin_toward_danger_fraction_mean": float(np.mean([
+                r["mani_margin_toward_danger_fraction"] for r in pair_rows
+            ])),
         },
     }
     for mode in ("isotropic", "manifold"):
@@ -278,7 +319,14 @@ def main() -> None:
         summary["metrics"][mode] = {
             "score_delta_std": _summarize([r["score_delta_std"] for r in mode_rows]),
             "score_delta_l2": _summarize([r["score_delta_l2"] for r in mode_rows]),
+            "margin_delta": _summarize([r["margin_delta"] for r in mode_rows]),
             "abs_margin_delta": _summarize([r["abs_margin_delta"] for r in mode_rows]),
+            "margin_toward_danger_fraction": float(np.mean([
+                r["margin_delta"] < 0 for r in mode_rows
+            ])),
+            "margin_toward_gt_fraction": float(np.mean([
+                r["margin_delta"] > 0 for r in mode_rows
+            ])),
             "best_adv_rank_delta_abs": _summarize([r["best_adv_rank_delta_abs"] for r in mode_rows]),
             "adv_flip_rate": float(np.mean([r["adv_beats_gt_pair"] for r in mode_rows])),
         }
@@ -286,6 +334,7 @@ def main() -> None:
     summary_path = out_dir / f"{tag}_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     _plot(rows, out_dir, tag)
+    _plot_signed_margin_delta(rows, out_dir, tag)
 
     _log(f"Saved sample CSV: {csv_path}")
     _log(f"Saved per-image CSV: {image_csv_path}")
