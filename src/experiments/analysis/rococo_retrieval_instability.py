@@ -153,6 +153,40 @@ def _plot_signed_margin_delta(rows: List[dict], out_dir: Path, tag: str) -> None
     _log(f"Saved signed-margin plot: {out_path}")
 
 
+def _plot_score_delta_components(rows: List[dict], out_dir: Path, tag: str) -> None:
+    metrics = [
+        ("gt_score_delta", "Ground-truth similarity change"),
+        ("adv_score_delta", "Danger similarity change"),
+    ]
+    all_values = np.asarray([
+        r[metric] for r in rows for metric, _ in metrics
+    ], dtype=np.float64)
+    if all_values.size == 0:
+        return
+
+    limit = float(max(np.max(np.abs(all_values)), 1e-12))
+    bins = np.linspace(-limit, limit, 81)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), facecolor="white")
+    for ax, (metric, title) in zip(axes, metrics):
+        iso = np.asarray([r[metric] for r in rows if r["mode"] == "isotropic"])
+        mani = np.asarray([r[metric] for r in rows if r["mode"] == "manifold"])
+        ax.hist(iso, bins=bins, alpha=0.58, label="isotropic", color="#4c78a8")
+        ax.hist(mani, bins=bins, alpha=0.58, label="manifold", color="#7b3294")
+        ax.axvline(0.0, color="black", linewidth=1.0, linestyle="--")
+        ax.set_title(title)
+        ax.set_xlabel(f"{metric} (negative: similarity decreases)")
+        ax.set_ylabel("image-samples")
+        ax.legend()
+        ax.grid(alpha=0.25)
+
+    fig.suptitle("Decomposition of signed GT-Danger margin change", fontsize=13)
+    fig.tight_layout()
+    out_path = out_dir / f"{tag}_gt_danger_score_delta_histograms.png"
+    fig.savefig(out_path, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+    _log(f"Saved score-delta plot: {out_path}")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="RoCOCO retrieval instability: Iso vs Mani")
     p.add_argument("--config", required=True)
@@ -319,6 +353,8 @@ def main() -> None:
         summary["metrics"][mode] = {
             "score_delta_std": _summarize([r["score_delta_std"] for r in mode_rows]),
             "score_delta_l2": _summarize([r["score_delta_l2"] for r in mode_rows]),
+            "gt_score_delta": _summarize([r["gt_score_delta"] for r in mode_rows]),
+            "adv_score_delta": _summarize([r["adv_score_delta"] for r in mode_rows]),
             "margin_delta": _summarize([r["margin_delta"] for r in mode_rows]),
             "abs_margin_delta": _summarize([r["abs_margin_delta"] for r in mode_rows]),
             "margin_toward_danger_fraction": float(np.mean([
@@ -335,6 +371,7 @@ def main() -> None:
     summary_path.write_text(json.dumps(summary, indent=2))
     _plot(rows, out_dir, tag)
     _plot_signed_margin_delta(rows, out_dir, tag)
+    _plot_score_delta_components(rows, out_dir, tag)
 
     _log(f"Saved sample CSV: {csv_path}")
     _log(f"Saved per-image CSV: {image_csv_path}")
